@@ -1,0 +1,8 @@
+// Aritmética básica de And23 (M0)
+show(1 + 2 * 3)      // 7
+show((1 + 2) * 3)    // 9
+show(10 / 4)         // 2   (división entera entre enteros)
+show(10 / 4.0)       // 2.5
+show(-7 % 3)         // -1
+show(2 * -3)         // -6
+show(1_000 * 1_000)  // 1000000

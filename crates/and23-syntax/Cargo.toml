@@ -1,0 +1,6 @@
+[package]
+name = "and23-syntax"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lexer, AST, parser y diagnósticos del lenguaje And23"
