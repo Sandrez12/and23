@@ -1,6 +1,6 @@
-use crate::ast::{BinOp, Block, Expr, FnDecl, Param, Program, Stmt, TypeRef, UnOp};
+use crate::ast::{BinOp, Block, Expr, FnDecl, InterpPart, Param, Program, Stmt, TypeRef, UnOp};
 use crate::error::Diagnostic;
-use crate::lexer::{Token, TokenKind};
+use crate::lexer::{StrPart, Token, TokenKind};
 use crate::span::Span;
 
 /// Poder de enlace de los prefijos `-` y `!`: más fuerte que cualquier binario.
@@ -169,8 +169,22 @@ impl Parser {
     }
 
     fn type_ref(&mut self) -> Result<TypeRef, Diagnostic> {
+        if self.peek().kind == TokenKind::LBracket {
+            let open = self.bump().span;
+            let elem = self.type_ref()?;
+            let close = self.expect(TokenKind::RBracket, "`]` para cerrar el tipo")?;
+            return Ok(TypeRef {
+                name: "Array".to_string(),
+                args: vec![elem],
+                span: open.to(close.span),
+            });
+        }
         let (name, span) = self.expect_ident("un nombre de tipo")?;
-        Ok(TypeRef { name, span })
+        Ok(TypeRef {
+            name,
+            args: Vec::new(),
+            span,
+        })
     }
 
     fn stmt(&mut self) -> Result<Stmt, Diagnostic> {
@@ -188,7 +202,31 @@ impl Parser {
                 Err(self.error_here("`else` debe ir en la misma línea que la `}` del `if`".into()))
             }
             TokenKind::Ident(_) if assign_op(&self.peek_at(1).kind).is_some() => self.assign_stmt(),
-            _ => Ok(Stmt::Expr(self.expr(0)?)),
+            _ => {
+                let expr = self.expr(0)?;
+                // `a[i] = v` y `a[i] += v`
+                if let (Expr::Index { .. }, Some(op)) = (&expr, assign_op(&self.peek().kind)) {
+                    self.bump();
+                    let value = self.expr(0)?;
+                    let Expr::Index {
+                        target,
+                        index,
+                        span,
+                    } = expr
+                    else {
+                        unreachable!("verificado arriba")
+                    };
+                    let span = span.to(value.span());
+                    return Ok(Stmt::IndexAssign {
+                        target: *target,
+                        index: *index,
+                        op,
+                        value,
+                        span,
+                    });
+                }
+                Ok(Stmt::Expr(expr))
+            }
         }
     }
 
@@ -393,6 +431,8 @@ impl Parser {
             TokenKind::Float(v) => Expr::Float(v, token.span),
             TokenKind::True => Expr::Bool(true, token.span),
             TokenKind::False => Expr::Bool(false, token.span),
+            TokenKind::Str(parts) => self.string_expr(parts, token.span)?,
+            TokenKind::LBracket => self.array_literal(token.span)?,
             TokenKind::Minus | TokenKind::Bang => {
                 let op = if token.kind == TokenKind::Minus {
                     UnOp::Neg
@@ -430,6 +470,19 @@ impl Parser {
             }
         };
 
+        // Indexación `a[i]`, la más fuerte de todas.
+        while self.peek().kind == TokenKind::LBracket {
+            self.bump();
+            let index = self.expr(0)?;
+            let close = self.expect(TokenKind::RBracket, "`]`")?;
+            let span = lhs.span().to(close.span);
+            lhs = Expr::Index {
+                target: Box::new(lhs),
+                index: Box::new(index),
+                span,
+            };
+        }
+
         while let Some((op, left_bp, right_bp)) = binary_op(&self.peek().kind) {
             if left_bp < min_bp {
                 break;
@@ -445,6 +498,60 @@ impl Parser {
             };
         }
         Ok(lhs)
+    }
+
+    /// Cadena literal: sin interpolaciones es `Str`; con ellas, `Interp`.
+    fn string_expr(&mut self, parts: Vec<StrPart>, span: Span) -> Result<Expr, Diagnostic> {
+        let mut out = Vec::new();
+        for part in parts {
+            match part {
+                StrPart::Text(text) => out.push(InterpPart::Text(text)),
+                StrPart::Code(tokens) => {
+                    let mut inner = Parser {
+                        tokens,
+                        pos: 0,
+                        fn_depth: self.fn_depth,
+                        loop_depth: self.loop_depth,
+                    };
+                    let expr = inner.expr(0)?;
+                    if inner.peek().kind != TokenKind::RBrace {
+                        return Err(inner.error_here(format!(
+                            "la interpolación `${{...}}` admite una sola expresión, pero se encontró {}",
+                            inner.peek().kind.describe()
+                        )));
+                    }
+                    out.push(InterpPart::Expr(expr));
+                }
+            }
+        }
+        Ok(match out.as_slice() {
+            [InterpPart::Text(text)] => Expr::Str(text.clone(), span),
+            _ => Expr::Interp { parts: out, span },
+        })
+    }
+
+    /// Literal `[a, b, c]`; el `[` ya se consumió. Admite saltos de línea entre elementos.
+    fn array_literal(&mut self, open: Span) -> Result<Expr, Diagnostic> {
+        let mut elems = Vec::new();
+        loop {
+            self.skip_newlines();
+            if self.peek().kind == TokenKind::RBracket {
+                break;
+            }
+            elems.push(self.expr(0)?);
+            self.skip_newlines();
+            if self.peek().kind == TokenKind::Comma {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        self.skip_newlines();
+        let close = self.expect(TokenKind::RBracket, "`,` o `]`")?;
+        Ok(Expr::Array {
+            elems,
+            span: open.to(close.span),
+        })
     }
 
     /// Llamada `nombre(args)`; el nombre ya se consumió y el siguiente token es `(`.
@@ -482,6 +589,24 @@ mod tests {
             Expr::Float(v, _) => format!("{v:?}"),
             Expr::Bool(v, _) => v.to_string(),
             Expr::Var(name, _) => name.clone(),
+            Expr::Str(text, _) => format!("{text:?}"),
+            Expr::Interp { parts, .. } => {
+                let parts: Vec<String> = parts
+                    .iter()
+                    .map(|part| match part {
+                        InterpPart::Text(text) => format!("{text:?}"),
+                        InterpPart::Expr(e) => sexp(e),
+                    })
+                    .collect();
+                format!("(interp {})", parts.join(" "))
+            }
+            Expr::Array { elems, .. } => {
+                let elems: Vec<String> = elems.iter().map(sexp).collect();
+                format!("[{}]", elems.join(" "))
+            }
+            Expr::Index { target, index, .. } => {
+                format!("(index {} {})", sexp(target), sexp(index))
+            }
             Expr::Unary { op, expr, .. } => {
                 let sym = if *op == UnOp::Neg { "neg" } else { "not" };
                 format!("({sym} {})", sexp(expr))
@@ -685,5 +810,84 @@ mod tests {
     #[test]
     fn palabra_clave_no_es_nombre_de_variable() {
         assert!(err("fix if = 1").contains("el nombre de la variable"));
+    }
+
+    // --- M3: cadenas, arreglos e indexación ---
+
+    #[test]
+    fn cadena_simple_y_con_escapes() {
+        assert_eq!(shape(r#""hola""#), r#""hola""#);
+        assert_eq!(shape(r#""a\nb\t\"c\" \$ \u{f1}""#), r#""a\nb\t\"c\" $ ñ""#);
+    }
+
+    #[test]
+    fn interpolacion() {
+        assert_eq!(
+            shape(r#""x = ${1 + 2}!""#),
+            r#"(interp "x = " (+ 1 2) "!")"#
+        );
+        assert_eq!(shape(r#""${a}${b}""#), "(interp a b)");
+        assert_eq!(
+            shape(r#""${f("in ${x}")}""#),
+            r#"(interp (call f (interp "in " x)))"#
+        );
+        assert_eq!(shape(r#""$5 y {llaves}""#), r#""$5 y {llaves}""#);
+    }
+
+    #[test]
+    fn arreglos_e_indices() {
+        assert_eq!(shape("[1, 2, 3]"), "[1 2 3]");
+        assert_eq!(shape("[]"), "[]");
+        assert_eq!(shape("[\n 1,\n 2,\n]"), "[1 2]");
+        assert_eq!(shape("a[0][1]"), "(index (index a 0) 1)");
+        assert_eq!(shape("-a[0] * 2"), "(* (neg (index a 0)) 2)");
+        assert_eq!(shape("f(1)[2]"), "(index (call f 1) 2)");
+    }
+
+    #[test]
+    fn asignacion_a_indice() {
+        let program = parse("a[i + 1] += 2").unwrap();
+        assert!(matches!(
+            &program.stmts[0],
+            Stmt::IndexAssign {
+                op: Some(BinOp::Add),
+                ..
+            }
+        ));
+        let program = parse("a[0] = 1").unwrap();
+        assert!(matches!(
+            &program.stmts[0],
+            Stmt::IndexAssign { op: None, .. }
+        ));
+    }
+
+    #[test]
+    fn tipo_arreglo() {
+        match &parse("fix a: [[Int]] = []").unwrap().stmts[0] {
+            Stmt::Let { ty: Some(ty), .. } => {
+                assert_eq!(ty.name, "Array");
+                assert_eq!(ty.args[0].args[0].name, "Int");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn errores_de_cadenas() {
+        assert_eq!(err("show(\"abc"), "esta cadena no se cierra: falta `\"`");
+        assert!(err(r#"show("a\qb")"#).contains("escape no válido"));
+        assert!(err(r#"show("${1 + }")"#).contains("se esperaba una expresión"));
+        assert_eq!(
+            err(r#"show("${1"#),
+            "esta interpolación no se cierra: falta `}`"
+        );
+        assert!(err(r#"show("${1 2}")"#).contains("una sola expresión"));
+    }
+
+    #[test]
+    fn la_posicion_de_un_error_dentro_de_una_interpolacion_es_absoluta() {
+        let src = "show(\"ab ${1 + } cd\")";
+        let d = parse(src).unwrap_err();
+        assert_eq!(&src[d.span.start..d.span.end], "}");
     }
 }

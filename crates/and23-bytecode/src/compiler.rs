@@ -1,5 +1,5 @@
 use crate::op::{Function, Module, Op};
-use and23_syntax::{BinOp, Block, Diagnostic, Expr, FnDecl, Program, Span, Stmt, UnOp};
+use and23_syntax::{BinOp, Block, Diagnostic, Expr, FnDecl, InterpPart, Program, Span, Stmt, UnOp};
 use std::collections::HashMap;
 
 /// Nombres conocidos entre compilaciones (el REPL compila entrada tras entrada).
@@ -9,6 +9,8 @@ struct Tables {
     globals: HashMap<String, (u32, bool)>,
     /// nombre -> (índice de la función, aridad)
     funcs: HashMap<String, (u32, usize)>,
+    /// cadena constante -> índice en `Module::strings`
+    strings: HashMap<String, u32>,
 }
 
 /// Compilador con estado: cada llamada a `compile` añade funciones y globales al módulo.
@@ -54,11 +56,13 @@ impl Compiler {
         let saved_tables = self.tables.clone();
         let saved_functions = self.module.functions.len();
         let saved_globals = self.module.globals.len();
+        let saved_strings = self.module.strings.len();
         let result = self.compile_program(program, echo);
         if result.is_err() {
             self.tables = saved_tables;
             self.module.functions.truncate(saved_functions);
             self.module.globals.truncate(saved_globals);
+            self.module.strings.truncate(saved_strings);
         }
         result
     }
@@ -108,12 +112,22 @@ impl Compiler {
         }
 
         for (index, decl) in decls {
-            let function =
-                FnCompiler::new(&self.tables, decl.name.clone(), decl.name_span).function(decl)?;
+            let function = FnCompiler::new(
+                &mut self.tables,
+                &mut self.module.strings,
+                decl.name.clone(),
+                decl.name_span,
+            )
+            .function(decl)?;
             self.module.functions[index] = function;
         }
 
-        let mut script = FnCompiler::new(&self.tables, "<script>".to_string(), Span::new(0, 0));
+        let mut script = FnCompiler::new(
+            &mut self.tables,
+            &mut self.module.strings,
+            "<script>".to_string(),
+            Span::new(0, 0),
+        );
         script.script = true;
         script.echo = echo;
         script.top_level(program)?;
@@ -139,7 +153,8 @@ struct LoopCtx {
 }
 
 struct FnCompiler<'a> {
-    tables: &'a Tables,
+    tables: &'a mut Tables,
+    strings: &'a mut Vec<String>,
     name: String,
     name_span: Span,
     arity: usize,
@@ -154,9 +169,15 @@ struct FnCompiler<'a> {
 }
 
 impl<'a> FnCompiler<'a> {
-    fn new(tables: &'a Tables, name: String, name_span: Span) -> Self {
+    fn new(
+        tables: &'a mut Tables,
+        strings: &'a mut Vec<String>,
+        name: String,
+        name_span: Span,
+    ) -> Self {
         FnCompiler {
             tables,
+            strings,
             name,
             name_span,
             arity: 0,
@@ -214,6 +235,17 @@ impl<'a> FnCompiler<'a> {
         self.code.push(op);
         self.spans.push(span);
         self.code.len() - 1
+    }
+
+    /// Índice de la cadena constante `text` (se reutilizan las repetidas).
+    fn string(&mut self, text: &str) -> u32 {
+        if let Some(&index) = self.tables.strings.get(text) {
+            return index;
+        }
+        let index = self.strings.len() as u32;
+        self.strings.push(text.to_string());
+        self.tables.strings.insert(text.to_string(), index);
+        index
     }
 
     fn here(&self) -> u32 {
@@ -322,6 +354,25 @@ impl<'a> FnCompiler<'a> {
                 }
                 self.emit(set, *span);
             }
+            Stmt::IndexAssign {
+                target,
+                index,
+                op,
+                value,
+                span,
+            } => {
+                self.expr(target)?;
+                self.expr(index)?;
+                if let Some(op) = op {
+                    self.emit(Op::Dup2, *span);
+                    self.emit(Op::Index, *span);
+                    self.expr(value)?;
+                    self.emit(binary_op(*op), *span);
+                } else {
+                    self.expr(value)?;
+                }
+                self.emit(Op::SetIndex, *span);
+            }
             Stmt::If {
                 cond,
                 then,
@@ -421,6 +472,37 @@ impl<'a> FnCompiler<'a> {
                 let (get, _, _) = self.resolve(name, *span)?;
                 self.emit(get, *span);
             }
+            Expr::Str(text, span) => {
+                let index = self.string(text);
+                self.emit(Op::Str(index), *span);
+            }
+            Expr::Interp { parts, span } => {
+                for part in parts {
+                    match part {
+                        InterpPart::Text(text) => {
+                            let index = self.string(text);
+                            self.emit(Op::Str(index), *span);
+                        }
+                        InterpPart::Expr(inner) => self.expr(inner)?,
+                    }
+                }
+                self.emit(Op::Interp(parts.len() as u32), *span);
+            }
+            Expr::Array { elems, span } => {
+                for elem in elems {
+                    self.expr(elem)?;
+                }
+                self.emit(Op::Array(elems.len() as u32), *span);
+            }
+            Expr::Index {
+                target,
+                index,
+                span,
+            } => {
+                self.expr(target)?;
+                self.expr(index)?;
+                self.emit(Op::Index, *span);
+            }
             Expr::Unary { op, expr, span } => {
                 self.expr(expr)?;
                 self.emit(
@@ -453,6 +535,12 @@ impl<'a> FnCompiler<'a> {
                     self.emit(binary_op(*op), *span);
                 }
             },
+            Expr::Call { name, args, span } if name == "len" || name == "push" => {
+                for arg in args {
+                    self.expr(arg)?;
+                }
+                self.emit(if name == "len" { Op::Len } else { Op::Push }, *span);
+            }
             Expr::Call { name, args, span } => {
                 let Some(&(index, arity)) = self.tables.funcs.get(name) else {
                     return Err(Diagnostic::new(

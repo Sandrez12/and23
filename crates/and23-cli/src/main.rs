@@ -6,13 +6,14 @@ use std::io::{self, BufRead, IsTerminal, Write};
 use std::process::ExitCode;
 
 const USAGE: &str = "\
-And23 (M2)
+And23 (M3)
 
 Uso:
   and23 <archivo.jb>   ejecuta un programa (y llama a main() si existe)
   and23                abre el REPL (escribe :q o Ctrl+Z para salir)
   and23 --disasm <archivo.jb>   muestra el bytecode en vez de ejecutar
-  and23 --tree <archivo.jb>     usa el intérprete de árbol (referencia de M1a)
+  and23 --tree <archivo.jb>     usa el intérprete de árbol (referencia de M1a; sin cadenas)
+  and23 --gc-stress ...         recolecta basura en cada punto seguro (prueba del GC)
   and23 --version
 ";
 
@@ -35,8 +36,15 @@ fn main() -> ExitCode {
 }
 
 fn dispatch(args: &[String]) -> u8 {
-    match args {
-        [] => repl(),
+    // `--gc-stress` recolecta basura en cada punto seguro (para probar el GC); va con cualquier modo.
+    let stress = args.iter().any(|a| a == "--gc-stress");
+    let args: Vec<String> = args
+        .iter()
+        .filter(|a| *a != "--gc-stress")
+        .cloned()
+        .collect();
+    match args.as_slice() {
+        [] => repl(stress),
         [flag] if flag == "--version" || flag == "-V" => {
             println!("and23 {}", env!("CARGO_PKG_VERSION"));
             0
@@ -47,7 +55,7 @@ fn dispatch(args: &[String]) -> u8 {
         }
         [flag, path] if flag == "--disasm" => disasm_file(path),
         [flag, path] if flag == "--tree" => run_file_tree(path),
-        [path] => run_file(path),
+        [path] => run_file(path, stress),
         _ => {
             eprint!("{USAGE}");
             2
@@ -74,12 +82,12 @@ fn execute<W: Write>(
     session.run(&program, echo).map_err(|d| d.render(file, src))
 }
 
-fn run_file(path: &str) -> u8 {
+fn run_file(path: &str, stress: bool) -> u8 {
     let src = match read_source(path) {
         Ok(src) => src,
         Err(code) => return code,
     };
-    let mut session = Session::new(io::stdout());
+    let mut session = Session::new(io::stdout()).with_gc_stress(stress);
     let result = execute(&mut session, &src, path, false)
         .and_then(|()| session.run_main().map_err(|d| d.render(path, &src)));
     // La salida normal debe quedar escrita antes del mensaje de error.
@@ -154,10 +162,10 @@ fn open_braces(src: &str) -> isize {
         .sum()
 }
 
-fn repl() -> u8 {
+fn repl(stress: bool) -> u8 {
     let stdin = io::stdin();
     let interactive = stdin.is_terminal();
-    let mut session = Session::new(io::stdout());
+    let mut session = Session::new(io::stdout()).with_gc_stress(stress);
     let mut pending = String::new();
     loop {
         if interactive {

@@ -95,6 +95,7 @@ Workspace de Rust en `crates/`:
   árbol (≈9×). Tests diferenciales: la VM da la misma salida y los mismos errores que el intérprete de árbol.
 
 - **M2** (hecho): tipos estáticos (`Int`, `Float`, `Bool`, `Unit`) con errores de línea y columna; ver "Tipos (M2)".
+- **M3** (hecho): cadenas UTF-8, interpolación, arreglos y GC mark-sweep propio; ver "Cadenas, arreglos y GC (M3)".
 
 ### Diseño de la VM (M1b)
 
@@ -137,6 +138,31 @@ Workspace de Rust en `crates/`:
 - El verificador devuelve un solo error, el primero que encuentra: primero el nivel superior y después los cuerpos
   de función, no necesariamente en orden de líneas.
 - Si falla, no cambia su estado (REPL).
+
+### Cadenas, arreglos y GC (M3)
+
+- **Tipos nuevos:** `Str` y `[T]` (arreglo homogéneo; `TypeRef` lleva `args`, así `[Int]` es `Array<Int>` y deja el camino a los genéricos).
+  `Unit` no puede ser elemento ni interpolarse.
+- **Cadenas:** inmutables y UTF-8. `len` cuenta caracteres Unicode. `+` solo une `Str` con `Str`; para mezclar con otros valores se usa
+  `"${...}"`. Comparan por contenido (`==`) y lexicográficamente (`<`). `==` sobre arreglos no existe todavía.
+- **Interpolación:** el lexer lee `${expr}` recursivamente (admite cadenas y llaves anidadas) y el parser analiza esos tokens con las
+  posiciones del fuente original, así los errores dentro de una interpolación señalan el sitio exacto.
+- **Arreglos:** son referencias (asignar o pasar uno no lo copia); `fix` impide reasignar la variable, no cambiar los elementos.
+  `[]` no tiene tipo propio: toma el esperado (`fix a: [Int] = []`, argumentos, retornos) o es un error. Un índice fuera de rango es un
+  error de ejecución con la posición del acceso.
+- **Funciones integradas:** `len` y `push` (no se pueden redefinir). Se compilan a instrucciones (`Len`, `Push`), no a llamadas.
+- **Instrucciones nuevas:** `Str`, `Interp(n)`, `Array(n)`, `Index`, `SetIndex`, `Dup2` (para `a[i] += v`), `Len`, `Push`.
+- **Heap y GC:** objetos (`Str`, `Array`) en un `Vec` de ranuras referenciadas por índice (`ObjRef`), con lista de ranuras libres.
+  Mark-sweep con pila de grises explícita (los arreglos anidados no recursan en Rust). Raíces: pila de la VM, globales y las cadenas
+  constantes. **Solo se recolecta en puntos seguros**: al inicio de las instrucciones que reservan memoria, cuando los operandos aún
+  están en la pila; ningún valor "en la mano" de Rust queda sin ver. El umbral es el doble de lo vivo tras cada recolección
+  (mínimo 1 MB). `Heap` expone una interfaz pequeña (`alloc_*`, `collect`, `get`), lo que permite cambiarlo por otro recolector
+  (p. ej. `gc-arena`) sin tocar el compilador.
+- **Modo stress** (`--gc-stress`, `Session::with_gc_stress`): recolecta en cada punto seguro. Los tests ejecutan cada programa en modo
+  normal y en modo stress y exigen el mismo resultado.
+- **Criterio de éxito:** 10 millones de asignaciones de cadenas con el heap acotado (el test exige menos de 200 000 ranuras) y los tests
+  en modo stress. Medido: 10 millones de iteraciones con una cadena nueva cada una tardan ~1,9 s (release).
+- **Intérprete de árbol:** queda congelado en M1a; rechaza cadenas y arreglos con un error claro.
 
 ## Fuentes de referencia
 

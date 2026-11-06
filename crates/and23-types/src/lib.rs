@@ -1,42 +1,41 @@
-//! Verificador de tipos estáticos de And23 (M2). Se ejecuta entre el parser y el compilador:
+//! Verificador de tipos estáticos de And23. Se ejecuta entre el parser y el compilador:
 //! un programa mal tipado se rechaza con su posición antes de generar bytecode.
 
-use and23_syntax::{BinOp, Block, Diagnostic, Expr, FnDecl, Program, Span, Stmt, TypeRef, UnOp};
+use and23_syntax::{
+    BinOp, Block, Diagnostic, Expr, FnDecl, InterpPart, Program, Span, Stmt, TypeRef, UnOp,
+};
 use std::collections::HashMap;
 use std::fmt;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Funciones integradas; no se pueden redefinir.
+pub const BUILTINS: [&str; 2] = ["len", "push"];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
     Int,
     Float,
     Bool,
+    Str,
     Unit,
+    Array(Box<Type>),
 }
 
 impl Type {
-    fn from_name(name: &str) -> Option<Type> {
-        match name {
-            "Int" => Some(Type::Int),
-            "Float" => Some(Type::Float),
-            "Bool" => Some(Type::Bool),
-            "Unit" => Some(Type::Unit),
-            _ => None,
-        }
-    }
-
-    fn is_numeric(self) -> bool {
+    fn is_numeric(&self) -> bool {
         matches!(self, Type::Int | Type::Float)
     }
 }
 
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Type::Int => "Int",
-            Type::Float => "Float",
-            Type::Bool => "Bool",
-            Type::Unit => "Unit",
-        })
+        match self {
+            Type::Int => f.write_str("Int"),
+            Type::Float => f.write_str("Float"),
+            Type::Bool => f.write_str("Bool"),
+            Type::Str => f.write_str("Str"),
+            Type::Unit => f.write_str("Unit"),
+            Type::Array(elem) => write!(f, "[{elem}]"),
+        }
     }
 }
 
@@ -115,6 +114,15 @@ impl<'p> Pass<'p> {
         // Las firmas se registran antes: las funciones pueden usarse antes de su definición.
         for stmt in &program.stmts {
             let Stmt::Fn(decl) = stmt else { continue };
+            if BUILTINS.contains(&decl.name.as_str()) {
+                return Err(Diagnostic::new(
+                    decl.name_span,
+                    format!(
+                        "`{}` es una función integrada y no se puede redefinir",
+                        decl.name
+                    ),
+                ));
+            }
             if self.funcs.contains_key(&decl.name) {
                 return Err(Diagnostic::new(
                     decl.name_span,
@@ -160,7 +168,7 @@ impl<'p> Pass<'p> {
         let sig = self.funcs[&decl.name].clone();
         let mut scope = Vars::new();
         for (param, ty) in decl.params.iter().zip(&sig.params) {
-            scope.insert(param.name.clone(), (*ty, false));
+            scope.insert(param.name.clone(), (ty.clone(), false));
         }
         let mut ctx = Ctx {
             scopes: vec![scope],
@@ -205,7 +213,7 @@ impl<'p> Pass<'p> {
             .rev()
             .find_map(|scope| scope.get(name))
             .or_else(|| self.globals.get(name))
-            .copied()
+            .cloned()
     }
 
     fn declare(
@@ -229,6 +237,17 @@ impl<'p> Pass<'p> {
         Ok(())
     }
 
+    /// Tipo de `expr` exigiendo `expected`. Un arreglo vacío `[]` toma el tipo esperado.
+    fn expr_as(&mut self, ctx: &mut Ctx, expr: &Expr, expected: &Type) -> Result<(), Diagnostic> {
+        if let (Expr::Array { elems, .. }, Type::Array(_)) = (expr, expected) {
+            if elems.is_empty() {
+                return Ok(());
+            }
+        }
+        let found = self.expr(ctx, expr)?;
+        expect(expected, &found, expr.span())
+    }
+
     fn stmt(&mut self, ctx: &mut Ctx, stmt: &Stmt) -> Result<(), Diagnostic> {
         match stmt {
             Stmt::Show(expr, _) | Stmt::Expr(expr) => {
@@ -242,14 +261,13 @@ impl<'p> Pass<'p> {
                 init,
                 ..
             } => {
-                let found = self.expr(ctx, init)?;
                 let declared = match ty {
                     Some(ty) => {
                         let expected = resolve_type(ty)?;
-                        expect(expected, found, init.span())?;
+                        self.expr_as(ctx, init, &expected)?;
                         expected
                     }
-                    None => found,
+                    None => self.expr(ctx, init)?,
                 };
                 if declared == Type::Unit {
                     return Err(Diagnostic::new(
@@ -275,12 +293,17 @@ impl<'p> Pass<'p> {
                         format!("no se puede asignar a `{name}` porque es inmutable; decláralo con `mut`"),
                     ));
                 }
-                let found = self.expr(ctx, value)?;
-                let result = match op {
-                    Some(op) => binary_type(*op, ty, found, *span)?,
-                    None => found,
-                };
-                expect(ty, result, value.span())?;
+                self.assigned(ctx, &ty, *op, value, *span)?;
+            }
+            Stmt::IndexAssign {
+                target,
+                index,
+                op,
+                value,
+                span,
+            } => {
+                let elem = self.indexed_type(ctx, target, index)?;
+                self.assigned(ctx, &elem, *op, value, *span)?;
             }
             Stmt::If {
                 cond,
@@ -299,32 +322,84 @@ impl<'p> Pass<'p> {
                 self.block(ctx, body)?;
             }
             Stmt::Return(expr, span) => {
-                let (found, at) = match expr {
-                    Some(expr) => (self.expr(ctx, expr)?, expr.span()),
-                    None => (Type::Unit, *span),
+                let expected = match &ctx.ret {
+                    Ret::Script => None,
+                    Ret::Declared(ty) => Some(ty.clone()),
+                    Ret::Infer(slot) => slot.clone(),
                 };
-                match &mut ctx.ret {
-                    Ret::Script => {}
-                    Ret::Infer(slot) => match slot {
-                        Some(expected) => expect(*expected, found, at)?,
-                        None => *slot = Some(found),
-                    },
-                    Ret::Declared(expected) => {
-                        if *expected == Type::Unit && found != Type::Unit {
+                match (expr, expected) {
+                    (Some(expr), Some(expected)) => {
+                        if expected == Type::Unit && !matches!(ctx.ret, Ret::Infer(_)) {
+                            let found = self.expr(ctx, expr)?;
                             return Err(Diagnostic::new(
-                                at,
+                                expr.span(),
                                 format!(
                                     "la función no declara un tipo de retorno, pero devuelve {found}; añade `-> {found}`"
                                 ),
                             ));
                         }
-                        expect(*expected, found, at)?;
+                        self.expr_as(ctx, expr, &expected)?;
+                    }
+                    (Some(expr), None) => {
+                        let found = self.expr(ctx, expr)?;
+                        if let Ret::Infer(slot) = &mut ctx.ret {
+                            *slot = Some(found);
+                        }
+                    }
+                    (None, Some(expected)) => expect(&expected, &Type::Unit, *span)?,
+                    (None, None) => {
+                        if let Ret::Infer(slot) = &mut ctx.ret {
+                            *slot = Some(Type::Unit);
+                        }
                     }
                 }
             }
             Stmt::Break(_) | Stmt::Continue(_) | Stmt::Fn(_) => {}
         }
         Ok(())
+    }
+
+    /// Verifica el valor asignado a algo de tipo `ty` (`=` o `op=`).
+    fn assigned(
+        &mut self,
+        ctx: &mut Ctx,
+        ty: &Type,
+        op: Option<BinOp>,
+        value: &Expr,
+        span: Span,
+    ) -> Result<(), Diagnostic> {
+        match op {
+            Some(op) => {
+                let found = self.expr(ctx, value)?;
+                let result = binary_type(op, ty, &found, span)?;
+                expect(ty, &result, value.span())
+            }
+            None => self.expr_as(ctx, value, ty),
+        }
+    }
+
+    /// Tipo del elemento de `target[index]`.
+    fn indexed_type(
+        &mut self,
+        ctx: &mut Ctx,
+        target: &Expr,
+        index: &Expr,
+    ) -> Result<Type, Diagnostic> {
+        let target_ty = self.expr(ctx, target)?;
+        let index_ty = self.expr(ctx, index)?;
+        if index_ty != Type::Int {
+            return Err(Diagnostic::new(
+                index.span(),
+                format!("el índice debe ser Int, pero es {index_ty}"),
+            ));
+        }
+        match target_ty {
+            Type::Array(elem) => Ok(*elem),
+            other => Err(Diagnostic::new(
+                target.span(),
+                format!("solo se puede indexar un arreglo, pero esto es {other}"),
+            )),
+        }
     }
 
     fn condition(&mut self, ctx: &mut Ctx, cond: &Expr) -> Result<(), Diagnostic> {
@@ -342,14 +417,48 @@ impl<'p> Pass<'p> {
             Expr::Int(..) => Ok(Type::Int),
             Expr::Float(..) => Ok(Type::Float),
             Expr::Bool(..) => Ok(Type::Bool),
+            Expr::Str(..) => Ok(Type::Str),
             Expr::Var(name, span) => self
                 .lookup(ctx, name)
                 .map(|(ty, _)| ty)
                 .ok_or_else(|| undefined_variable(name, *span)),
+            Expr::Interp { parts, .. } => {
+                for part in parts {
+                    if let InterpPart::Expr(inner) = part {
+                        if self.expr(ctx, inner)? == Type::Unit {
+                            return Err(Diagnostic::new(
+                                inner.span(),
+                                "no se puede interpolar un valor de tipo Unit",
+                            ));
+                        }
+                    }
+                }
+                Ok(Type::Str)
+            }
+            Expr::Array { elems, span } => {
+                let Some((first, rest)) = elems.split_first() else {
+                    return Err(Diagnostic::new(
+                        *span,
+                        "no se puede deducir el tipo de un arreglo vacío; anótalo, por ejemplo `fix a: [Int] = []`",
+                    ));
+                };
+                let elem = self.expr(ctx, first)?;
+                if elem == Type::Unit {
+                    return Err(Diagnostic::new(
+                        first.span(),
+                        "un arreglo no puede contener valores de tipo Unit",
+                    ));
+                }
+                for other in rest {
+                    self.expr_as(ctx, other, &elem)?;
+                }
+                Ok(Type::Array(Box::new(elem)))
+            }
+            Expr::Index { target, index, .. } => self.indexed_type(ctx, target, index),
             Expr::Unary { op, expr, span } => {
                 let ty = self.expr(ctx, expr)?;
-                match (op, ty) {
-                    (UnOp::Neg, ty) if ty.is_numeric() => Ok(ty),
+                match (op, &ty) {
+                    (UnOp::Neg, ty) if ty.is_numeric() => Ok(ty.clone()),
                     (UnOp::Not, Type::Bool) => Ok(Type::Bool),
                     (op, ty) => Err(Diagnostic::new(
                         *span,
@@ -363,10 +472,54 @@ impl<'p> Pass<'p> {
             Expr::Binary { op, lhs, rhs, span } => {
                 let a = self.expr(ctx, lhs)?;
                 let b = self.expr(ctx, rhs)?;
-                binary_type(*op, a, b, *span)
+                binary_type(*op, &a, &b, *span)
             }
-            Expr::Call { name, args, span } => self.call(ctx, name, args, *span),
+            Expr::Call { name, args, span } => {
+                if BUILTINS.contains(&name.as_str()) {
+                    self.builtin(ctx, name, args, *span)
+                } else {
+                    self.call(ctx, name, args, *span)
+                }
+            }
         }
+    }
+
+    fn builtin(
+        &mut self,
+        ctx: &mut Ctx,
+        name: &str,
+        args: &[Expr],
+        span: Span,
+    ) -> Result<Type, Diagnostic> {
+        let wanted = if name == "len" { 1 } else { 2 };
+        if args.len() != wanted {
+            return Err(Diagnostic::new(
+                span,
+                format!(
+                    "la función `{name}` espera {wanted} argumento(s), pero recibió {}",
+                    args.len()
+                ),
+            ));
+        }
+        let first = self.expr(ctx, &args[0])?;
+        if name == "len" {
+            return match first {
+                Type::Str | Type::Array(_) => Ok(Type::Int),
+                other => Err(Diagnostic::new(
+                    args[0].span(),
+                    format!("`len` admite Str o un arreglo, pero recibió {other}"),
+                )),
+            };
+        }
+        // push(arreglo, valor)
+        let Type::Array(elem) = first else {
+            return Err(Diagnostic::new(
+                args[0].span(),
+                format!("`push` necesita un arreglo, pero recibió {first}"),
+            ));
+        };
+        self.expr_as(ctx, &args[1], &elem)?;
+        Ok(Type::Unit)
     }
 
     fn call(
@@ -393,9 +546,8 @@ impl<'p> Pass<'p> {
             ));
         }
         let params = sig.params.clone();
-        for (arg, expected) in args.iter().zip(params) {
-            let found = self.expr(ctx, arg)?;
-            expect(expected, found, arg.span())?;
+        for (arg, expected) in args.iter().zip(&params) {
+            self.expr_as(ctx, arg, expected)?;
         }
         // Si el tipo de retorno aún no se infirió, se verifica ahora el cuerpo de esa función.
         if self.funcs[name].ret.is_none() {
@@ -415,27 +567,45 @@ impl<'p> Pass<'p> {
                 }
             }
         }
-        Ok(self.funcs[name].ret.unwrap_or(Type::Unit))
+        Ok(self.funcs[name].ret.clone().unwrap_or(Type::Unit))
     }
 }
 
 fn resolve_type(ty: &TypeRef) -> Result<Type, Diagnostic> {
-    Type::from_name(&ty.name).ok_or_else(|| {
+    let unknown = || {
         Diagnostic::new(
             ty.span,
             format!(
-                "el tipo `{}` no existe (hay Int, Float, Bool y Unit)",
+                "el tipo `{}` no existe (hay Int, Float, Bool, Str, Unit y [T])",
                 ty.name
             ),
         )
-    })
+    };
+    match (ty.name.as_str(), ty.args.as_slice()) {
+        ("Int", []) => Ok(Type::Int),
+        ("Float", []) => Ok(Type::Float),
+        ("Bool", []) => Ok(Type::Bool),
+        ("Str", []) => Ok(Type::Str),
+        ("Unit", []) => Ok(Type::Unit),
+        ("Array", [elem]) => {
+            let elem = resolve_type(elem)?;
+            if elem == Type::Unit {
+                return Err(Diagnostic::new(
+                    ty.span,
+                    "un arreglo no puede contener valores de tipo Unit",
+                ));
+            }
+            Ok(Type::Array(Box::new(elem)))
+        }
+        _ => Err(unknown()),
+    }
 }
 
-fn expect(expected: Type, found: Type, span: Span) -> Result<(), Diagnostic> {
+fn expect(expected: &Type, found: &Type, span: Span) -> Result<(), Diagnostic> {
     if expected == found {
         return Ok(());
     }
-    let hint = if expected == Type::Float && found == Type::Int {
+    let hint = if *expected == Type::Float && *found == Type::Int {
         "; no hay conversión implícita de Int a Float (escribe `1.0` en vez de `1`)"
     } else {
         ""
@@ -452,34 +622,39 @@ fn undefined_variable(name: &str, span: Span) -> Diagnostic {
 
 /// Tipo del resultado de un operador binario. Mezclar Int y Float en aritmética y
 /// comparaciones es válido y da Float; en asignaciones y argumentos no hay conversión.
-fn binary_type(op: BinOp, a: Type, b: Type, span: Span) -> Result<Type, Diagnostic> {
-    let invalid = || {
+fn binary_type(op: BinOp, a: &Type, b: &Type, span: Span) -> Result<Type, Diagnostic> {
+    let invalid = |hint: &str| {
         Diagnostic::new(
             span,
-            format!("la operación `{}` no admite {a} y {b}", op.symbol()),
+            format!("la operación `{}` no admite {a} y {b}{hint}", op.symbol()),
         )
     };
     match op {
+        BinOp::Add if *a == Type::Str && *b == Type::Str => Ok(Type::Str),
         BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => match (a, b) {
             (Type::Int, Type::Int) => Ok(Type::Int),
             _ if a.is_numeric() && b.is_numeric() => Ok(Type::Float),
-            _ => Err(invalid()),
+            _ if op == BinOp::Add && (*a == Type::Str || *b == Type::Str) => Err(invalid(
+                "; para unir texto con otros valores usa una interpolación: \"${...}\"",
+            )),
+            _ => Err(invalid("")),
         },
         BinOp::Eq | BinOp::Ne => {
-            if a == b || (a.is_numeric() && b.is_numeric()) {
+            let comparable = !matches!(a, Type::Array(_));
+            if (a == b && comparable) || (a.is_numeric() && b.is_numeric()) {
                 Ok(Type::Bool)
             } else {
-                Err(invalid())
+                Err(invalid(""))
             }
         }
         BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-            if a.is_numeric() && b.is_numeric() {
+            if (a.is_numeric() && b.is_numeric()) || (*a == Type::Str && *b == Type::Str) {
                 Ok(Type::Bool)
             } else {
-                Err(invalid())
+                Err(invalid(""))
             }
         }
-        BinOp::And | BinOp::Or => match [a, b].into_iter().find(|t| *t != Type::Bool) {
+        BinOp::And | BinOp::Or => match [a, b].into_iter().find(|t| **t != Type::Bool) {
             None => Ok(Type::Bool),
             Some(other) => Err(Diagnostic::new(
                 span,
@@ -655,5 +830,57 @@ mod tests {
         assert_eq!(run(&mut c, "fix a = 2"), Ok(()));
         c.forget_globals(&["a".to_string()]);
         assert_eq!(run(&mut c, "fix a = 3.5"), Ok(()));
+    }
+
+    // --- M3: cadenas y arreglos ---
+
+    #[test]
+    fn cadenas_y_arreglos_bien_tipados() {
+        for src in [
+            "fix s = \"hola\"\nshow(s + \" mundo\")\nshow(\"x = ${1 + 2}\")",
+            "fix a = [1, 2, 3]\nshow(a[0] + len(a))\nmut b: [Str] = []\npush(b, \"x\")\nb[0] = \"y\"",
+            "mut a = [1.5, 2.5]\na[1] += 1\nshow(a)",
+            "fn suma(v: [Int]) -> Int {\n mut t = 0\n mut i = 0\n while i < len(v) { t += v[i]\n i += 1 }\n return t }\nshow(suma([1, 2]))",
+            "fix m = [[1, 2], [3]]\nshow(m[0][1])",
+            "show(\"a\" < \"b\")\nshow(\"a\" == \"a\")\nshow(len(\"ñandú\"))",
+            "fn f(v: [Int]) { }\nf([])",
+        ] {
+            assert_eq!(check(src), Ok(()), "{src}");
+        }
+    }
+
+    #[test]
+    fn errores_de_cadenas() {
+        assert!(err("show(\"a\" + 1)").contains("no admite Str y Int"));
+        assert!(err("show(\"a\" + 1)").contains("interpolación"));
+        assert!(err("fix s: Int = \"x\"").contains("se esperaba Int, pero es Str"));
+        assert!(err("show(\"${f()}\")\nfn f() { }").contains("Unit"));
+        assert!(err("show(\"a\" - \"b\")").contains("no admite Str y Str"));
+    }
+
+    #[test]
+    fn errores_de_arreglos() {
+        assert!(err("fix a = []").contains("no se puede deducir el tipo"));
+        assert!(err("fix a = [1, true]").contains("se esperaba Int, pero es Bool"));
+        assert!(err("fix a = [1]\nshow(a[true])").contains("el índice debe ser Int"));
+        assert!(err("fix a = 5\nshow(a[0])").contains("solo se puede indexar un arreglo"));
+        assert!(err("fix a = [1]\na[0] = 1.5").contains("se esperaba Int, pero es Float"));
+        assert!(err("fix a = [1]\npush(a, \"x\")").contains("se esperaba Int, pero es Str"));
+        assert!(err("push(1, 2)").contains("`push` necesita un arreglo"));
+        assert!(err("show(len(1))").contains("`len` admite Str o un arreglo"));
+        assert!(err("show(len())").contains("espera 1 argumento(s)"));
+        assert!(err("show([1] == [1])").contains("no admite [Int] y [Int]"));
+        assert!(err("fix a: [Int] = [true]").contains("se esperaba [Int], pero es [Bool]"));
+        assert!(err("fix a: [Cosa] = []").contains("`Cosa`"));
+    }
+
+    #[test]
+    fn las_funciones_integradas_no_se_redefinen() {
+        assert!(err("fn len(a: Int) = a").contains("función integrada"));
+    }
+
+    #[test]
+    fn tipos_de_arreglos_en_texto() {
+        assert!(err("fix a: [[Int]] = [1]").contains("se esperaba [[Int]], pero es [Int]"));
     }
 }

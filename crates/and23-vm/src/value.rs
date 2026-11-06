@@ -1,3 +1,4 @@
+use crate::heap::ObjRef;
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -5,6 +6,8 @@ pub enum Value {
     Int(i64),
     Float(f64),
     Bool(bool),
+    /// Cadena o arreglo en el heap.
+    Obj(ObjRef),
     /// Resultado de una función sin valor de retorno.
     Unit,
 }
@@ -15,6 +18,7 @@ impl Value {
             Value::Int(_) => "Int",
             Value::Float(_) => "Float",
             Value::Bool(_) => "Bool",
+            Value::Obj(_) => "Obj",
             Value::Unit => "Unit",
         }
     }
@@ -35,6 +39,8 @@ impl fmt::Display for Value {
             // `{:?}` conserva el `.0` en decimales enteros (3.0 y no 3).
             Value::Float(v) => write!(f, "{v:?}"),
             Value::Bool(v) => write!(f, "{v}"),
+            // Los objetos se imprimen con `Heap::render`, que conoce su contenido.
+            Value::Obj(_) => f.write_str("<obj>"),
             Value::Unit => f.write_str("()"),
         }
     }

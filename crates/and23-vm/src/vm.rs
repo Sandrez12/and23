@@ -1,3 +1,4 @@
+use crate::heap::{Heap, HeapStats, ObjRef, Object};
 use crate::value::Value;
 use and23_bytecode::{Function, Module, Op};
 use and23_syntax::{Diagnostic, Span};
@@ -11,6 +12,9 @@ pub struct Vm<W: Write> {
     pub out: W,
     stack: Vec<Value>,
     globals: Vec<Option<Value>>,
+    heap: Heap,
+    /// Objeto de cada cadena constante, creado la primera vez que se usa. Son raíces del GC.
+    consts: Vec<Option<ObjRef>>,
     max_depth: usize,
 }
 
@@ -27,6 +31,8 @@ impl<W: Write> Vm<W> {
             out,
             stack: Vec::with_capacity(1024),
             globals: Vec::new(),
+            heap: Heap::new(),
+            consts: Vec::new(),
             max_depth: DEFAULT_MAX_DEPTH,
         }
     }
@@ -34,6 +40,15 @@ impl<W: Write> Vm<W> {
     pub fn with_max_depth(mut self, max_depth: usize) -> Self {
         self.max_depth = max_depth;
         self
+    }
+
+    /// Recolecta en cada punto seguro (para probar que no falta ninguna raíz).
+    pub fn set_gc_stress(&mut self, stress: bool) {
+        self.heap.set_stress(stress);
+    }
+
+    pub fn heap_stats(&self) -> HeapStats {
+        self.heap.stats()
     }
 
     /// ¿La global `slot` ya tiene valor?
@@ -45,6 +60,9 @@ impl<W: Write> Vm<W> {
     pub fn run(&mut self, module: &Module, entry: usize) -> Result<(), Diagnostic> {
         if self.globals.len() < module.globals.len() {
             self.globals.resize(module.globals.len(), None);
+        }
+        if self.consts.len() < module.strings.len() {
+            self.consts.resize(module.strings.len(), None);
         }
         self.stack.clear();
         let result = self.execute(module, &module.functions[entry]);
@@ -59,6 +77,8 @@ impl<W: Write> Vm<W> {
             out,
             stack,
             globals,
+            heap,
+            consts,
             max_depth,
         } = self;
         let mut frames: Vec<Frame<'m>> = Vec::new();
@@ -96,7 +116,7 @@ impl<W: Write> Vm<W> {
                         None => fail!("desbordamiento de entero (i64)"),
                     }
                 } else {
-                    match binary($op, *a, b, function.spans[ip - 1]) {
+                    match binary_h(heap, $op, *a, b, function.spans[ip - 1]) {
                         Ok(v) => *a = v,
                         Err(e) => return Err(e),
                     }
@@ -110,7 +130,7 @@ impl<W: Write> Vm<W> {
                 if let (Value::Int(x), Value::Int(y)) = (*a, b) {
                     *a = Value::Bool(x $cmp y);
                 } else {
-                    match binary($op, *a, b, function.spans[ip - 1]) {
+                    match binary_h(heap, $op, *a, b, function.spans[ip - 1]) {
                         Ok(v) => *a = v,
                         Err(e) => return Err(e),
                     }
@@ -121,11 +141,25 @@ impl<W: Write> Vm<W> {
             ($op:expr) => {{
                 let b = pop!();
                 let a = top!();
-                match binary($op, *a, b, function.spans[ip - 1]) {
+                match binary_h(heap, $op, *a, b, function.spans[ip - 1]) {
                     Ok(v) => *a = v,
                     Err(e) => return Err(e),
                 }
             }};
+        }
+
+        // Punto seguro: aquí todo valor vivo está en la pila, las globales o las constantes.
+        macro_rules! gc_point {
+            () => {
+                if heap.should_collect() {
+                    let roots = stack
+                        .iter()
+                        .copied()
+                        .chain(globals.iter().flatten().copied())
+                        .chain(consts.iter().flatten().map(|r| Value::Obj(*r)));
+                    heap.collect(roots);
+                }
+            };
         }
 
         loop {
@@ -136,6 +170,95 @@ impl<W: Write> Vm<W> {
                 Op::Float(v) => stack.push(Value::Float(v)),
                 Op::Bool(v) => stack.push(Value::Bool(v)),
                 Op::Unit => stack.push(Value::Unit),
+                Op::Str(n) => {
+                    let r = match consts[n as usize] {
+                        Some(r) => r,
+                        None => {
+                            gc_point!();
+                            let Value::Obj(r) = heap.alloc_str(module.strings[n as usize].clone())
+                            else {
+                                unreachable!()
+                            };
+                            consts[n as usize] = Some(r);
+                            r
+                        }
+                    };
+                    stack.push(Value::Obj(r));
+                }
+                Op::Interp(n) => {
+                    gc_point!();
+                    let start = stack.len() - n as usize;
+                    let mut text = String::new();
+                    for v in &stack[start..] {
+                        heap.render_into(*v, false, &mut text);
+                    }
+                    stack.truncate(start);
+                    let v = heap.alloc_str(text);
+                    stack.push(v);
+                }
+                Op::Array(n) => {
+                    gc_point!();
+                    let start = stack.len() - n as usize;
+                    let items = stack.split_off(start);
+                    let v = heap.alloc_array(items);
+                    stack.push(v);
+                }
+                Op::Index => {
+                    let index = pop!();
+                    let target = pop!();
+                    let (Value::Int(i), Value::Obj(r)) = (index, target) else {
+                        fail!("no se puede indexar este valor");
+                    };
+                    let Object::Array(items) = heap.get(r) else {
+                        fail!("no se puede indexar este valor");
+                    };
+                    if i < 0 || i as usize >= items.len() {
+                        fail!(
+                            "índice fuera de rango: {i} en un arreglo de {} elemento(s)",
+                            items.len()
+                        );
+                    }
+                    stack.push(items[i as usize]);
+                }
+                Op::SetIndex => {
+                    let value = pop!();
+                    let index = pop!();
+                    let target = pop!();
+                    let (Value::Int(i), Value::Obj(r)) = (index, target) else {
+                        fail!("no se puede indexar este valor");
+                    };
+                    let items = heap.array_mut(r);
+                    if i < 0 || i as usize >= items.len() {
+                        fail!(
+                            "índice fuera de rango: {i} en un arreglo de {} elemento(s)",
+                            items.len()
+                        );
+                    }
+                    items[i as usize] = value;
+                }
+                Op::Dup2 => {
+                    let n = stack.len();
+                    stack.push(stack[n - 2]);
+                    stack.push(stack[n - 1]);
+                }
+                Op::Len => {
+                    let Value::Obj(r) = pop!() else {
+                        fail!("`len` necesita una cadena o un arreglo");
+                    };
+                    let len = match heap.get(r) {
+                        Object::Str(s) => s.chars().count(),
+                        Object::Array(items) => items.len(),
+                    };
+                    stack.push(Value::Int(len as i64));
+                }
+                Op::Push => {
+                    let value = pop!();
+                    let Value::Obj(r) = pop!() else {
+                        fail!("`push` necesita un arreglo");
+                    };
+                    heap.push(r, value);
+                    stack.push(Value::Unit);
+                }
                 Op::GetLocal(n) => {
                     let v = stack[base + n as usize];
                     stack.push(v);
@@ -192,7 +315,30 @@ impl<W: Write> Vm<W> {
                         other => fail!("el operador `!` no admite {}", other.type_name()),
                     }
                 }
-                Op::Add => arith!(op, checked_add),
+                Op::Add => {
+                    let n = stack.len();
+                    match (stack[n - 2], stack[n - 1]) {
+                        (Value::Int(x), Value::Int(y)) => match x.checked_add(y) {
+                            Some(r) => {
+                                stack.pop();
+                                stack[n - 2] = Value::Int(r);
+                            }
+                            None => fail!("desbordamiento de entero (i64)"),
+                        },
+                        (Value::Obj(x), Value::Obj(y)) => {
+                            // Los operandos siguen en la pila mientras el GC puede correr.
+                            gc_point!();
+                            let mut text =
+                                String::with_capacity(heap.str(x).len() + heap.str(y).len());
+                            text.push_str(heap.str(x));
+                            text.push_str(heap.str(y));
+                            stack.truncate(n - 2);
+                            let v = heap.alloc_str(text);
+                            stack.push(v);
+                        }
+                        _ => slow!(op),
+                    }
+                }
                 Op::Sub => arith!(op, checked_sub),
                 Op::Mul => arith!(op, checked_mul),
                 Op::Div | Op::Rem => slow!(op),
@@ -258,14 +404,14 @@ impl<W: Write> Vm<W> {
                 }
                 Op::Show => {
                     let v = pop!();
-                    if let Err(e) = writeln!(out, "{v}") {
+                    if let Err(e) = writeln!(out, "{}", heap.render(v)) {
                         fail!("no se pudo escribir la salida: {e}");
                     }
                 }
                 Op::Echo => {
                     let v = pop!();
                     if v != Value::Unit {
-                        if let Err(e) = writeln!(out, "{v}") {
+                        if let Err(e) = writeln!(out, "{}", heap.render(v)) {
                             fail!("no se pudo escribir la salida: {e}");
                         }
                     }
@@ -273,6 +419,23 @@ impl<W: Write> Vm<W> {
             }
         }
     }
+}
+
+/// Como `binary`, pero también compara cadenas (necesita el heap para leerlas).
+fn binary_h(heap: &Heap, op: Op, a: Value, b: Value, span: Span) -> Result<Value, Diagnostic> {
+    if let (Value::Obj(x), Value::Obj(y)) = (a, b) {
+        let (x, y) = (heap.str(x), heap.str(y));
+        let result = match op {
+            Op::Eq => x == y,
+            Op::Ne => x != y,
+            Op::Lt => x < y,
+            Op::Le => x <= y,
+            Op::Gt => x > y,
+            _ => x >= y,
+        };
+        return Ok(Value::Bool(result));
+    }
+    binary(op, a, b, span)
 }
 
 fn symbol(op: Op) -> &'static str {

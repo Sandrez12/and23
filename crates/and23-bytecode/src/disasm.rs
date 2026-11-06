@@ -9,6 +9,7 @@ pub fn disassemble(module: &Module, function: &Function) -> String {
             Op::GetGlobal(n) | Op::SetGlobal(n) | Op::DefGlobal(n) => {
                 format!("  ; {}", module.globals[*n as usize])
             }
+            Op::Str(n) => format!("  ; {:?}", module.strings[*n as usize]),
             Op::Call(n) => format!("  ; {}", module.functions[*n as usize].name),
             _ => String::new(),
         };

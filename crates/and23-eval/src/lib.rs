@@ -1,4 +1,5 @@
-//! Intérprete de árbol de And23. En M1b lo reemplaza el compilador a bytecode y la VM.
+//! Intérprete de árbol de And23 (M0/M1a). Ya no es el camino de ejecución: se conserva como
+//! referencia para comparar con la VM. No soporta cadenas ni arreglos (M3).
 
 use and23_syntax::{BinOp, Block, Diagnostic, Expr, FnDecl, Program, Span, Stmt, UnOp};
 use std::collections::HashMap;
@@ -285,6 +286,7 @@ impl<W: Write> Interpreter<W> {
             }
             Stmt::Break(_) => return Ok(Flow::Break),
             Stmt::Continue(_) => return Ok(Flow::Continue),
+            Stmt::IndexAssign { span, .. } => return Err(unsupported(*span)),
             // El parser solo admite funciones al nivel superior; `run` ya las registró.
             Stmt::Fn(_) => {}
         }
@@ -310,6 +312,10 @@ impl<W: Write> Interpreter<W> {
                 .find(env, name)
                 .map(|var| var.value)
                 .ok_or_else(|| undefined_variable(name, *span)),
+            Expr::Str(_, span)
+            | Expr::Interp { span, .. }
+            | Expr::Array { span, .. }
+            | Expr::Index { span, .. } => Err(unsupported(*span)),
             Expr::Unary { op, expr, span } => {
                 let value = self.eval(env, expr)?;
                 match (op, value) {
@@ -437,6 +443,13 @@ impl<W: Write> Interpreter<W> {
             _ => Value::Unit,
         })
     }
+}
+
+fn unsupported(span: Span) -> Diagnostic {
+    Diagnostic::new(
+        span,
+        "el intérprete de árbol no soporta cadenas ni arreglos; usa la VM",
+    )
 }
 
 fn undefined_variable(name: &str, span: Span) -> Diagnostic {

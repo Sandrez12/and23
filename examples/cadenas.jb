@@ -1,0 +1,35 @@
+// Cadenas, interpolación y arreglos (M3)
+fn fizz(n: Int) -> Str {
+    if n % 15 == 0 { return "FizzBuzz" }
+    if n % 3 == 0 { return "Fizz" }
+    if n % 5 == 0 { return "Buzz" }
+    return "${n}"
+}
+
+fn suma(v: [Int]) -> Int {
+    mut total = 0
+    mut i = 0
+    while i < len(v) {
+        total += v[i]
+        i += 1
+    }
+    return total
+}
+
+mut i = 1
+mut linea = ""
+while i <= 15 {
+    linea += fizz(i) + " "
+    i += 1
+}
+show(linea)
+
+fix dueño = "Ana"
+fix notas = [7, 9, 8]
+show("${dueño} tiene ${len(notas)} notas: ${notas}, suma ${suma(notas)}")
+
+mut nombres: [Str] = []
+push(nombres, "Rex")
+push(nombres, "Luna")
+nombres[0] = nombres[0] + "!"
+show(nombres)

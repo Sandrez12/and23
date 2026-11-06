@@ -6,3 +6,7 @@ members = ["crates/*"]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+
+# Las pruebas ejecutan millones de instrucciones de la VM: sin optimizar tardarían demasiado.
+[profile.dev]
+opt-level = 2

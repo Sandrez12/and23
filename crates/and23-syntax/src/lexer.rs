@@ -1,11 +1,20 @@
 use crate::error::Diagnostic;
 use crate::span::Span;
 
+/// Trozo de una cadena: texto literal o los tokens de una interpolación (terminan en la `}` que la cierra).
+#[derive(Debug, Clone, PartialEq)]
+pub enum StrPart {
+    Text(String),
+    Code(Vec<Token>),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
     Int(i64),
     Float(f64),
     Ident(String),
+    /// Cadena con sus partes: texto literal y código de las interpolaciones `${...}`.
+    Str(Vec<StrPart>),
     // Palabras clave.
     Fix,
     Mut,
@@ -46,6 +55,8 @@ pub enum TokenKind {
     RParen,
     LBrace,
     RBrace,
+    LBracket,
+    RBracket,
     Comma,
     Colon,
     /// Salto de línea o `;`.
@@ -61,6 +72,7 @@ impl TokenKind {
             T::Int(v) => format!("el entero `{v}`"),
             T::Float(v) => format!("el decimal `{v}`"),
             T::Ident(name) => format!("el identificador `{name}`"),
+            T::Str(_) => "una cadena".into(),
             T::Newline => "el fin de la línea".into(),
             T::Eof => "el fin del programa".into(),
             other => format!("`{}`", other.text()),
@@ -108,9 +120,11 @@ impl TokenKind {
             T::RParen => ")",
             T::LBrace => "{",
             T::RBrace => "}",
+            T::LBracket => "[",
+            T::RBracket => "]",
             T::Comma => ",",
             T::Colon => ":",
-            T::Int(_) | T::Float(_) | T::Ident(_) | T::Newline | T::Eof => "",
+            T::Int(_) | T::Float(_) | T::Ident(_) | T::Str(_) | T::Newline | T::Eof => "",
         }
     }
 }
@@ -175,6 +189,8 @@ fn operator(c: char, next: Option<char>) -> Option<(TokenKind, usize)> {
         ')' => T::RParen,
         '{' => T::LBrace,
         '}' => T::RBrace,
+        '[' => T::LBracket,
+        ']' => T::RBracket,
         ',' => T::Comma,
         ':' => T::Colon,
         _ => return None,
@@ -185,100 +201,245 @@ fn operator(c: char, next: Option<char>) -> Option<(TokenKind, usize)> {
 /// Convierte el código fuente en tokens. Los identificadores admiten Unicode.
 pub fn lex(src: &str) -> Result<Vec<Token>, Diagnostic> {
     let chars: Vec<(usize, char)> = src.char_indices().collect();
-    let byte_at = |idx: usize| chars.get(idx).map_or(src.len(), |&(b, _)| b);
-    let is_digit_at = |idx: usize| chars.get(idx).is_some_and(|&(_, c)| c.is_ascii_digit());
-
-    let mut tokens = Vec::new();
+    let lexer = Lexer {
+        chars: &chars,
+        len: src.len(),
+    };
     let mut i = 0;
-    while i < chars.len() {
-        let (start, c) = chars[i];
-        let next = chars.get(i + 1).map(|&(_, n)| n);
-        match c {
-            ' ' | '\t' | '\r' => i += 1,
-            // BOM UTF-8 al inicio del archivo (lo agregan algunos editores de Windows).
-            '\u{feff}' if i == 0 => i += 1,
-            '\n' | ';' => {
-                tokens.push(Token {
-                    kind: TokenKind::Newline,
-                    span: Span::new(start, start + c.len_utf8()),
-                });
-                i += 1;
-            }
-            '/' if next == Some('/') => {
-                while i < chars.len() && chars[i].1 != '\n' {
-                    i += 1;
-                }
-            }
-            c if c.is_ascii_digit() => {
-                let mut j = i;
-                while j < chars.len() && (is_digit_at(j) || chars[j].1 == '_') {
-                    j += 1;
-                }
-                let mut is_float = false;
-                if chars.get(j).is_some_and(|&(_, c)| c == '.') && is_digit_at(j + 1) {
-                    is_float = true;
-                    j += 1;
-                    while j < chars.len() && (is_digit_at(j) || chars[j].1 == '_') {
-                        j += 1;
-                    }
-                }
-                let span = Span::new(start, byte_at(j));
-                let text: String = chars[i..j]
-                    .iter()
-                    .map(|&(_, c)| c)
-                    .filter(|&c| c != '_')
-                    .collect();
-                let kind = if is_float {
-                    TokenKind::Float(text.parse().expect("literal flotante válido"))
-                } else {
-                    let value = text
-                        .parse::<i64>()
-                        .map_err(|_| Diagnostic::new(span, "entero fuera de rango (i64)"))?;
-                    TokenKind::Int(value)
-                };
-                tokens.push(Token { kind, span });
-                i = j;
-            }
-            c if c.is_alphabetic() || c == '_' => {
-                let mut j = i;
-                while j < chars.len() && (chars[j].1.is_alphanumeric() || chars[j].1 == '_') {
-                    j += 1;
-                }
-                let name: String = chars[i..j].iter().map(|&(_, c)| c).collect();
-                let kind = keyword(&name).unwrap_or(TokenKind::Ident(name));
-                tokens.push(Token {
-                    kind,
-                    span: Span::new(start, byte_at(j)),
-                });
-                i = j;
-            }
-            other => match operator(other, next) {
-                Some((kind, len)) => {
-                    tokens.push(Token {
-                        kind,
-                        span: Span::new(start, byte_at(i + len)),
-                    });
-                    i += len;
-                }
-                None => {
-                    let hint = match other {
-                        '&' => " (¿quisiste escribir `&&`?)",
-                        '|' => " (¿quisiste escribir `||`?)",
-                        _ => "",
-                    };
-                    return Err(Diagnostic::new(
-                        Span::new(start, start + other.len_utf8()),
-                        format!("carácter inesperado `{other}`{hint}"),
-                    ));
-                }
-            },
-        }
-    }
+    let mut tokens = lexer.run(&mut i, None)?;
     tokens.push(Token {
         kind: TokenKind::Eof,
         span: Span::new(src.len(), src.len()),
     });
     Ok(tokens)
+}
+
+struct Lexer<'a> {
+    chars: &'a [(usize, char)],
+    /// Largo del fuente en bytes.
+    len: usize,
+}
+
+impl Lexer<'_> {
+    fn byte_at(&self, idx: usize) -> usize {
+        self.chars.get(idx).map_or(self.len, |&(b, _)| b)
+    }
+
+    fn is_digit_at(&self, idx: usize) -> bool {
+        self.chars
+            .get(idx)
+            .is_some_and(|&(_, c)| c.is_ascii_digit())
+    }
+
+    /// Lee tokens desde `*i`. Con `interpolation` (la posición de `${`) se detiene en la `}`
+    /// que cierra la interpolación y la consume; si no, lee hasta el final del fuente.
+    fn run(&self, i: &mut usize, interpolation: Option<Span>) -> Result<Vec<Token>, Diagnostic> {
+        let chars = self.chars;
+        let mut tokens = Vec::new();
+        let mut depth = 0usize;
+        while *i < chars.len() {
+            let (start, c) = chars[*i];
+            let next = chars.get(*i + 1).map(|&(_, n)| n);
+            match c {
+                ' ' | '\t' | '\r' => *i += 1,
+                // BOM UTF-8 al inicio del archivo (lo agregan algunos editores de Windows).
+                '\u{feff}' if *i == 0 => *i += 1,
+                '\n' | ';' => {
+                    // Dentro de `${...}` no hay sentencias: los saltos de línea se ignoran.
+                    if interpolation.is_none() {
+                        tokens.push(Token {
+                            kind: TokenKind::Newline,
+                            span: Span::new(start, start + c.len_utf8()),
+                        });
+                    }
+                    *i += 1;
+                }
+                '/' if next == Some('/') => {
+                    while *i < chars.len() && chars[*i].1 != '\n' {
+                        *i += 1;
+                    }
+                }
+                '"' => tokens.push(self.string(i)?),
+                '}' if interpolation.is_some() && depth == 0 => {
+                    *i += 1;
+                    return Ok(tokens);
+                }
+                c if c.is_ascii_digit() => {
+                    let mut j = *i;
+                    while j < chars.len() && (self.is_digit_at(j) || chars[j].1 == '_') {
+                        j += 1;
+                    }
+                    let mut is_float = false;
+                    if chars.get(j).is_some_and(|&(_, c)| c == '.') && self.is_digit_at(j + 1) {
+                        is_float = true;
+                        j += 1;
+                        while j < chars.len() && (self.is_digit_at(j) || chars[j].1 == '_') {
+                            j += 1;
+                        }
+                    }
+                    let span = Span::new(start, self.byte_at(j));
+                    let text: String = chars[*i..j]
+                        .iter()
+                        .map(|&(_, c)| c)
+                        .filter(|&c| c != '_')
+                        .collect();
+                    let kind = if is_float {
+                        TokenKind::Float(text.parse().expect("literal flotante válido"))
+                    } else {
+                        let value = text
+                            .parse::<i64>()
+                            .map_err(|_| Diagnostic::new(span, "entero fuera de rango (i64)"))?;
+                        TokenKind::Int(value)
+                    };
+                    tokens.push(Token { kind, span });
+                    *i = j;
+                }
+                c if c.is_alphabetic() || c == '_' => {
+                    let mut j = *i;
+                    while j < chars.len() && (chars[j].1.is_alphanumeric() || chars[j].1 == '_') {
+                        j += 1;
+                    }
+                    let name: String = chars[*i..j].iter().map(|&(_, c)| c).collect();
+                    let kind = keyword(&name).unwrap_or(TokenKind::Ident(name));
+                    tokens.push(Token {
+                        kind,
+                        span: Span::new(start, self.byte_at(j)),
+                    });
+                    *i = j;
+                }
+                other => match operator(other, next) {
+                    Some((kind, len)) => {
+                        match kind {
+                            TokenKind::LBrace => depth += 1,
+                            TokenKind::RBrace => depth = depth.saturating_sub(1),
+                            _ => {}
+                        }
+                        tokens.push(Token {
+                            kind,
+                            span: Span::new(start, self.byte_at(*i + len)),
+                        });
+                        *i += len;
+                    }
+                    None => {
+                        let hint = match other {
+                            '&' => " (¿quisiste escribir `&&`?)",
+                            '|' => " (¿quisiste escribir `||`?)",
+                            _ => "",
+                        };
+                        return Err(Diagnostic::new(
+                            Span::new(start, start + other.len_utf8()),
+                            format!("carácter inesperado `{other}`{hint}"),
+                        ));
+                    }
+                },
+            }
+        }
+        match interpolation {
+            Some(open) => Err(Diagnostic::new(
+                open,
+                "esta interpolación no se cierra: falta `}`",
+            )),
+            None => Ok(tokens),
+        }
+    }
+
+    /// Lee una cadena `"..."` con escapes e interpolaciones `${expr}`; `*i` apunta a la `"`.
+    fn string(&self, i: &mut usize) -> Result<Token, Diagnostic> {
+        let chars = self.chars;
+        let start = chars[*i].0;
+        let open = Span::new(start, start + 1);
+        *i += 1;
+        let mut parts = Vec::new();
+        let mut text = String::new();
+        loop {
+            let Some(&(at, c)) = chars.get(*i) else {
+                return Err(Diagnostic::new(
+                    open,
+                    "esta cadena no se cierra: falta `\"`",
+                ));
+            };
+            match c {
+                '"' => {
+                    *i += 1;
+                    break;
+                }
+                '\\' => {
+                    let (ch, used) = self.escape(*i)?;
+                    text.push(ch);
+                    *i += used;
+                }
+                '$' if chars.get(*i + 1).map(|&(_, n)| n) == Some('{') => {
+                    if !text.is_empty() {
+                        parts.push(StrPart::Text(std::mem::take(&mut text)));
+                    }
+                    let dollar = Span::new(at, self.byte_at(*i + 2));
+                    *i += 2;
+                    let mut code = self.run(i, Some(dollar))?;
+                    let end = self.byte_at(*i - 1);
+                    code.push(Token {
+                        kind: TokenKind::RBrace,
+                        span: Span::new(end, end + 1),
+                    });
+                    parts.push(StrPart::Code(code));
+                }
+                other => {
+                    text.push(other);
+                    *i += 1;
+                }
+            }
+        }
+        if !text.is_empty() || parts.is_empty() {
+            parts.push(StrPart::Text(text));
+        }
+        Ok(Token {
+            kind: TokenKind::Str(parts),
+            span: Span::new(start, self.byte_at(*i)),
+        })
+    }
+
+    /// Escape que empieza en `chars[at]` (`\`): el carácter que representa y cuántos
+    /// caracteres del fuente ocupa.
+    fn escape(&self, at: usize) -> Result<(char, usize), Diagnostic> {
+        let chars = self.chars;
+        let bad = |len: usize| {
+            Diagnostic::new(
+                Span::new(self.byte_at(at), self.byte_at(at + len)),
+                "escape no válido en la cadena (usa \\n, \\t, \\r, \\0, \\\\, \\\", \\$ o \\u{...})",
+            )
+        };
+        let simple = match chars.get(at + 1).map(|&(_, e)| e) {
+            Some('n') => Some('\n'),
+            Some('t') => Some('\t'),
+            Some('r') => Some('\r'),
+            Some('0') => Some('\0'),
+            Some('\\') => Some('\\'),
+            Some('"') => Some('"'),
+            Some('$') => Some('$'),
+            Some('u') => None,
+            _ => return Err(bad(2)),
+        };
+        if let Some(ch) = simple {
+            return Ok((ch, 2));
+        }
+        // \u{XXXX}
+        if chars.get(at + 2).map(|&(_, c)| c) != Some('{') {
+            return Err(bad(2));
+        }
+        let mut j = at + 3;
+        let mut digits = String::new();
+        while let Some(&(_, d)) = chars.get(j) {
+            if d == '}' {
+                let ch = u32::from_str_radix(&digits, 16)
+                    .ok()
+                    .and_then(char::from_u32)
+                    .ok_or_else(|| bad(j + 1 - at))?;
+                return Ok((ch, j + 1 - at));
+            }
+            digits.push(d);
+            j += 1;
+        }
+        Err(bad(j - at))
+    }
 }
 
 #[cfg(test)]

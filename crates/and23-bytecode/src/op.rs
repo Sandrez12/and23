@@ -8,6 +8,8 @@ pub enum Op {
     Float(f64),
     Bool(bool),
     Unit,
+    /// Cadena constante número `n` del módulo.
+    Str(u32),
     /// Local `n` del marco actual (relativo a su base).
     GetLocal(u32),
     /// Saca la cima y la guarda en el local `n`.
@@ -40,6 +42,20 @@ pub enum Op {
     OrJump(u32),
     /// Exige que la cima sea Bool (lado derecho de `&&` si es `true`, de `||` si es `false`).
     CheckBool(bool),
+    /// Saca `n` valores, los convierte en texto y los une en una cadena nueva (`"a${x}"`).
+    Interp(u32),
+    /// Saca `n` valores y crea un arreglo con ellos.
+    Array(u32),
+    /// Saca índice y arreglo; deja el elemento.
+    Index,
+    /// Saca valor, índice y arreglo; guarda el valor en esa posición.
+    SetIndex,
+    /// Duplica los dos valores de la cima (`a[i] += v` evalúa `a` e `i` una sola vez).
+    Dup2,
+    /// Saca una cadena o un arreglo y deja su largo (`len`).
+    Len,
+    /// Saca valor y arreglo, agrega el valor al final y deja `()` (`push`).
+    Push,
     /// Llama a la función `n`; sus argumentos ya están en la pila.
     Call(u32),
     /// Devuelve la cima al llamador.
@@ -65,4 +81,6 @@ pub struct Module {
     pub functions: Vec<Function>,
     /// Nombres de las variables globales, por número de ranura.
     pub globals: Vec<String>,
+    /// Cadenas constantes del programa.
+    pub strings: Vec<String>,
 }

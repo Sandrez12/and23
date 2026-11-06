@@ -49,6 +49,24 @@ pub enum Expr {
     Float(f64, Span),
     Bool(bool, Span),
     Var(String, Span),
+    /// Cadena sin interpolaciones.
+    Str(String, Span),
+    /// Cadena con `${expr}`: texto y expresiones alternados.
+    Interp {
+        parts: Vec<InterpPart>,
+        span: Span,
+    },
+    /// `[a, b, c]`
+    Array {
+        elems: Vec<Expr>,
+        span: Span,
+    },
+    /// `a[i]`
+    Index {
+        target: Box<Expr>,
+        index: Box<Expr>,
+        span: Span,
+    },
     Unary {
         op: UnOp,
         expr: Box<Expr>,
@@ -67,14 +85,26 @@ pub enum Expr {
     },
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum InterpPart {
+    Text(String),
+    Expr(Expr),
+}
+
 impl Expr {
     pub fn span(&self) -> Span {
         match self {
             Expr::Int(_, span)
             | Expr::Float(_, span)
             | Expr::Bool(_, span)
+            | Expr::Str(_, span)
             | Expr::Var(_, span) => *span,
-            Expr::Unary { span, .. } | Expr::Binary { span, .. } | Expr::Call { span, .. } => *span,
+            Expr::Interp { span, .. }
+            | Expr::Array { span, .. }
+            | Expr::Index { span, .. }
+            | Expr::Unary { span, .. }
+            | Expr::Binary { span, .. }
+            | Expr::Call { span, .. } => *span,
         }
     }
 }
@@ -83,6 +113,8 @@ impl Expr {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeRef {
     pub name: String,
+    /// Argumentos de tipo: `[Int]` es `Array` con `[Int]` como argumento.
+    pub args: Vec<TypeRef>,
     pub span: Span,
 }
 
@@ -134,6 +166,14 @@ pub enum Stmt {
         value: Expr,
         span: Span,
     },
+    /// `a[i] = v` o, con `op`, `a[i] += v`.
+    IndexAssign {
+        target: Expr,
+        index: Expr,
+        op: Option<BinOp>,
+        value: Expr,
+        span: Span,
+    },
     If {
         cond: Expr,
         then: Block,
@@ -162,6 +202,7 @@ impl Stmt {
             Stmt::Expr(expr) => expr.span(),
             Stmt::Let { span, .. }
             | Stmt::Assign { span, .. }
+            | Stmt::IndexAssign { span, .. }
             | Stmt::If { span, .. }
             | Stmt::While { span, .. } => *span,
             Stmt::Fn(decl) => decl.span,

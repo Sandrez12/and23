@@ -26,6 +26,16 @@ impl<W: Write> Session<W> {
         self
     }
 
+    /// Recolecta basura en cada punto seguro (modo de prueba del GC).
+    pub fn with_gc_stress(mut self, stress: bool) -> Self {
+        self.vm.set_gc_stress(stress);
+        self
+    }
+
+    pub fn heap_stats(&self) -> crate::HeapStats {
+        self.vm.heap_stats()
+    }
+
     pub fn out(&mut self) -> &mut W {
         &mut self.vm.out
     }

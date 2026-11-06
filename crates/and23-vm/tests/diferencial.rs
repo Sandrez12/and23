@@ -67,6 +67,14 @@ fn los_ejemplos_coinciden() {
             let src = std::fs::read_to_string(&path).unwrap();
             assert!(well_typed(&src), "{path:?}");
             let expected = tree(&src, false);
+            // El intérprete de árbol no conoce las cadenas ni los arreglos (M3).
+            if expected
+                .as_ref()
+                .is_err_and(|e| e.contains("no soporta cadenas"))
+            {
+                assert!(vm(&src, false).is_ok(), "{path:?}");
+                continue;
+            }
             assert!(expected.is_ok(), "{path:?}: {expected:?}");
             assert_eq!(vm(&src, false), expected, "{path:?}");
             count += 1;

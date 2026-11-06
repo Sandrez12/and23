@@ -207,3 +207,37 @@ fn repl_rechaza_tipos_y_sigue() {
     assert_eq!(stdout(&out), "2\n");
     assert!(stderr(&out).contains("se esperaba Int, pero es Bool"));
 }
+
+#[test]
+fn ejemplo_de_cadenas_y_arreglos() {
+    let out = run_example("cadenas.jb");
+    assert_eq!(
+        out,
+        "1 2 Fizz 4 Buzz Fizz 7 8 Fizz Buzz 11 Fizz 13 14 FizzBuzz \n\
+         Ana tiene 3 notas: [7, 9, 8], suma 24\n\
+         [\"Rex!\", \"Luna\"]\n"
+    );
+}
+
+#[test]
+fn gc_stress_da_la_misma_salida() {
+    let path = example("cadenas.jb");
+    let out = and23().arg("--gc-stress").arg(&path).output().unwrap();
+    assert!(out.status.success());
+    assert_eq!(stdout(&out), run_example("cadenas.jb"));
+}
+
+#[test]
+fn error_de_indice_con_posicion() {
+    let out = run_source("indice", "fix a = [1, 2]\nshow(a[7])\n");
+    assert!(!out.status.success());
+    let err = stderr(&out);
+    assert!(err.contains("índice fuera de rango: 7"), "{err}");
+    assert!(err.contains(":2:6"), "{err}");
+}
+
+#[test]
+fn repl_con_cadenas() {
+    let out = repl("fix n = \"Ana\"\n\"hola ${n}\"\nn + \"!\"\n");
+    assert_eq!(stdout(&out), "hola Ana\nAna!\n");
+}
