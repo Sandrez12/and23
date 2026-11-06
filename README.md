@@ -4,7 +4,7 @@ And23 es un lenguaje de programación estático y orientado a objetos, de nivel 
 
 Los archivos de código usan la extensión `.jb`. Los identificadores admiten Unicode (`dueño`, `ñandú`).
 
-> **Estado: M0.** Hoy solo evalúa expresiones aritméticas. Variables, funciones, clases y la VM llegan en los siguientes hitos (ver [`DESIGN.md`](DESIGN.md)).
+> **Estado: M1a.** Hoy ejecuta programas con variables, booleanos, `if`/`while` y funciones recursivas sobre un intérprete de árbol. El bytecode y la VM (M1b), los tipos estáticos, las clases y el resto llegan en los siguientes hitos (ver [`DESIGN.md`](DESIGN.md)).
 
 ## Cómo se ve (objetivo del lenguaje)
 
@@ -26,15 +26,38 @@ fn main() {
 ## Lo que funciona hoy
 
 ```
-// examples/aritmetica.jb
-show(1 + 2 * 3)      // 7
-show((1 + 2) * 3)    // 9
-show(10 / 4)         // 2   (división entera entre enteros)
-show(10 / 4.0)       // 2.5
-show(-7 % 3)         // -1
+// examples/funciones.jb
+fn factorial(n: Int) -> Int {
+    if n <= 1 { return 1 }
+    return n * factorial(n - 1)
+}
+
+fn fib(n: Int) -> Int {
+    if n < 2 { return n }
+    return fib(n - 1) + fib(n - 2)
+}
+
+fix limite = 10
+mut suma = 0
+mut i = 1
+while i <= limite {
+    if i % 2 == 0 { suma += i }
+    i += 1
+}
+
+show(factorial(10))   // 3628800
+show(fib(20))         // 6765
+show(suma)            // 30
 ```
 
-Los enteros son `i64` verificados: el desbordamiento y la división entre cero son errores con su posición.
+- Tipos de valor: `Int` (i64), `Float`, `Bool`. Las anotaciones de tipo se leen pero no se verifican hasta M2.
+- `fix` (inmutable) y `mut` (mutable), asignación compuesta (`+=`, `-=`, ...), `&&`/`||` con cortocircuito.
+- `if`/`else if`/`else`, `while`, `break`, `continue`, `return`. Si el archivo define `main()`, se llama al final.
+- Los enteros se verifican: el desbordamiento y la división entre cero son errores con su posición. La recursión
+  infinita da un error en vez de cerrar el proceso.
+- El REPL recuerda variables y funciones entre líneas y acepta bloques en varias líneas.
+
+Más ejemplos en [`examples/`](examples/): `aritmetica.jb`, `funciones.jb` y `control.jb`.
 
 ```
 error: división entre cero
@@ -49,7 +72,7 @@ error: división entre cero
 Requiere [Rust](https://rustup.rs) estable.
 
 ```
-cargo run -p and23-cli -- examples/aritmetica.jb   # ejecuta un archivo
+cargo run -p and23-cli -- examples/funciones.jb    # ejecuta un archivo
 cargo run -p and23-cli                             # REPL (":q" sale)
 cargo test --workspace                             # tests
 ```

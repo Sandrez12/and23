@@ -86,7 +86,23 @@ Crates previstos: `and23-types` (M2), `and23-bytecode` y `and23-vm` (M1 y siguie
 
 ## Estado
 
-- **M0**: ver `crates/` y `examples/aritmetica.jb`.
+- **M0** (hecho): lexer, parser Pratt y expresiones aritméticas. `examples/aritmetica.jb`.
+- **M1a** (hecho): variables, booleanos, `if`/`while`, funciones y recursión sobre el intérprete de árbol.
+  `examples/funciones.jb` y `examples/control.jb`. Referencia para M1b: `fib(30)` = 832040 en ~1,7 s (release).
+- **M1b** (pendiente): compilador a bytecode y VM de pila; debe superar esa referencia.
+
+### Semántica fijada en M1a
+
+- Valores: `Int` (i64 con desbordamiento verificado), `Float`, `Bool` y `Unit`. Los strings llegan en M3.
+- `fix` es inmutable y `mut` mutable. Los parámetros de función son inmutables.
+- `Int / Int` es división entera; si cualquier lado es `Float`, la operación es decimal. `1 == 1.0` es verdadero.
+- `&&` y `||` hacen cortocircuito. Las condiciones de `if` y `while` deben ser `Bool`.
+- `if` y `while` son sentencias (no expresiones). `else` va en la misma línea que la `}` anterior.
+- Las funciones se declaran solo al nivel superior, pueden usarse antes de su definición y ven las variables
+  globales, no las locales del llamador. Si el archivo define `main()`, se llama tras el código del nivel superior.
+- Las anotaciones de tipo (`n: Int`, `-> Int`) son obligatorias en los parámetros pero **no se verifican hasta M2**.
+- Recursión limitada a 10 000 llamadas anidadas: más allá es un error con posición, no un cierre del proceso.
+- Palabras clave: `fix mut fn if else while return break continue true false show`.
 
 ## Fuentes de referencia
 

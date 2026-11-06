@@ -1,0 +1,28 @@
+// Variables y control de flujo (M1a)
+fn es_primo(n: Int) -> Bool {
+    if n < 2 { return false }
+    mut d = 2
+    while d * d <= n {
+        if n % d == 0 { return false }
+        d += 1
+    }
+    return true
+}
+
+// Primos hasta 30
+mut n = 2
+while n <= 30 {
+    if es_primo(n) { show(n) }
+    n += 1
+}
+
+// Suma de los pares hasta 10, con break y continue
+mut suma = 0
+mut i = 0
+while true {
+    i += 1
+    if i > 10 { break }
+    if i % 2 == 1 { continue }
+    suma += i
+}
+show(suma)   // 30

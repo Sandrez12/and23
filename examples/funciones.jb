@@ -1,0 +1,28 @@
+// Funciones y recursión (M1a)
+fn factorial(n: Int) -> Int {
+    if n <= 1 { return 1 }
+    return n * factorial(n - 1)
+}
+
+fn fib(n: Int) -> Int {
+    if n < 2 { return n }
+    return fib(n - 1) + fib(n - 2)
+}
+
+fn mcd(a: Int, b: Int) -> Int {
+    mut x = a
+    mut y = b
+    while y != 0 {
+        fix t = y
+        y = x % y
+        x = t
+    }
+    return x
+}
+
+fn cuadrado(x: Int) -> Int = x * x
+
+show(factorial(10))   // 3628800
+show(fib(20))         // 6765
+show(mcd(48, 18))     // 6
+show(cuadrado(12))    // 144
