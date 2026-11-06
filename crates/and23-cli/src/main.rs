@@ -1,11 +1,12 @@
 use and23_bytecode::{disassemble, Compiler};
 use and23_eval::Interpreter;
+use and23_types::Checker;
 use and23_vm::Session;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::process::ExitCode;
 
 const USAGE: &str = "\
-And23 (M1b)
+And23 (M2)
 
 Uso:
   and23 <archivo.jb>   ejecuta un programa (y llama a main() si existe)
@@ -113,6 +114,9 @@ fn disasm_file(path: &str) -> u8 {
     let result = and23_syntax::parse(&src)
         .map_err(|d| d.render(path, &src))
         .and_then(|program| {
+            Checker::new()
+                .check(&program)
+                .map_err(|d| d.render(path, &src))?;
             let mut compiler = Compiler::new();
             compiler
                 .compile(&program, false)

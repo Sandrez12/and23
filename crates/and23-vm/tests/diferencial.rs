@@ -38,7 +38,20 @@ fn vm(src: &str, echo: bool) -> Outcome {
     result.map(|()| String::from_utf8(session.out().clone()).unwrap())
 }
 
+/// Los programas que el verificador de tipos rechaza ya no llegan a ejecutarse.
+fn well_typed(src: &str) -> bool {
+    parse(src).is_ok_and(|p| and23_types::Checker::new().check(&p).is_ok())
+}
+
 fn same(src: &str) {
+    if !well_typed(src) {
+        assert!(
+            vm(src, false).is_err(),
+            "debía rechazarse:
+{src}"
+        );
+        return;
+    }
     for echo in [false, true] {
         assert_eq!(vm(src, echo), tree(src, echo), "programa:\n{src}");
     }
@@ -52,6 +65,7 @@ fn los_ejemplos_coinciden() {
         let path = entry.unwrap().path();
         if path.extension().is_some_and(|e| e == "jb") {
             let src = std::fs::read_to_string(&path).unwrap();
+            assert!(well_typed(&src), "{path:?}");
             let expected = tree(&src, false);
             assert!(expected.is_ok(), "{path:?}: {expected:?}");
             assert_eq!(vm(&src, false), expected, "{path:?}");

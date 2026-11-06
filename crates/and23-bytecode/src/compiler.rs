@@ -32,12 +32,20 @@ impl Compiler {
         self.tables.funcs.get("main").map(|(i, _)| *i as usize)
     }
 
-    /// Olvida las globales nuevas (ranura >= `from`) que `keep` rechaza. El REPL lo usa cuando
-    /// un error de ejecución dejó una global declarada pero sin valor.
-    pub fn forget_globals(&mut self, from: usize, keep: impl Fn(u32) -> bool) {
-        self.tables
+    /// Olvida las globales nuevas (ranura >= `from`) que `keep` rechaza y devuelve sus nombres.
+    /// El REPL lo usa cuando un error de ejecución dejó una global declarada pero sin valor.
+    pub fn forget_globals(&mut self, from: usize, keep: impl Fn(u32) -> bool) -> Vec<String> {
+        let forgotten: Vec<String> = self
+            .tables
             .globals
-            .retain(|_, (slot, _)| (*slot as usize) < from || keep(*slot));
+            .iter()
+            .filter(|(_, (slot, _))| (*slot as usize) >= from && !keep(*slot))
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in &forgotten {
+            self.tables.globals.remove(name);
+        }
+        forgotten
     }
 
     /// Compila el programa. Devuelve el índice de la función "script" con el código del nivel

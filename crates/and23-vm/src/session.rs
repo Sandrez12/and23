@@ -1,11 +1,13 @@
 use crate::vm::Vm;
 use and23_bytecode::Compiler;
 use and23_syntax::{Diagnostic, Program};
+use and23_types::Checker;
 use std::io::Write;
 
 /// Compilador y VM con estado compartido: las variables y funciones sobreviven entre llamadas
 /// a `run` (REPL).
 pub struct Session<W: Write> {
+    checker: Checker,
     compiler: Compiler,
     vm: Vm<W>,
 }
@@ -13,6 +15,7 @@ pub struct Session<W: Write> {
 impl<W: Write> Session<W> {
     pub fn new(out: W) -> Self {
         Session {
+            checker: Checker::new(),
             compiler: Compiler::new(),
             vm: Vm::new(out),
         }
@@ -27,17 +30,27 @@ impl<W: Write> Session<W> {
         &mut self.vm.out
     }
 
-    /// Compila y ejecuta el programa. `echo` imprime también el valor de las expresiones
+    /// Verifica tipos, compila y ejecuta el programa. `echo` imprime también el valor de las expresiones
     /// sueltas del nivel superior (modo REPL).
     pub fn run(&mut self, program: &Program, echo: bool) -> Result<(), Diagnostic> {
         let first_new_global = self.compiler.module().globals.len();
-        let script = self.compiler.compile(program, echo)?;
+        let saved_checker = self.checker.clone();
+        self.checker.check(program)?;
+        let script = match self.compiler.compile(program, echo) {
+            Ok(script) => script,
+            Err(e) => {
+                self.checker = saved_checker;
+                return Err(e);
+            }
+        };
         let result = self.vm.run(self.compiler.module(), script);
         if result.is_err() {
             // Una global cuyo `fix`/`mut` no llegó a ejecutarse no existe: puede redeclararse.
             let vm = &self.vm;
-            self.compiler
+            let forgotten = self
+                .compiler
                 .forget_globals(first_new_global, |slot| vm.is_defined(slot));
+            self.checker.forget_globals(&forgotten);
         }
         result
     }

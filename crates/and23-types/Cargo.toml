@@ -1,0 +1,9 @@
+[package]
+name = "and23-types"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Verificador de tipos estáticos de And23"
+
+[dependencies]
+and23-syntax = { path = "../and23-syntax" }

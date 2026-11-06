@@ -187,3 +187,23 @@ fn disasm_muestra_el_bytecode_sin_ejecutar() {
     assert!(text.contains("Call(") && text.contains("Return"), "{text}");
     assert!(!text.contains("3628800"), "no debe ejecutar: {text}");
 }
+
+#[test]
+fn un_error_de_tipos_se_informa_antes_de_ejecutar_nada() {
+    let out = run_source("tipos", "show(1)\nfix x: Int = true\n");
+    assert!(!out.status.success());
+    assert_eq!(stdout(&out), "", "no debe ejecutarse nada");
+    let err = stderr(&out);
+    assert!(
+        err.contains("error: se esperaba Int, pero es Bool"),
+        "{err}"
+    );
+    assert!(err.contains(":2:14"), "{err}");
+}
+
+#[test]
+fn repl_rechaza_tipos_y_sigue() {
+    let out = repl("mut n = 1\nn = true\nn = n + 1\nn\n");
+    assert_eq!(stdout(&out), "2\n");
+    assert!(stderr(&out).contains("se esperaba Int, pero es Bool"));
+}

@@ -352,6 +352,7 @@ impl Parser {
             None
         };
 
+        let expr_body = self.peek().kind == TokenKind::Assign;
         self.fn_depth += 1;
         let body = match self.peek().kind {
             TokenKind::LBrace => self.block(),
@@ -378,6 +379,7 @@ impl Parser {
             name_span,
             params,
             ret,
+            expr_body,
             body,
             span,
         })

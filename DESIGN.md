@@ -60,12 +60,12 @@ igualdad estructural, strings UTF-8, sin boxing visible al usuario.
 Workspace de Rust en `crates/`:
 
 - `and23-syntax`: lexer, AST, parser y diagnósticos (spans con línea y columna).
+- `and23-types`: verificador de tipos (`Checker`); corre entre el parser y el compilador.
 - `and23-bytecode`: `Op`, `Module`/`Function`, compilador AST → bytecode y desensamblador.
 - `and23-vm`: VM de pila (`Vm`) y `Session`, que une compilador y VM conservando el estado del REPL.
 - `and23-eval`: intérprete de árbol (M0/M1a). Ya no es el camino de ejecución; se conserva como oráculo en los tests diferenciales y para `--tree`.
 - `and23-cli`: binario `and23` (ejecuta archivos `.jb` y ofrece un REPL).
 
-Crate previsto: `and23-types` (M2).
 
 ## Hitos
 
@@ -94,6 +94,8 @@ Crate previsto: `and23-types` (M2).
 - **M1b** (hecho): compilador a bytecode y VM de pila. `fib(30)` = 832040 en ~0,17 s (release) contra ~1,6 s del
   árbol (≈9×). Tests diferenciales: la VM da la misma salida y los mismos errores que el intérprete de árbol.
 
+- **M2** (hecho): tipos estáticos (`Int`, `Float`, `Bool`, `Unit`) con errores de línea y columna; ver "Tipos (M2)".
+
 ### Diseño de la VM (M1b)
 
 - Instrucciones `Op` (enum `Copy`, destinos de salto absolutos) y una tabla de `Span` por instrucción para los errores.
@@ -115,10 +117,26 @@ Crate previsto: `and23-types` (M2).
 - `if` y `while` son sentencias (no expresiones). `else` va en la misma línea que la `}` anterior.
 - Las funciones se declaran solo al nivel superior, pueden usarse antes de su definición y ven las variables
   globales, no las locales del llamador. Si el archivo define `main()`, se llama tras el código del nivel superior.
-- Las anotaciones de tipo (`n: Int`, `-> Int`) son obligatorias en los parámetros pero **no se verifican hasta M2**.
+- Las anotaciones de tipo (`n: Int`, `-> Int`) son obligatorias en los parámetros y desde M2 se verifican.
 - Recursión limitada a 10 000 llamadas anidadas: más allá es un error con posición, no un cierre del proceso.
 - Desde M1b esos errores de nombres y aridad se informan al compilar, no al ejecutar.
 - Palabras clave: `fix mut fn if else while return break continue true false show`.
+
+### Tipos (M2)
+
+- Tipos: `Int`, `Float`, `Bool`, `Unit`. Un tipo desconocido es un error. Un `fix`/`mut` no puede guardar `Unit`.
+- Variables: el tipo sale de la anotación o, si falta, del valor inicial; una anotación distinta del valor es un error.
+- **Sin conversión implícita** `Int` → `Float` al asignar, pasar argumentos o devolver. En aritmética y comparaciones,
+  mezclar `Int` y `Float` es válido y da `Float`/`Bool`. Con `==` solo se pueden comparar tipos iguales (o dos numéricos).
+- Funciones: sin `->` y con cuerpo `{ }` devuelven `Unit`; con cuerpo `= expr` el tipo se infiere. Una función
+  con `= expr` que se llama a sí misma antes de conocer su tipo debe anotar `-> Tipo`. Una función con tipo de retorno
+  no `Unit` debe devolver en todos los caminos (`return` final o `if`/`else` que devuelven los dos).
+- Las funciones se registran antes (pueden usarse antes de definirse); el nivel superior se verifica en orden,
+  así que una global debe declararse antes de usarse desde el nivel superior. Los cuerpos de función se verifican
+  después y ven todas las globales del archivo.
+- El verificador devuelve un solo error, el primero que encuentra: primero el nivel superior y después los cuerpos
+  de función, no necesariamente en orden de líneas.
+- Si falla, no cambia su estado (REPL).
 
 ## Fuentes de referencia
 

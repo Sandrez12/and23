@@ -8,6 +8,7 @@ description = "Máquina virtual de pila de And23"
 [dependencies]
 and23-syntax = { path = "../and23-syntax" }
 and23-bytecode = { path = "../and23-bytecode" }
+and23-types = { path = "../and23-types" }
 
 [dev-dependencies]
 and23-eval = { path = "../and23-eval" }

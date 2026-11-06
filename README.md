@@ -4,7 +4,7 @@ And23 es un lenguaje de programación estático y orientado a objetos, de nivel 
 
 Los archivos de código usan la extensión `.jb`. Los identificadores admiten Unicode (`dueño`, `ñandú`).
 
-> **Estado: M1.** Hoy compila programas con variables, booleanos, `if`/`while` y funciones recursivas a bytecode y los ejecuta en una VM de pila (`fib(30)` en ~0,17 s, unas 9 veces más rápido que el intérprete de árbol anterior). Los tipos estáticos, las clases y el resto llegan en los siguientes hitos (ver [`DESIGN.md`](DESIGN.md)).
+> **Estado: M2.** Hoy verifica tipos y compila programas con variables, booleanos, `if`/`while` y funciones recursivas a bytecode y los ejecuta en una VM de pila (`fib(30)` en ~0,17 s, unas 9 veces más rápido que el intérprete de árbol anterior). Un programa mal tipado se rechaza con su línea y columna antes de ejecutar nada. Strings, clases y el resto llegan en los siguientes hitos (ver [`DESIGN.md`](DESIGN.md)).
 
 ## Cómo se ve (objetivo del lenguaje)
 
@@ -50,7 +50,7 @@ show(fib(20))         // 6765
 show(suma)            // 30
 ```
 
-- Tipos de valor: `Int` (i64), `Float`, `Bool`. Las anotaciones de tipo se leen pero no se verifican hasta M2.
+- Tipos estáticos: `Int` (i64), `Float`, `Bool` y `Unit`. Las anotaciones se verifican; el tipo de las variables se infiere del valor inicial y el de retorno de `fn f(x: Int) = x * 2` también. Sin conversión implícita de `Int` a `Float` al asignar, pasar argumentos o devolver (`fix y: Float = 1` es un error; mezclarlos en aritmética sí da `Float`).
 - `fix` (inmutable) y `mut` (mutable), asignación compuesta (`+=`, `-=`, ...), `&&`/`||` con cortocircuito.
 - `if`/`else if`/`else`, `while`, `break`, `continue`, `return`. Si el archivo define `main()`, se llama al final.
 - Los enteros se verifican: el desbordamiento y la división entre cero son errores con su posición. La recursión
@@ -58,6 +58,14 @@ show(suma)            // 30
 - El REPL recuerda variables y funciones entre líneas y acepta bloques en varias líneas.
 
 Más ejemplos en [`examples/`](examples/): `aritmetica.jb`, `funciones.jb` y `control.jb`.
+
+```
+error: se esperaba Int, pero es Bool
+ --> err.jb:2:14
+  |
+2 | fix x: Int = true
+  |              ^^^^
+```
 
 ```
 error: división entre cero
@@ -84,6 +92,7 @@ cargo test --workspace                             # tests
 | Crate | Contenido |
 |---|---|
 | `and23-syntax` | lexer, AST, parser Pratt y diagnósticos con línea y columna |
+| `and23-types` | verificador de tipos estáticos (con estado para el REPL) |
 | `and23-bytecode` | instrucciones, compilador del AST a bytecode y desensamblador |
 | `and23-vm` | VM de pila y sesión (compilador + VM con estado para el REPL) |
 | `and23-eval` | intérprete de árbol; queda como referencia para comparar comportamiento y velocidad |

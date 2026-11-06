@@ -79,7 +79,7 @@ impl Expr {
     }
 }
 
-/// Anotación de tipo (`Int`, `Float`, ...). Se lee pero no se verifica hasta M2.
+/// Anotación de tipo (`Int`, `Float`, `Bool`, `Unit`); la verifica `and23-types`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeRef {
     pub name: String,
@@ -105,6 +105,8 @@ pub struct FnDecl {
     pub name_span: Span,
     pub params: Vec<Param>,
     pub ret: Option<TypeRef>,
+    /// El cuerpo se escribió como `= expr` (sin llaves): su tipo de retorno puede inferirse.
+    pub expr_body: bool,
     pub body: Block,
     pub span: Span,
 }
