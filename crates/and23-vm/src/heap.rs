@@ -21,6 +21,13 @@ pub enum Object {
         class: u32,
         fields: Vec<Value>,
     },
+    /// Lambda: la función `function` del módulo y los valores que capturó.
+    Closure {
+        function: u32,
+        captures: Vec<Value>,
+    },
+    /// Caja compartida de una variable `mut` capturada por una lambda.
+    Cell(Value),
 }
 
 /// Lo que el heap sabe de una clase: solo para imprimir sus instancias.
@@ -37,6 +44,8 @@ impl Object {
                 Object::Str(s) => s.len(),
                 Object::Array(v) => v.capacity() * std::mem::size_of::<Value>(),
                 Object::Instance { fields, .. } => fields.len() * std::mem::size_of::<Value>(),
+                Object::Closure { captures, .. } => captures.len() * std::mem::size_of::<Value>(),
+                Object::Cell(_) => std::mem::size_of::<Value>(),
             }
     }
 }
@@ -127,6 +136,44 @@ impl Heap {
 
     pub fn alloc_instance(&mut self, class: u32, fields: Vec<Value>) -> Value {
         self.alloc(Object::Instance { class, fields })
+    }
+
+    pub fn alloc_closure(&mut self, function: u32, captures: Vec<Value>) -> Value {
+        self.alloc(Object::Closure { function, captures })
+    }
+
+    pub fn alloc_cell(&mut self, value: Value) -> Value {
+        self.alloc(Object::Cell(value))
+    }
+
+    /// Función de una lambda, si `r` lo es.
+    pub fn closure_function(&self, r: ObjRef) -> Option<u32> {
+        match self.get(r) {
+            Object::Closure { function, .. } => Some(*function),
+            _ => None,
+        }
+    }
+
+    /// Valor capturado número `index` de la lambda `r`.
+    pub fn capture(&self, r: ObjRef, index: u32) -> Value {
+        match self.get(r) {
+            Object::Closure { captures, .. } => captures[index as usize],
+            _ => unreachable!("el compilador garantiza una lambda"),
+        }
+    }
+
+    pub fn cell(&self, r: ObjRef) -> Value {
+        match self.get(r) {
+            Object::Cell(value) => *value,
+            _ => unreachable!("el compilador garantiza una celda"),
+        }
+    }
+
+    pub fn set_cell(&mut self, r: ObjRef, value: Value) {
+        match self.slots[r.0 as usize].object.as_mut() {
+            Some(Object::Cell(slot)) => *slot = value,
+            _ => unreachable!("el compilador garantiza una celda"),
+        }
     }
 
     /// Registra las clases del módulo que el heap aún no conoce (el REPL las va añadiendo).
@@ -245,6 +292,8 @@ impl Heap {
                 let child = match self.slots[index as usize].object.as_ref() {
                     Some(Object::Array(items)) => items.get(i).copied(),
                     Some(Object::Instance { fields, .. }) => fields.get(i).copied(),
+                    Some(Object::Closure { captures, .. }) => captures.get(i).copied(),
+                    Some(Object::Cell(value)) => (i == 0).then_some(*value),
                     _ => None,
                 };
                 let Some(child) = child else { break };
@@ -335,6 +384,8 @@ impl Heap {
                     out.push(')');
                     open.pop();
                 }
+                Object::Closure { .. } => out.push_str("<función>"),
+                Object::Cell(inner) => self.render_rec(*inner, quoted, out, open),
             },
             other => {
                 let _ = write!(out, "{other}");

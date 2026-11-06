@@ -1,6 +1,7 @@
 use crate::op::{ClassDef, Function, Module, Op};
 use and23_syntax::{
-    BinOp, Block, Diagnostic, Expr, FnDecl, InterpPart, Program, Span, Stmt, ThingDecl, UnOp,
+    BinOp, Block, Diagnostic, Expr, FnDecl, InterpPart, LambdaParam, Program, Span, Stmt,
+    ThingDecl, UnOp,
 };
 use and23_types::Resolutions;
 use std::collections::HashMap;
@@ -307,14 +308,15 @@ impl Compiler {
         }
 
         for (index, decl) in decls {
-            let function = FnCompiler::new(
+            let function = build(
                 &mut self.tables,
                 &mut self.module.strings,
+                &mut self.module.functions,
                 res,
                 decl.name.clone(),
                 decl.name_span,
-            )
-            .function(decl)?;
+                &|fc| fc.function(decl),
+            )?;
             self.module.functions[index] = function;
         }
         for (ctor, init, thing) in things {
@@ -331,50 +333,93 @@ impl Compiler {
                 }
                 None => (0, None),
             };
-            let function = FnCompiler::new(
+            let function = build(
                 &mut self.tables,
                 &mut self.module.strings,
+                &mut self.module.functions,
                 res,
                 thing.name.clone(),
                 thing.name_span,
-            )
-            .constructor(thing, class, total, init as u32)?;
+                &|fc| fc.constructor(thing, class, total, init as u32),
+            )?;
             self.module.functions[ctor] = function;
-            let function = FnCompiler::new(
+            let function = build(
                 &mut self.tables,
                 &mut self.module.strings,
+                &mut self.module.functions,
                 res,
                 format!("{}.<init>", thing.name),
                 thing.name_span,
-            )
-            .init(thing, offset, parent_init)?;
+                &|fc| fc.init(thing, offset, parent_init),
+            )?;
             self.module.functions[init] = function;
         }
         for (index, thing, method) in methods {
-            let function = FnCompiler::new(
+            let function = build(
                 &mut self.tables,
                 &mut self.module.strings,
+                &mut self.module.functions,
                 res,
                 format!("{}.{}", thing.name, method.name),
                 method.name_span,
-            )
-            .method(method)?;
+                &|fc| fc.method(method),
+            )?;
             self.module.functions[index] = function;
         }
 
-        let mut script = FnCompiler::new(
+        let function = build(
             &mut self.tables,
             &mut self.module.strings,
+            &mut self.module.functions,
             res,
             "<script>".to_string(),
             Span::new(0, 0),
-        );
-        script.script = true;
-        script.echo = echo;
-        script.top_level(program)?;
-        let function = script.finish(Span::new(0, 0));
+            &|mut fc| {
+                fc.script = true;
+                fc.echo = echo;
+                fc.top_level(program)?;
+                Ok(fc.finish(Span::new(0, 0)))
+            },
+        )?;
         self.module.functions.push(function);
         Ok(self.module.functions.len() - 1)
+    }
+}
+
+/// Función compilada y las variables `mut` que una lambda captura.
+type Built = Result<(Function, HashSet<usize>), Diagnostic>;
+
+/// Compila una función. Una variable `mut` que una lambda captura vive en una celda, y eso hay que
+/// saberlo al declararla: si la primera pasada descubre capturas nuevas, se repite con ellas.
+#[allow(clippy::too_many_arguments)]
+fn build(
+    tables: &mut Tables,
+    strings: &mut Vec<String>,
+    functions: &mut Vec<Function>,
+    res: &Resolutions,
+    name: String,
+    span: Span,
+    run: &dyn Fn(FnCompiler<'_>) -> Built,
+) -> Result<Function, Diagnostic> {
+    let mark = functions.len();
+    let mut boxed = HashSet::new();
+    loop {
+        let mut fc = FnCompiler::new(
+            &mut *tables,
+            &mut *strings,
+            &mut *functions,
+            res,
+            name.clone(),
+            span,
+        );
+        fc.box_ids = boxed.clone();
+        let (function, need) = run(fc)?;
+        if need.is_subset(&boxed) {
+            return Ok(function);
+        }
+        boxed.extend(need);
+        // Las lambdas de la pasada descartada ya no sirven.
+        functions.truncate(mark);
     }
 }
 
@@ -382,6 +427,50 @@ struct Local {
     name: String,
     mutable: bool,
     depth: u32,
+    /// Número de orden entre las variables `mut` locales de la función (identifica la declaración
+    /// entre una compilación y la siguiente).
+    ord: Option<usize>,
+    /// Vive en una celda porque una lambda la captura.
+    boxed: bool,
+}
+
+/// Dónde está una variable desde la función que se compila.
+#[derive(Clone, Copy)]
+enum Access {
+    Local(u32),
+    Capture(u32),
+}
+
+/// Una variable de una función de fuera que la lambda en curso usa.
+struct Capture {
+    name: String,
+    mutable: bool,
+    boxed: bool,
+    /// Cómo se lee en la función que crea la lambda.
+    from: Access,
+}
+
+/// Lo que una función envolvente guarda mientras se compila una lambda suya.
+struct Outer {
+    locals: Vec<Local>,
+    captures: Vec<Capture>,
+}
+
+/// Dónde se lee o escribe una variable.
+#[derive(Clone, Copy)]
+enum Place {
+    Local { slot: u32, boxed: bool },
+    Capture { idx: u32, boxed: bool },
+    Global(u32),
+}
+
+/// Resultado de buscar una variable por nombre.
+struct Found {
+    access: Access,
+    mutable: bool,
+    boxed: bool,
+    /// Número de orden de la declaración, si es un local `mut` sin caja todavía.
+    ord: Option<usize>,
 }
 
 struct LoopCtx {
@@ -398,6 +487,8 @@ struct LoopCtx {
 struct FnCompiler<'a> {
     tables: &'a mut Tables,
     strings: &'a mut Vec<String>,
+    /// Las funciones del módulo: aquí se añaden las lambdas (y los envoltorios de funciones).
+    functions: &'a mut Vec<Function>,
     res: &'a Resolutions,
     name: String,
     name_span: Span,
@@ -412,12 +503,22 @@ struct FnCompiler<'a> {
     /// Es el código del nivel superior: sus `fix`/`mut` de profundidad 0 son globales.
     script: bool,
     echo: bool,
+    /// Variables capturadas por la lambda que se compila (vacío fuera de una lambda).
+    captures: Vec<Capture>,
+    /// Estado de las funciones que envuelven a la lambda en curso, de fuera hacia dentro.
+    outer: Vec<Outer>,
+    /// Variables `mut` (por número de orden) que van en una celda.
+    box_ids: HashSet<usize>,
+    /// Variables `mut` que una lambda captura: si faltan en `box_ids`, hay que recompilar.
+    need_box: HashSet<usize>,
+    mut_count: usize,
 }
 
 impl<'a> FnCompiler<'a> {
     fn new(
         tables: &'a mut Tables,
         strings: &'a mut Vec<String>,
+        functions: &'a mut Vec<Function>,
         res: &'a Resolutions,
         name: String,
         name_span: Span,
@@ -425,6 +526,7 @@ impl<'a> FnCompiler<'a> {
         FnCompiler {
             tables,
             strings,
+            functions,
             res,
             name,
             name_span,
@@ -437,22 +539,30 @@ impl<'a> FnCompiler<'a> {
             tries: 0,
             script: false,
             echo: false,
+            captures: Vec::new(),
+            outer: Vec::new(),
+            box_ids: HashSet::new(),
+            need_box: HashSet::new(),
+            mut_count: 0,
         }
     }
 
-    fn finish(mut self, span: Span) -> Function {
+    fn finish(mut self, span: Span) -> (Function, HashSet<usize>) {
         self.emit(Op::Unit, span);
         self.emit(Op::Return, span);
-        Function {
-            name: self.name,
-            name_span: self.name_span,
-            arity: self.arity,
-            code: self.code,
-            spans: self.spans,
-        }
+        (
+            Function {
+                name: self.name,
+                name_span: self.name_span,
+                arity: self.arity,
+                code: self.code,
+                spans: self.spans,
+            },
+            self.need_box,
+        )
     }
 
-    fn function(mut self, decl: &FnDecl) -> Result<Function, Diagnostic> {
+    fn function(mut self, decl: &FnDecl) -> Result<(Function, HashSet<usize>), Diagnostic> {
         self.arity = decl.params.len();
         for param in &decl.params {
             // Los parámetros son inmutables; el cuerpo es un ámbito aparte (puede sombrearlos).
@@ -460,6 +570,8 @@ impl<'a> FnCompiler<'a> {
                 name: param.name.clone(),
                 mutable: false,
                 depth: 0,
+                ord: None,
+                boxed: false,
             });
         }
         self.block(&decl.body)?;
@@ -467,18 +579,22 @@ impl<'a> FnCompiler<'a> {
     }
 
     /// Método: `this` es el local 0 y los parámetros vienen después.
-    fn method(mut self, decl: &FnDecl) -> Result<Function, Diagnostic> {
+    fn method(mut self, decl: &FnDecl) -> Result<(Function, HashSet<usize>), Diagnostic> {
         self.arity = decl.params.len() + 1;
         self.locals.push(Local {
             name: "this".to_string(),
             mutable: false,
             depth: 0,
+            ord: None,
+            boxed: false,
         });
         for param in &decl.params {
             self.locals.push(Local {
                 name: param.name.clone(),
                 mutable: false,
                 depth: 0,
+                ord: None,
+                boxed: false,
             });
         }
         self.block(&decl.body)?;
@@ -493,7 +609,7 @@ impl<'a> FnCompiler<'a> {
         class: u32,
         total: u32,
         init: u32,
-    ) -> Result<Function, Diagnostic> {
+    ) -> Result<(Function, HashSet<usize>), Diagnostic> {
         self.arity = decl.params.len();
         let span = decl.span;
         self.emit(Op::Alloc { class, n: total }, span);
@@ -504,13 +620,16 @@ impl<'a> FnCompiler<'a> {
         self.emit(Op::Call(init), span);
         self.emit(Op::Pop, span);
         self.emit(Op::Return, span);
-        Ok(Function {
-            name: self.name,
-            name_span: self.name_span,
-            arity: self.arity,
-            code: self.code,
-            spans: self.spans,
-        })
+        Ok((
+            Function {
+                name: self.name,
+                name_span: self.name_span,
+                arity: self.arity,
+                code: self.code,
+                spans: self.spans,
+            },
+            HashSet::new(),
+        ))
     }
 
     /// `Clase.<init>(this, params)`: llama al `init` del padre con los argumentos de `: Padre(...)`,
@@ -521,18 +640,22 @@ impl<'a> FnCompiler<'a> {
         decl: &ThingDecl,
         offset: u32,
         parent_init: Option<u32>,
-    ) -> Result<Function, Diagnostic> {
+    ) -> Result<(Function, HashSet<usize>), Diagnostic> {
         self.arity = decl.params.len() + 1;
         self.locals.push(Local {
             name: "this".to_string(),
             mutable: false,
             depth: 0,
+            ord: None,
+            boxed: false,
         });
         for param in &decl.params {
             self.locals.push(Local {
                 name: param.name.clone(),
                 mutable: false,
                 depth: 0,
+                ord: None,
+                boxed: false,
             });
         }
         let span = decl.span;
@@ -561,6 +684,8 @@ impl<'a> FnCompiler<'a> {
                 name: field.name.clone(),
                 mutable: false,
                 depth: 0,
+                ord: None,
+                boxed: false,
             });
             let slot = (self.locals.len() - 1) as u32;
             self.emit(Op::GetLocal(0), field.span);
@@ -680,11 +805,24 @@ impl<'a> FnCompiler<'a> {
                     {
                         return Err(already_declared(name, *name_span));
                     }
-                    // El valor ya está en la cima de la pila: esa posición es el local.
+                    // El valor ya está en la cima de la pila: esa posición es el local. Una variable
+                    // `mut` que una lambda captura vive en una celda para que todos vean los cambios.
+                    let (ord, boxed) = if *mutable {
+                        let ord = self.mut_count;
+                        self.mut_count += 1;
+                        (Some(ord), self.box_ids.contains(&ord))
+                    } else {
+                        (None, false)
+                    };
+                    if boxed {
+                        self.emit(Op::NewCell, *span);
+                    }
                     self.locals.push(Local {
                         name: name.clone(),
                         mutable: *mutable,
                         depth: self.depth,
+                        ord,
+                        boxed,
                     });
                 }
             }
@@ -697,7 +835,7 @@ impl<'a> FnCompiler<'a> {
             } if self.res.fields.contains_key(name_span) => {
                 // Campo de `this` por su nombre: `edad += 1`.
                 let field = self.res.fields[name_span];
-                self.emit(Op::GetLocal(0), *name_span);
+                self.load_this(*name_span)?;
                 if let Some(op) = op {
                     self.emit(Op::Dup, *name_span);
                     self.emit(Op::GetField(field), *name_span);
@@ -715,7 +853,7 @@ impl<'a> FnCompiler<'a> {
                 value,
                 span,
             } => {
-                let (get, set, mutable) = self.resolve(name, *name_span)?;
+                let (place, mutable) = self.place(name, *name_span)?;
                 if !mutable {
                     return Err(Diagnostic::new(
                         *name_span,
@@ -723,13 +861,13 @@ impl<'a> FnCompiler<'a> {
                     ));
                 }
                 if let Some(op) = op {
-                    self.emit(get, *name_span);
+                    self.emit_load(place, *name_span);
                     self.expr(value)?;
                     self.emit(binary_op(*op), *span);
                 } else {
                     self.expr(value)?;
                 }
-                self.emit(set, *span);
+                self.emit_store(place, *span);
             }
             Stmt::IndexAssign {
                 target,
@@ -868,6 +1006,8 @@ impl<'a> FnCompiler<'a> {
                         name: rescue.name.clone(),
                         mutable: false,
                         depth: self.depth,
+                        ord: None,
+                        boxed: false,
                     });
                     self.block(&rescue.body)?;
                     self.locals.pop();
@@ -897,20 +1037,259 @@ impl<'a> FnCompiler<'a> {
         })
     }
 
-    /// Instrucciones para leer y escribir una variable, y si es mutable.
-    fn resolve(&self, name: &str, span: Span) -> Result<(Op, Op, bool), Diagnostic> {
-        if let Some(slot) = self.locals.iter().rposition(|local| local.name == name) {
-            let local = &self.locals[slot];
-            let slot = slot as u32;
-            return Ok((Op::GetLocal(slot), Op::SetLocal(slot), local.mutable));
+    /// Busca `name` en el nivel de función `level` (0 es la más externa; `outer.len()` es la que se
+    /// compila). Si está en una función de fuera, cada lambda del camino lo captura.
+    fn find(&mut self, level: usize, name: &str) -> Option<Found> {
+        let top = self.outer.len();
+        {
+            let locals = if level == top {
+                &self.locals
+            } else {
+                &self.outer[level].locals
+            };
+            if let Some(slot) = locals.iter().rposition(|local| local.name == name) {
+                let local = &locals[slot];
+                return Some(Found {
+                    access: Access::Local(slot as u32),
+                    mutable: local.mutable,
+                    boxed: local.boxed,
+                    ord: local.ord,
+                });
+            }
+            let captures = if level == top {
+                &self.captures
+            } else {
+                &self.outer[level].captures
+            };
+            if let Some(i) = captures.iter().position(|c| c.name == name) {
+                let c = &captures[i];
+                return Some(Found {
+                    access: Access::Capture(i as u32),
+                    mutable: c.mutable,
+                    boxed: c.boxed,
+                    ord: None,
+                });
+            }
+        }
+        if level == 0 {
+            return None;
+        }
+        let up = self.find(level - 1, name)?;
+        if up.mutable && !up.boxed {
+            if let Some(ord) = up.ord {
+                self.need_box.insert(ord);
+            }
+        }
+        let captures = if level == top {
+            &mut self.captures
+        } else {
+            &mut self.outer[level].captures
+        };
+        captures.push(Capture {
+            name: name.to_string(),
+            mutable: up.mutable,
+            boxed: up.boxed,
+            from: up.access,
+        });
+        Some(Found {
+            access: Access::Capture((captures.len() - 1) as u32),
+            mutable: up.mutable,
+            boxed: up.boxed,
+            ord: None,
+        })
+    }
+
+    /// Dónde está una variable y si es mutable: local, capturada por la lambda en curso o global.
+    fn place(&mut self, name: &str, span: Span) -> Result<(Place, bool), Diagnostic> {
+        let top = self.outer.len();
+        if let Some(found) = self.find(top, name) {
+            let place = match found.access {
+                Access::Local(slot) => Place::Local {
+                    slot,
+                    boxed: found.boxed,
+                },
+                Access::Capture(idx) => Place::Capture {
+                    idx,
+                    boxed: found.boxed,
+                },
+            };
+            return Ok((place, found.mutable));
         }
         if let Some((slot, mutable)) = self.tables.globals.get(name) {
-            return Ok((Op::GetGlobal(*slot), Op::SetGlobal(*slot), *mutable));
+            return Ok((Place::Global(*slot), *mutable));
         }
         Err(Diagnostic::new(
             span,
             format!("la variable `{name}` no está definida"),
         ))
+    }
+
+    fn emit_load(&mut self, place: Place, span: Span) {
+        match place {
+            Place::Local { slot, boxed } => {
+                self.emit(Op::GetLocal(slot), span);
+                if boxed {
+                    self.emit(Op::CellGet, span);
+                }
+            }
+            Place::Capture { idx, boxed } => {
+                self.emit(Op::GetCapture(idx), span);
+                if boxed {
+                    self.emit(Op::CellGet, span);
+                }
+            }
+            Place::Global(slot) => {
+                self.emit(Op::GetGlobal(slot), span);
+            }
+        }
+    }
+
+    /// Guarda la cima de la pila en la variable.
+    fn emit_store(&mut self, place: Place, span: Span) {
+        match place {
+            Place::Local { slot, boxed: false } => {
+                self.emit(Op::SetLocal(slot), span);
+            }
+            Place::Local { slot, boxed: true } => {
+                self.emit(Op::GetLocal(slot), span);
+                self.emit(Op::CellSet, span);
+            }
+            Place::Capture { idx, .. } => {
+                self.emit(Op::GetCapture(idx), span);
+                self.emit(Op::CellSet, span);
+            }
+            Place::Global(slot) => {
+                self.emit(Op::SetGlobal(slot), span);
+            }
+        }
+    }
+
+    /// Carga `this` (en una lambda de un método, capturado).
+    fn load_this(&mut self, span: Span) -> Result<(), Diagnostic> {
+        let (place, _) = self.place("this", span)?;
+        self.emit_load(place, span);
+        Ok(())
+    }
+
+    /// Una lambda: se compila como una función aparte cuyo local 0 es la propia lambda y cuyos
+    /// valores capturados se leen con `GetCapture`. Aquí se deja la lambda creada en la pila.
+    fn lambda(
+        &mut self,
+        params: &[LambdaParam],
+        body: &Block,
+        span: Span,
+    ) -> Result<(), Diagnostic> {
+        let saved_code = std::mem::take(&mut self.code);
+        let saved_spans = std::mem::take(&mut self.spans);
+        let saved_loops = std::mem::take(&mut self.loops);
+        let saved_depth = std::mem::replace(&mut self.depth, 1);
+        let saved_tries = std::mem::replace(&mut self.tries, 0);
+        let saved_arity = std::mem::replace(&mut self.arity, params.len() + 1);
+        self.outer.push(Outer {
+            locals: std::mem::take(&mut self.locals),
+            captures: std::mem::take(&mut self.captures),
+        });
+        self.locals.push(Local {
+            name: "<lambda>".to_string(),
+            mutable: false,
+            depth: 0,
+            ord: None,
+            boxed: false,
+        });
+        for param in params {
+            self.locals.push(Local {
+                name: param.name.clone(),
+                mutable: false,
+                depth: 0,
+                ord: None,
+                boxed: false,
+            });
+        }
+        let result = self.lambda_body(body, span);
+        let captures = std::mem::take(&mut self.captures);
+        let outer = self.outer.pop().expect("la lambda abrió un nivel");
+        self.locals = outer.locals;
+        self.captures = outer.captures;
+        let code = std::mem::replace(&mut self.code, saved_code);
+        let spans = std::mem::replace(&mut self.spans, saved_spans);
+        self.loops = saved_loops;
+        self.depth = saved_depth;
+        self.tries = saved_tries;
+        let arity = std::mem::replace(&mut self.arity, saved_arity);
+        result?;
+        self.functions.push(Function {
+            name: format!("{}.<lambda>", self.name),
+            name_span: span,
+            arity,
+            code,
+            spans,
+        });
+        let func = (self.functions.len() - 1) as u32;
+        // Los valores capturados se leen tal cual (la celda, no su contenido) en la función de fuera.
+        for capture in &captures {
+            match capture.from {
+                Access::Local(slot) => self.emit(Op::GetLocal(slot), span),
+                Access::Capture(idx) => self.emit(Op::GetCapture(idx), span),
+            };
+        }
+        self.emit(
+            Op::Closure {
+                func,
+                n: captures.len() as u32,
+            },
+            span,
+        );
+        Ok(())
+    }
+
+    /// Las sentencias de la lambda; si la última es una expresión, es lo que devuelve.
+    fn lambda_body(&mut self, body: &Block, span: Span) -> Result<(), Diagnostic> {
+        let (init, tail) = match body.stmts.split_last() {
+            Some((Stmt::Expr(tail), rest)) => (rest, Some(tail)),
+            _ => (&body.stmts[..], None),
+        };
+        for stmt in init {
+            self.stmt(stmt)?;
+        }
+        match tail {
+            Some(tail) => {
+                self.expr(tail)?;
+                if self.res.discards.contains(&tail.span()) {
+                    self.emit(Op::Pop, tail.span());
+                    self.emit(Op::Unit, tail.span());
+                }
+                self.emit(Op::Return, span);
+            }
+            None => {
+                self.emit(Op::Unit, span);
+                self.emit(Op::Return, span);
+            }
+        }
+        Ok(())
+    }
+
+    /// Una función con nombre usada como valor: una lambda sin capturas que la llama.
+    fn function_ref(&mut self, name: &str, span: Span) -> Result<(), Diagnostic> {
+        let Some(&(index, arity)) = self.tables.funcs.get(name) else {
+            return Err(Diagnostic::new(
+                span,
+                format!("la variable `{name}` no está definida"),
+            ));
+        };
+        let mut code: Vec<Op> = (0..arity).map(|i| Op::GetLocal(i as u32 + 1)).collect();
+        code.push(Op::Call(index));
+        code.push(Op::Return);
+        let spans = vec![span; code.len()];
+        self.functions.push(Function {
+            name: format!("{name}.<ref>"),
+            name_span: span,
+            arity: arity + 1,
+            code,
+            spans,
+        });
+        let func = (self.functions.len() - 1) as u32;
+        self.emit(Op::Closure { func, n: 0 }, span);
+        Ok(())
     }
 
     fn expr(&mut self, expr: &Expr) -> Result<(), Diagnostic> {
@@ -926,16 +1305,25 @@ impl<'a> FnCompiler<'a> {
             }
             Expr::Var(_, span) if self.res.fields.contains_key(span) => {
                 let field = self.res.fields[span];
-                self.emit(Op::GetLocal(0), *span);
+                self.load_this(*span)?;
                 self.emit(Op::GetField(field), *span);
             }
-            Expr::Var(name, span) => {
-                let (get, _, _) = self.resolve(name, *span)?;
-                self.emit(get, *span);
+            Expr::Var(name, span) => match self.place(name, *span) {
+                Ok((place, _)) => self.emit_load(place, *span),
+                Err(_) if self.tables.funcs.contains_key(name) => {
+                    self.function_ref(name, *span)?;
+                }
+                Err(err) => return Err(err),
+            },
+            Expr::Lambda { params, body, span } => self.lambda(params, body, *span)?,
+            Expr::CallValue { callee, args, span } => {
+                self.expr(callee)?;
+                for arg in args {
+                    self.expr(arg)?;
+                }
+                self.emit(Op::CallValue(args.len() as u32), *span);
             }
-            Expr::This(span) => {
-                self.emit(Op::GetLocal(0), *span);
-            }
+            Expr::This(span) => self.load_this(*span)?,
             Expr::Nil(span) => {
                 self.emit(Op::Nil, *span);
             }
@@ -978,6 +1366,18 @@ impl<'a> FnCompiler<'a> {
             }
             Expr::MethodCall {
                 target, args, span, ..
+            } if self.res.valuecalls.contains(span) => {
+                // `obj.alClic(x)`: el campo guarda una función.
+                let field = self.field_index(*span)?;
+                self.expr(target)?;
+                self.emit(Op::GetField(field), *span);
+                for arg in args {
+                    self.expr(arg)?;
+                }
+                self.emit(Op::CallValue(args.len() as u32), *span);
+            }
+            Expr::MethodCall {
+                target, args, span, ..
             } => {
                 let method = self.virtual_id(*span)?;
                 self.expr(target)?;
@@ -994,7 +1394,7 @@ impl<'a> FnCompiler<'a> {
             }
             Expr::SuperCall { args, span, .. } => {
                 let index = self.method_index(*span)?;
-                self.emit(Op::GetLocal(0), *span);
+                self.load_this(*span)?;
                 for arg in args {
                     self.expr(arg)?;
                 }
@@ -1087,10 +1487,26 @@ impl<'a> FnCompiler<'a> {
                 };
                 self.emit(op, *span);
             }
+            Expr::Call {
+                name, args, span, ..
+            } if self.res.valuecalls.contains(span) => {
+                // `f(x)` con `f` una variable, parámetro o campo que guarda una función.
+                if let Some(&field) = self.res.fields.get(span) {
+                    self.load_this(*span)?;
+                    self.emit(Op::GetField(field), *span);
+                } else {
+                    let (place, _) = self.place(name, *span)?;
+                    self.emit_load(place, *span);
+                }
+                for arg in args {
+                    self.expr(arg)?;
+                }
+                self.emit(Op::CallValue(args.len() as u32), *span);
+            }
             Expr::Call { args, span, .. } if self.res.virtuals.contains_key(span) => {
                 // Método de la propia clase llamado por su nombre: `this` va primero.
                 let method = self.virtual_id(*span)?;
-                self.emit(Op::GetLocal(0), *span);
+                self.load_this(*span)?;
                 for arg in args {
                     self.expr(arg)?;
                 }

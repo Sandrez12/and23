@@ -1,0 +1,98 @@
+// M8: lambdas y closures. `{ x -> ... }` es una función sin nombre que puede usar las variables
+// de su alrededor; `lista.map { ... }` pasa la lambda como último argumento.
+
+// --- Funciones como valores ---
+fn aplicaDosVeces(f: (Int) -> Int, x: Int) -> Int = f(f(x))
+fn triple(n: Int) -> Int = n * 3
+
+// Devuelve una función: cada contador tiene su propio `n`, que sigue vivo tras volver.
+fn contador() -> () -> Int {
+    mut n = 0
+    return {
+        n += 1
+        n
+    }
+}
+
+fn compone(f: (Int) -> Int, g: (Int) -> Int) -> (Int) -> Int = { x -> g(f(x)) }
+
+// --- Un campo que guarda una función (un "callback") ---
+thing Temporizador(fix nombre: Str, mut alTerminar: (Str) -> Unit) {
+    fn dispara() { alTerminar("${nombre} terminó") }
+}
+
+// --- Un método genérico propio: `R` se deduce de la lambda ---
+thing Caja<T>(fix valor: T) {
+    fn mapea<R>(f: (T) -> R) -> Caja<R> = Caja(f(valor))
+}
+
+thing Persona(fix nombre: Str, fix edad: Int)
+
+fn main() {
+    // Lambdas y funciones con nombre
+    show(aplicaDosVeces({ x -> x + 10 }, 1))
+    show(aplicaDosVeces(triple, 2))
+    fix mas1PorDiez = compone({ x -> x + 1 }, { x -> x * 10 })
+    show(mas1PorDiez(4))
+
+    // Captura: `fix` por valor, `mut` por referencia
+    fix a = contador()
+    fix b = contador()
+    show("${a()} ${a()} ${b()} ${a()}")
+
+    // La lista base con lambdas
+    fix numeros = Lista<Int>()
+    mut i = 1
+    while i <= 6 {
+        numeros.agrega(i)
+        i += 1
+    }
+    fix pares = numeros.filter { n -> n % 2 == 0 }
+    show("pares al cuadrado: ${pares.map { n -> n * n }.texto()}")
+    show("suma: ${numeros.reduce(0, { acc, n -> acc + n })}")
+    show("primero mayor que 4: ${numeros.busca { n -> n > 4 }}")
+    show("alguno mayor que 9: ${numeros.alguno { n -> n > 9 }}")
+
+    mut visitados = 0
+    numeros.paraCada { n -> visitados += n }
+    show("visitados: ${visitados}")
+
+    // Ordenar con un criterio propio
+    fix gente = Lista<Persona>()
+    gente.agrega(Persona("ana", 31))
+    gente.agrega(Persona("beto", 25))
+    gente.agrega(Persona("caro", 31))
+    gente.agrega(Persona("dani", 19))
+    gente.ordena { x, y -> x.edad > y.edad }
+    show(gente.map { p -> "${p.nombre}(${p.edad})" }.texto())
+
+    // Contar palabras con un Mapa y lambdas
+    fix cuentas = Mapa<Str, Int>()
+    fix texto = Lista<Str>()
+    texto.agrega("si")
+    texto.agrega("no")
+    texto.agrega("si")
+    texto.paraCada { w -> cuentas.pone(w, (cuentas.obtiene(w) ?: 0) + 1) }
+    cuentas.paraCada { k, v -> show("${k} -> ${v}") }
+
+    // Callback guardado en un campo
+    mut avisos = ""
+    fix t = Temporizador("té", { msg -> avisos = avisos + msg + "." })
+    t.dispara()
+    t.dispara()
+    show(avisos)
+    t.alTerminar = { msg -> show("otro aviso: ${msg}") }
+    t.dispara()
+
+    // Método genérico propio
+    fix caja = Caja(20)
+    show(caja.mapea { x -> x + 1 }.valor)
+    show(caja.mapea { x -> "valor ${x}" }.valor)
+
+    // Una excepción atraviesa las lambdas
+    attempt {
+        numeros.paraCada { n -> if n == 3 { fail Fallo("paré en ${n}") } }
+    } rescue e: Fallo {
+        show("rescatado: ${e.msg}")
+    }
+}

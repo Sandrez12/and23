@@ -2,10 +2,10 @@
 //! un programa mal tipado se rechaza con su posición antes de generar bytecode.
 
 use and23_syntax::{
-    BinOp, Block, Diagnostic, Expr, FnDecl, InterpPart, KindDecl, Program, Span, Stmt, ThingDecl,
-    TypeParam, TypeRef, UnOp,
+    BinOp, Block, Diagnostic, Expr, FnDecl, InterpPart, KindDecl, LambdaParam, Program, Span, Stmt,
+    ThingDecl, TypeParam, TypeRef, UnOp,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 /// Funciones integradas; no se pueden redefinir.
@@ -25,6 +25,8 @@ pub enum Type {
     Param(String),
     /// `T?`: un `T` o `nil`.
     Nullable(Box<Type>),
+    /// Función o lambda: `(Int, Str) -> Bool`.
+    Fn(Vec<Type>, Box<Type>),
     /// El tipo del literal `nil`; solo existe mientras se verifica una expresión.
     Nil,
 }
@@ -50,7 +52,12 @@ impl fmt::Display for Type {
                 write!(f, "{name}<{}>", args.join(", "))
             }
             Type::Param(name) => f.write_str(name),
+            Type::Nullable(inner) if matches!(**inner, Type::Fn(..)) => write!(f, "({inner})?"),
             Type::Nullable(inner) => write!(f, "{inner}?"),
+            Type::Fn(params, ret) => {
+                let params: Vec<String> = params.iter().map(|p| p.to_string()).collect();
+                write!(f, "({}) -> {ret}", params.join(", "))
+            }
             Type::Nil => f.write_str("nil"),
         }
     }
@@ -122,6 +129,11 @@ pub struct Resolutions {
     /// Posición de una llamada virtual (`obj.metodo()` o `metodo()` dentro de un método) -> nombre
     /// del método: la VM elige la implementación según la clase real del objeto.
     pub virtuals: HashMap<Span, String>,
+    /// Posición de una llamada `f(x)` donde `f` es una variable o campo de tipo función (no una
+    /// función con nombre). Si `f` es un campo, `fields` trae su índice bajo la misma posición.
+    pub valuecalls: HashSet<Span>,
+    /// Posición de la última expresión de una lambda cuyo valor se descarta (la lambda devuelve Unit).
+    pub discards: HashSet<Span>,
 }
 
 /// Verificador con estado: recuerda las funciones y globales de las entradas anteriores (REPL).
@@ -191,6 +203,8 @@ struct Ctx {
     script_narrow: HashMap<String, Type>,
     /// Clase cuyo método se está verificando (`this` y sus campos están a la vista).
     this: Option<String>,
+    /// Índice (en `scopes`) del ámbito de parámetros de cada lambda abierta.
+    lambda_marks: Vec<usize>,
 }
 
 struct Pass<'p> {
@@ -212,7 +226,7 @@ struct Pass<'p> {
 }
 
 /// Nombres que una clase no puede usar.
-const RESERVED_TYPES: [&str; 6] = ["Int", "Float", "Bool", "Str", "Unit", "Array"];
+const RESERVED_TYPES: [&str; 7] = ["Int", "Float", "Bool", "Str", "Unit", "Array", "Fn"];
 
 impl<'p> Pass<'p> {
     fn program(&mut self, program: &'p Program) -> Result<(), Diagnostic> {
@@ -308,6 +322,7 @@ impl<'p> Pass<'p> {
             ret: Ret::Script,
             script_narrow: HashMap::new(),
             this: None,
+            lambda_marks: Vec::new(),
         };
         for stmt in &program.stmts {
             if !matches!(stmt, Stmt::Fn(_) | Stmt::Thing(_) | Stmt::Kind(_)) {
@@ -347,7 +362,22 @@ impl<'p> Pass<'p> {
         let tparams = if decl.type_params.is_empty() {
             Vec::new()
         } else {
-            self.enter_params(&decl.type_params)?
+            let base = self.scope_params.clone();
+            if let Some(dup) = decl
+                .type_params
+                .iter()
+                .find(|d| base.iter().any(|b| b.name == d.name))
+            {
+                return Err(Diagnostic::new(
+                    dup.span,
+                    format!("`{}` ya es un parámetro de tipo de la clase", dup.name),
+                ));
+            }
+            let own = self.enter_params(&decl.type_params)?;
+            let mut all = base;
+            all.extend(own.iter().cloned());
+            self.scope_params = all;
+            own
         };
         let params = decl
             .params
@@ -584,6 +614,17 @@ impl<'p> Pass<'p> {
             // Los argumentos de tipo son invariantes: `Caja<Perro>` no es `Caja<Animal>`.
             (Type::Obj(e, _), Type::Obj(..)) => {
                 self.as_super(found, e).is_some_and(|t| t == *expected)
+            }
+            // Las funciones aceptan lo que se les pase de más general y devuelven lo que prometen;
+            // una que devuelve Unit no admite una que devuelve otra cosa.
+            (Type::Fn(ep, er), Type::Fn(fp, fr)) => {
+                ep.len() == fp.len()
+                    && ep.iter().zip(fp).all(|(e, f)| self.assignable(f, e))
+                    && if **er == Type::Unit {
+                        **fr == Type::Unit
+                    } else {
+                        self.assignable(er, fr)
+                    }
             }
             // Un parámetro de tipo con cota vale como su cota.
             (_, Type::Param(name)) => self
@@ -901,6 +942,7 @@ impl<'p> Pass<'p> {
             ret: Ret::Script,
             script_narrow: HashMap::new(),
             this: None,
+            lambda_marks: Vec::new(),
         };
         // Argumentos para el constructor de la clase padre: ven los parámetros de esta.
         if let Some(sup) = decl.supers.iter().find(|s| s.args.is_some()) {
@@ -967,7 +1009,11 @@ impl<'p> Pass<'p> {
         let sig = self.funcs[key].clone();
         // Los métodos ven los parámetros de tipo de su clase; las funciones, los suyos.
         let params_here = match &class {
-            Some(class) => self.classes[class].tparams.clone(),
+            Some(class) => {
+                let mut all = self.classes[class].tparams.clone();
+                all.extend(sig.tparams.iter().cloned());
+                all
+            }
             None => sig.tparams.clone(),
         };
         let saved_params = std::mem::replace(&mut self.scope_params, params_here);
@@ -983,6 +1029,7 @@ impl<'p> Pass<'p> {
             },
             script_narrow: HashMap::new(),
             this: class,
+            lambda_marks: Vec::new(),
         };
         self.block(&mut ctx, &decl.body)?;
         match ctx.ret {
@@ -1018,8 +1065,17 @@ impl<'p> Pass<'p> {
     /// Busca una variable: ámbitos locales, campos de `this` y globales, en ese orden.
     /// Devuelve tipo, si es mutable y, si es un campo, su índice.
     fn lookup(&self, ctx: &Ctx, name: &str) -> Option<(Type, bool, Option<u32>)> {
-        if let Some((ty, mutable, _)) = ctx.scopes.iter().rev().find_map(|scope| scope.get(name)) {
-            return Some((ty.clone(), *mutable, None));
+        for (i, scope) in ctx.scopes.iter().enumerate().rev() {
+            if let Some((ty, mutable, declared)) = scope.get(name) {
+                // Dentro de una lambda, una variable `mut` de fuera vuelve a su tipo declarado: la
+                // lambda puede ejecutarse cuando ya no vale lo que se probó al crearla.
+                let captured = ctx.lambda_marks.last().is_some_and(|mark| i < *mark);
+                let ty = match (captured, mutable, declared) {
+                    (true, true, Some(declared)) => declared.clone(),
+                    _ => ty.clone(),
+                };
+                return Some((ty, *mutable, None));
+            }
         }
         if let Some(class) = &ctx.this {
             let fields = self.all_fields(class, &self.identity_args(class));
@@ -1256,6 +1312,24 @@ impl<'p> Pass<'p> {
 
     /// Tipo de `expr` exigiendo `expected`. Un arreglo vacío `[]` toma el tipo esperado.
     fn expr_as(&mut self, ctx: &mut Ctx, expr: &Expr, expected: &Type) -> Result<(), Diagnostic> {
+        // Una lambda toma los tipos de sus parámetros y de su resultado del tipo esperado.
+        if let Expr::Lambda { params, body, span } = expr {
+            let target = match expected {
+                Type::Nullable(inner) => &**inner,
+                other => other,
+            };
+            if let Type::Fn(ps, ret) = target {
+                let known: Vec<Option<Type>> = ps.iter().cloned().map(Some).collect();
+                let found = self.lambda(
+                    ctx,
+                    params,
+                    body,
+                    *span,
+                    Some((&known, Some((**ret).clone()))),
+                )?;
+                return self.expect(expected, &found, expr.span());
+            }
+        }
         if let (Expr::Array { elems, .. }, Type::Array(elem)) = (expr, expected) {
             if elems.is_empty() {
                 return Ok(());
@@ -1295,6 +1369,22 @@ impl<'p> Pass<'p> {
                 init,
                 ..
             } => {
+                // `fix fact: (Int) -> Int = { n -> ... fact(n - 1) }` en el nivel superior: la global
+                // ya existe dentro de la lambda (se llama cuando ya tiene valor).
+                if let (Some(ty), true, Expr::Lambda { .. }) = (ty, ctx.scopes.is_empty(), init) {
+                    let expected = self.resolve(ty)?;
+                    if matches!(expected, Type::Fn(..)) {
+                        if self.globals.contains_key(name) {
+                            return Err(Diagnostic::new(
+                                *name_span,
+                                format!("`{name}` ya está declarada en este ámbito"),
+                            ));
+                        }
+                        self.globals
+                            .insert(name.clone(), (expected.clone(), *mutable, None));
+                        return self.expr_as(ctx, init, &expected);
+                    }
+                }
                 let declared = match ty {
                     Some(ty) => {
                         let expected = self.resolve(ty)?;
@@ -1548,9 +1638,24 @@ impl<'p> Pass<'p> {
             Expr::Float(..) => Ok(Type::Float),
             Expr::Bool(..) => Ok(Type::Bool),
             Expr::Str(..) => Ok(Type::Str),
+            Expr::Lambda { params, body, span } => self.lambda(ctx, params, body, *span, None),
+            Expr::CallValue { callee, args, span } => {
+                let found = self.expr(ctx, callee)?;
+                match found {
+                    Type::Fn(ps, ret) => self.call_value(ctx, "esta función", &ps, &ret, args, *span),
+                    Type::Nullable(inner) if matches!(*inner, Type::Fn(..)) => Err(Diagnostic::new(
+                        callee.span(),
+                        "esta función es opcional y puede ser nil: comprueba que no lo sea antes de llamarla",
+                    )),
+                    other => Err(Diagnostic::new(
+                        callee.span(),
+                        format!("solo se pueden llamar funciones, pero esto es {other}"),
+                    )),
+                }
+            }
             Expr::Var(name, span) => {
                 let Some((ty, _, field)) = self.lookup(ctx, name) else {
-                    return Err(undefined_variable(name, *span));
+                    return self.function_value(name, *span);
                 };
                 if let Some(i) = field {
                     self.res.fields.insert(*span, i);
@@ -1580,12 +1685,22 @@ impl<'p> Pass<'p> {
                 target,
                 name,
                 name_span,
+                type_args,
                 args,
                 span,
             } => {
                 let target_ty = self.expr(ctx, target)?;
                 let receiver = self.method_receiver(&target_ty, target.span())?;
                 let Some((key, map)) = self.find_method(&receiver, name) else {
+                    // `obj.alClic(x)`: llamada a un campo de tipo función.
+                    self.ensure_class_of(&receiver)?;
+                    if let Ok((i, Type::Fn(ps, ret), _)) =
+                        self.field_of(&receiver, name, *name_span, target.span())
+                    {
+                        self.res.fields.insert(*span, i);
+                        self.res.valuecalls.insert(*span);
+                        return self.call_value(ctx, name, &ps, &ret, args, *span);
+                    }
                     let what = match &receiver {
                         Type::Obj(class, _) if self.kinds.contains_key(class) => "la interfaz",
                         _ => "la clase",
@@ -1596,7 +1711,17 @@ impl<'p> Pass<'p> {
                     ));
                 };
                 self.res.virtuals.insert(*span, name.clone());
-                self.call_sig(ctx, &key, name, "el método", args, &[], *span, map, None)
+                self.call_sig(
+                    ctx,
+                    &key,
+                    name,
+                    "el método",
+                    args,
+                    type_args,
+                    *span,
+                    map,
+                    None,
+                )
             }
             Expr::SuperCall {
                 name,
@@ -1948,6 +2073,27 @@ impl<'p> Pass<'p> {
         span: Span,
         expected: Option<&Type>,
     ) -> Result<Type, Diagnostic> {
+        // `f(x)` con `f` una variable, parámetro o campo de tipo función.
+        if !self.classes.contains_key(name) && !self.kinds.contains_key(name) {
+            match self.lookup(ctx, name) {
+                Some((Type::Fn(ps, ret), _, field)) => {
+                    if let Some(i) = field {
+                        self.res.fields.insert(span, i);
+                    }
+                    self.res.valuecalls.insert(span);
+                    return self.call_value(ctx, name, &ps, &ret, args, span);
+                }
+                Some((Type::Nullable(inner), _, _)) if matches!(*inner, Type::Fn(..)) => {
+                    return Err(Diagnostic::new(
+                        span,
+                        format!(
+                            "`{name}` es una función opcional y puede ser nil: comprueba `if {name} != nil` antes de llamarla"
+                        ),
+                    ));
+                }
+                _ => {}
+            }
+        }
         if let Some(info) = self.classes.get(name) {
             let tparams = info.tparams.clone();
             let params = info.ctor.clone();
@@ -2001,6 +2147,14 @@ impl<'p> Pass<'p> {
                 return self.call_sig(ctx, &key, name, "el método", args, &[], span, map, None);
             }
         }
+        if !self.funcs.contains_key(name) {
+            if let Some((ty, _, _)) = self.lookup(ctx, name) {
+                return Err(Diagnostic::new(
+                    span,
+                    format!("`{name}` no es una función: es una variable de tipo {ty}"),
+                ));
+            }
+        }
         self.call_sig(
             ctx,
             name,
@@ -2012,6 +2166,220 @@ impl<'p> Pass<'p> {
             TMap::new(),
             None,
         )
+    }
+
+    /// Llamada a un valor de tipo función: comprueba los argumentos contra sus parámetros.
+    fn call_value(
+        &mut self,
+        ctx: &mut Ctx,
+        shown: &str,
+        params: &[Type],
+        ret: &Type,
+        args: &[Expr],
+        span: Span,
+    ) -> Result<Type, Diagnostic> {
+        if params.len() != args.len() {
+            return Err(Diagnostic::new(
+                span,
+                format!(
+                    "`{shown}` espera {} argumento(s), pero recibió {}",
+                    params.len(),
+                    args.len()
+                ),
+            ));
+        }
+        for (arg, param) in args.iter().zip(params) {
+            self.expr_as(ctx, arg, param)?;
+        }
+        Ok(ret.clone())
+    }
+
+    /// Una función con nombre usada como valor (`aplica(doble, 3)`): su tipo de función.
+    fn function_value(&mut self, name: &str, span: Span) -> Result<Type, Diagnostic> {
+        if BUILTINS.contains(&name) {
+            return Err(Diagnostic::new(
+                span,
+                format!("`{name}` es una función integrada y no se puede usar como valor; envuélvela en una lambda"),
+            ));
+        }
+        let Some(sig) = self.funcs.get(name).cloned() else {
+            return Err(undefined_variable(name, span));
+        };
+        if !sig.tparams.is_empty() {
+            return Err(Diagnostic::new(
+                span,
+                format!("`{name}` es genérica y no se puede usar como valor; envuélvela en una lambda con tipos concretos"),
+            ));
+        }
+        if sig.ret.is_none() {
+            match self.state.get(name) {
+                Some(State::InProgress) => {
+                    return Err(Diagnostic::new(
+                        span,
+                        format!("`{name}` se usa antes de conocer su tipo; añade `-> Tipo` a su declaración"),
+                    ));
+                }
+                _ => {
+                    if self.decls.contains_key(name) {
+                        self.check_fn(name)?;
+                    }
+                }
+            }
+        }
+        let ret = self.funcs[name].ret.clone().unwrap_or(Type::Unit);
+        Ok(Type::Fn(sig.params, Box::new(ret)))
+    }
+
+    /// Verifica una lambda. `expected` trae, si el contexto lo sabe, el tipo de cada parámetro y el
+    /// del resultado; sin ellos los parámetros deben llevar anotación y el resultado se infiere.
+    fn lambda(
+        &mut self,
+        ctx: &mut Ctx,
+        params: &[LambdaParam],
+        body: &Block,
+        span: Span,
+        expected: Option<(&[Option<Type>], Option<Type>)>,
+    ) -> Result<Type, Diagnostic> {
+        let wanted_params = expected.as_ref().map(|e| e.0);
+        if let Some(wanted) = wanted_params {
+            if wanted.len() != params.len() {
+                return Err(Diagnostic::new(
+                    span,
+                    format!(
+                        "esta lambda tiene {} parámetro(s), pero aquí se espera una función de {}",
+                        params.len(),
+                        wanted.len()
+                    ),
+                ));
+            }
+        }
+        let mut types = Vec::new();
+        let mut scope = Vars::new();
+        for (i, param) in params.iter().enumerate() {
+            let given = match &param.ty {
+                Some(ty) => Some(self.resolve(ty)?),
+                None => None,
+            };
+            let wanted = wanted_params.and_then(|w| w[i].clone());
+            let ty = match (given, wanted) {
+                (Some(given), Some(wanted)) => {
+                    if !self.assignable(&given, &wanted) {
+                        return Err(Diagnostic::new(
+                            param.name_span,
+                            format!(
+                                "el parámetro `{}` es {given}, pero aquí se espera {wanted}",
+                                param.name
+                            ),
+                        ));
+                    }
+                    given
+                }
+                (Some(given), None) => given,
+                (None, Some(wanted)) => wanted,
+                (None, None) => {
+                    return Err(Diagnostic::new(
+                        param.name_span,
+                        format!(
+                            "no se puede deducir el tipo del parámetro `{0}`; escríbelo, por ejemplo `{0}: Int`",
+                            param.name
+                        ),
+                    ));
+                }
+            };
+            if ty == Type::Unit {
+                return Err(Diagnostic::new(
+                    param.name_span,
+                    format!("el parámetro `{}` no puede ser de tipo Unit", param.name),
+                ));
+            }
+            scope.insert(param.name.clone(), (ty.clone(), false, None));
+            types.push(ty);
+        }
+        // Las variables `mut` estrechadas que la lambda asigna dejan de estarlo: puede ejecutarse
+        // después y cambiarlas.
+        let narrowed: Vec<String> = ctx
+            .scopes
+            .iter()
+            .flat_map(|sc| sc.iter())
+            .filter(|(_, entry)| entry.1 && entry.2.is_some())
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in narrowed {
+            if block_assigns_deep(body, &name) {
+                Self::widen(ctx, &name);
+            }
+        }
+        let ret_expected = expected.and_then(|e| e.1);
+        let saved_ret = std::mem::replace(
+            &mut ctx.ret,
+            match &ret_expected {
+                Some(ty) => Ret::Declared(ty.clone()),
+                None => Ret::Infer(None),
+            },
+        );
+        ctx.lambda_marks.push(ctx.scopes.len());
+        ctx.scopes.push(scope);
+        let result = self.lambda_body(ctx, body, ret_expected.as_ref());
+        ctx.scopes.pop();
+        ctx.lambda_marks.pop();
+        let used_ret = std::mem::replace(&mut ctx.ret, saved_ret);
+        result?;
+        let ret = match (ret_expected, used_ret) {
+            (Some(ty), _) => ty,
+            (None, Ret::Infer(slot)) => slot.unwrap_or(Type::Unit),
+            _ => Type::Unit,
+        };
+        Ok(Type::Fn(types, Box::new(ret)))
+    }
+
+    /// Las sentencias de una lambda; si la última es una expresión, es su valor.
+    fn lambda_body(
+        &mut self,
+        ctx: &mut Ctx,
+        body: &Block,
+        ret: Option<&Type>,
+    ) -> Result<(), Diagnostic> {
+        let (init, tail) = match body.stmts.split_last() {
+            Some((Stmt::Expr(tail), rest)) => (rest, Some(tail)),
+            _ => (&body.stmts[..], None),
+        };
+        for stmt in init {
+            self.stmt(ctx, stmt)?;
+        }
+        match (tail, ret) {
+            (Some(tail), Some(Type::Unit)) => {
+                if self.expr(ctx, tail)? != Type::Unit {
+                    self.res.discards.insert(tail.span());
+                }
+            }
+            (Some(tail), Some(ret)) => self.expr_as(ctx, tail, ret)?,
+            (Some(tail), None) => {
+                let found = self.expr(ctx, tail)?;
+                no_nil(&found, tail.span())?;
+                let previous = match &ctx.ret {
+                    Ret::Infer(slot) => slot.clone(),
+                    _ => None,
+                };
+                match previous {
+                    Some(previous) => self.expect(&previous, &found, tail.span())?,
+                    None => {
+                        if let Ret::Infer(slot) = &mut ctx.ret {
+                            *slot = Some(found);
+                        }
+                    }
+                }
+            }
+            (None, Some(ret)) => {
+                if *ret != Type::Unit && !block_returns(body) {
+                    return Err(Diagnostic::new(
+                        body.span,
+                        format!("la lambda debe devolver un valor de tipo {ret}"),
+                    ));
+                }
+            }
+            (None, None) => {}
+        }
+        Ok(())
     }
 
     /// Completa los argumentos de tipo de una llamada: los explícitos (`f<Int>(x)`), los que salen de
@@ -2069,14 +2437,43 @@ impl<'p> Pass<'p> {
                 if !mentions_unresolved(param, &names, &map) {
                     continue;
                 }
-                // `nil` y `[]` no dicen de qué tipo son.
-                if matches!(arg, Expr::Nil(_))
+                // `nil` y `[]` no dicen de qué tipo son; una lambda se mira después, con lo ya deducido.
+                if matches!(arg, Expr::Nil(_) | Expr::Lambda { .. })
                     || matches!(arg, Expr::Array { elems, .. } if elems.is_empty())
                 {
                     continue;
                 }
                 let found = self.expr(ctx, arg)?;
                 self.unify(param, &found, &names, &mut map);
+            }
+            for (arg, param) in args.iter().zip(params) {
+                let Expr::Lambda {
+                    params: lambda_params,
+                    body,
+                    span: lambda_span,
+                } = arg
+                else {
+                    continue;
+                };
+                let target = match param {
+                    Type::Nullable(inner) => &**inner,
+                    other => other,
+                };
+                let Type::Fn(param_types, param_ret) = target else {
+                    continue;
+                };
+                if !mentions_unresolved(target, &names, &map) {
+                    continue;
+                }
+                let known: Vec<Option<Type>> = param_types
+                    .iter()
+                    .map(|p| (!mentions_unresolved(p, &names, &map)).then(|| subst(p, &map)))
+                    .collect();
+                let ret =
+                    (!mentions_unresolved(param_ret, &names, &map)).then(|| subst(param_ret, &map));
+                let found =
+                    self.lambda(ctx, lambda_params, body, *lambda_span, Some((&known, ret)))?;
+                self.unify(target, &found, &names, &mut map);
             }
             if let (Some(template), Some(expected)) = (template, expected) {
                 // La clase vista como el tipo esperado (puede ser un ancestro o una interfaz).
@@ -2125,6 +2522,12 @@ impl<'p> Pass<'p> {
                 }
             }
             (Type::Array(p), Type::Array(f)) => self.unify(p, f, names, map),
+            (Type::Fn(p_params, p_ret), Type::Fn(f_params, f_ret)) => {
+                for (p, f) in p_params.iter().zip(f_params) {
+                    self.unify(p, f, names, map);
+                }
+                self.unify(p_ret, f_ret, names, map);
+            }
             (Type::Nullable(p), Type::Nullable(f)) => self.unify(p, f, names, map),
             (Type::Nullable(p), f) if *f != Type::Nil => self.unify(p, f, names, map),
             (Type::Obj(class, p_args), Type::Obj(..)) => {
@@ -2245,6 +2648,22 @@ impl<'p> Pass<'p> {
                 }
                 Ok(Type::Nullable(Box::new(inner_ty)))
             }
+            ("Fn", [params @ .., ret]) => {
+                let params = params
+                    .iter()
+                    .map(|p| {
+                        let t = self.resolve(p)?;
+                        if t == Type::Unit {
+                            return Err(Diagnostic::new(
+                                p.span,
+                                "un parámetro de una función no puede ser Unit",
+                            ));
+                        }
+                        Ok(t)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Type::Fn(params, Box::new(self.resolve(ret)?)))
+            }
             (name, args) => {
                 if args.is_empty() && self.scope_params.iter().any(|p| p.name == name) {
                     return Ok(Type::Param(name.to_string()));
@@ -2312,6 +2731,10 @@ fn subst(ty: &Type, map: &TMap) -> Type {
     match ty {
         Type::Param(name) => map.get(name).cloned().unwrap_or_else(|| ty.clone()),
         Type::Array(elem) => Type::Array(Box::new(subst(elem, map))),
+        Type::Fn(params, ret) => Type::Fn(
+            params.iter().map(|p| subst(p, map)).collect(),
+            Box::new(subst(ret, map)),
+        ),
         Type::Nullable(inner) => optional(subst(inner, map)),
         Type::Obj(name, args) => {
             Type::Obj(name.clone(), args.iter().map(|a| subst(a, map)).collect())
@@ -2325,6 +2748,10 @@ fn mentions_unresolved(ty: &Type, names: &[&str], map: &TMap) -> bool {
     match ty {
         Type::Param(name) => names.contains(&name.as_str()) && !map.contains_key(name),
         Type::Array(inner) | Type::Nullable(inner) => mentions_unresolved(inner, names, map),
+        Type::Fn(params, ret) => {
+            params.iter().any(|p| mentions_unresolved(p, names, map))
+                || mentions_unresolved(ret, names, map)
+        }
         Type::Obj(_, args) => args.iter().any(|a| mentions_unresolved(a, names, map)),
         _ => false,
     }
@@ -2418,6 +2845,63 @@ fn assigns(block: &Block, name: &str) -> bool {
         }
         _ => false,
     })
+}
+
+/// ¿Se asigna `name` en `block`, incluso dentro de las lambdas que contiene?
+fn block_assigns_deep(block: &Block, name: &str) -> bool {
+    block.stmts.iter().any(|stmt| stmt_assigns_deep(stmt, name))
+}
+
+fn stmt_assigns_deep(stmt: &Stmt, name: &str) -> bool {
+    let e = |expr: &Expr| expr_assigns(expr, name);
+    let b = |block: &Block| block_assigns_deep(block, name);
+    match stmt {
+        Stmt::Assign { name: n, value, .. } => n == name || e(value),
+        Stmt::Show(expr, _) | Stmt::Expr(expr) | Stmt::Fail(expr, _) => e(expr),
+        Stmt::Let { init, .. } => e(init),
+        Stmt::IndexAssign {
+            target,
+            index,
+            value,
+            ..
+        } => e(target) || e(index) || e(value),
+        Stmt::FieldAssign { target, value, .. } => e(target) || e(value),
+        Stmt::If {
+            cond,
+            then,
+            otherwise,
+            ..
+        } => e(cond) || b(then) || otherwise.as_ref().is_some_and(b),
+        Stmt::While { cond, body, .. } => e(cond) || b(body),
+        Stmt::Return(Some(expr), _) => e(expr),
+        Stmt::Attempt { body, rescues, .. } => b(body) || rescues.iter().any(|r| b(&r.body)),
+        _ => false,
+    }
+}
+
+fn expr_assigns(expr: &Expr, name: &str) -> bool {
+    let e = |expr: &Expr| expr_assigns(expr, name);
+    match expr {
+        Expr::Lambda { body, .. } => block_assigns_deep(body, name),
+        Expr::Interp { parts, .. } => parts.iter().any(|p| match p {
+            InterpPart::Expr(inner) => e(inner),
+            InterpPart::Text(_) => false,
+        }),
+        Expr::Array { elems, .. } => elems.iter().any(e),
+        Expr::Index { target, index, .. } => e(target) || e(index),
+        Expr::Unary { expr, .. }
+        | Expr::Is { expr, .. }
+        | Expr::Cast { expr, .. }
+        | Expr::Field { target: expr, .. }
+        | Expr::SafeField { target: expr, .. } => e(expr),
+        Expr::Binary { lhs, rhs, .. } | Expr::Elvis { lhs, rhs, .. } => e(lhs) || e(rhs),
+        Expr::CallValue { callee, args, .. } => e(callee) || args.iter().any(e),
+        Expr::Call { args, .. } | Expr::SuperCall { args, .. } => args.iter().any(e),
+        Expr::MethodCall { target, args, .. } | Expr::SafeCall { target, args, .. } => {
+            e(target) || args.iter().any(e)
+        }
+        _ => false,
+    }
 }
 
 fn undefined_variable(name: &str, span: Span) -> Diagnostic {
@@ -3335,5 +3819,128 @@ mod tests {
         assert_eq!(run(&mut c, "fix b: Caja<Int> = a"), Ok(()));
         assert!(run(&mut c, "fix d: Caja<Str> = a").is_err());
         assert!(run(&mut c, "fix e: Caja = a").is_err());
+    }
+
+    // --- M8: lambdas ---
+    #[test]
+    fn lambdas_bien_tipadas() {
+        for src in [
+            "fix f = { x: Int -> x + 1 }
+show(f(2))",
+            "fix f: (Int, Int) -> Int = { a, b -> a * b }",
+            "fn ap(f: (Int) -> Int) -> Int = f(1)
+show(ap({ x -> x }))
+fn t(n: Int) -> Int = n
+show(ap(t))",
+            "fn id<T>(x: T) -> T = x
+fn ap<A, B>(x: A, f: (A) -> B) -> B = f(x)
+show(ap(1, { n -> \"s${n}\" }))",
+            "thing C<T>(fix v: T) { fn mapea<R>(f: (T) -> R) -> C<R> = C(f(v)) }
+fix c = C(1).mapea { x -> x > 0 }",
+            "fix l = Lista<Int>()
+fix m: Lista<Str> = l.map { x -> \"a\" }",
+            "fix f: ((Int) -> Int)? = nil",
+            "mut n = 0
+fix f = { n += 1 }
+f()",
+            "fix f = { return 1 }",
+        ] {
+            assert_eq!(check(src), Ok(()), "{src}");
+        }
+    }
+
+    #[test]
+    fn errores_de_lambdas() {
+        let cases = [
+            (
+                "fix f = { x -> x }",
+                "no se puede deducir el tipo del parámetro `x`",
+            ),
+            (
+                "fix f: (Int) -> Int = { a, b -> a }",
+                "tiene 2 parámetro(s)",
+            ),
+            (
+                "fix f: (Int) -> Int = { a -> true }",
+                "se esperaba Int, pero es Bool",
+            ),
+            (
+                "fix f: (Str) -> Int = { a: Int -> a }",
+                "el parámetro `a` es Int, pero aquí se espera Str",
+            ),
+            ("fix f: Int = { 1 }", "se esperaba Int"),
+            (
+                "fix f = { a: Int -> a }
+f(true)",
+                "se esperaba Int, pero es Bool",
+            ),
+            (
+                "fix n = 1
+n(2)",
+                "no es una función",
+            ),
+            (
+                "fix f: ((Int) -> Int)? = nil
+f(1)",
+                "puede ser nil",
+            ),
+            ("fix f = len", "función integrada"),
+            (
+                "fn id<T>(x: T) -> T = x
+fix f = id",
+                "genérica",
+            ),
+            (
+                "fn g(f: (Int) -> Int) = f(1)
+g({ a, b -> a })",
+                "tiene 2 parámetro(s)",
+            ),
+            ("thing A() { fn m<T, T>(x: T) { } }", "repetido"),
+            (
+                "thing A<T>() { fn m<T>(x: T) { } }",
+                "ya es un parámetro de tipo de la clase",
+            ),
+        ];
+        for (src, expected) in cases {
+            let message = err(src);
+            assert!(
+                message.contains(expected),
+                "{src}
+{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn los_tipos_de_funcion_se_muestran_con_flecha() {
+        let message = err("fix f: (Int) -> Int = 1");
+        assert!(message.contains("(Int) -> Int"), "{message}");
+        let message = err("fix f: ((Int) -> Int)? = 1");
+        assert!(message.contains("((Int) -> Int)?"), "{message}");
+    }
+
+    #[test]
+    fn la_asignabilidad_de_funciones() {
+        assert_eq!(
+            check(
+                "fn a(x: Animal) -> Perro = Perro()
+thing Animal()
+thing Perro() : Animal()
+fix f: (Perro) -> Animal = a"
+            ),
+            Ok(())
+        );
+        assert!(check(
+            "thing Animal()
+thing Perro() : Animal()
+fn a(x: Perro) -> Perro = x
+fix f: (Animal) -> Perro = a"
+        )
+        .is_err());
+        assert!(check(
+            "fn a(x: Int) -> Int = x
+fix f: (Int) -> Unit = a"
+        )
+        .is_err());
     }
 }

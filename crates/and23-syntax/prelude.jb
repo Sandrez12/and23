@@ -62,6 +62,93 @@ thing Lista<T>() {
         return otra
     }
 
+    // --- Con lambdas ---
+
+    /// Llama a `f` con cada elemento, en orden.
+    fn paraCada(f: (T) -> Unit) {
+        mut i = 0
+        while i < len(items) {
+            f(items[i])
+            i += 1
+        }
+    }
+
+    /// Una lista nueva con `f` aplicada a cada elemento.
+    fn map<R>(f: (T) -> R) -> Lista<R> {
+        fix res = Lista<R>()
+        mut i = 0
+        while i < len(items) {
+            res.agrega(f(items[i]))
+            i += 1
+        }
+        return res
+    }
+
+    /// Una lista nueva con los elementos para los que `f` da verdadero.
+    fn filter(f: (T) -> Bool) -> Lista<T> {
+        fix res = Lista<T>()
+        mut i = 0
+        while i < len(items) {
+            if f(items[i]) { res.agrega(items[i]) }
+            i += 1
+        }
+        return res
+    }
+
+    /// Combina los elementos de izquierda a derecha: `f(f(inicial, a), b)`.
+    fn reduce<R>(inicial: R, f: (R, T) -> R) -> R {
+        mut acc = inicial
+        mut i = 0
+        while i < len(items) {
+            acc = f(acc, items[i])
+            i += 1
+        }
+        return acc
+    }
+
+    /// El primer elemento para el que `f` da verdadero, o nil.
+    fn busca(f: (T) -> Bool) -> T? {
+        mut i = 0
+        while i < len(items) {
+            if f(items[i]) { return items[i] }
+            i += 1
+        }
+        return nil
+    }
+
+    fn alguno(f: (T) -> Bool) -> Bool {
+        mut i = 0
+        while i < len(items) {
+            if f(items[i]) { return true }
+            i += 1
+        }
+        return false
+    }
+
+    fn todos(f: (T) -> Bool) -> Bool {
+        mut i = 0
+        while i < len(items) {
+            if !f(items[i]) { return false }
+            i += 1
+        }
+        return true
+    }
+
+    /// Ordena la lista con `antes(a, b)` (verdadero si `a` va antes que `b`). Es estable.
+    fn ordena(antes: (T, T) -> Bool) {
+        mut i = 1
+        while i < len(items) {
+            fix x = items[i]
+            mut j = i - 1
+            while j >= 0 && antes(x, items[j]) {
+                items[j + 1] = items[j]
+                j -= 1
+            }
+            items[j + 1] = x
+            i += 1
+        }
+    }
+
     fn texto() -> Str = "${items}"
 }
 
@@ -171,6 +258,20 @@ thing Mapa<K, V>() {
             i += 1
         }
         return res
+    }
+
+    /// Llama a `f(clave, valor)` con cada entrada.
+    fn paraCada(f: (K, V) -> Unit) {
+        mut i = 0
+        while i < len(cubetas) {
+            fix cubeta = cubetas[i]
+            mut j = 0
+            while j < len(cubeta) {
+                f(cubeta[j].clave, cubeta[j].valor)
+                j += 1
+            }
+            i += 1
+        }
     }
 
     fn crece() {

@@ -330,6 +330,8 @@ impl<W: Write> Interpreter<W> {
             | Expr::Nil(span)
             | Expr::Is { span, .. }
             | Expr::Cast { span, .. }
+            | Expr::Lambda { span, .. }
+            | Expr::CallValue { span, .. }
             | Expr::This(span) => Err(unsupported(*span)),
             Expr::Unary { op, expr, span } => {
                 let value = self.eval(env, expr)?;
@@ -465,7 +467,7 @@ impl<W: Write> Interpreter<W> {
 fn unsupported(span: Span) -> Diagnostic {
     Diagnostic::new(
         span,
-        "el intérprete de árbol no soporta cadenas, arreglos, clases ni excepciones; usa la VM",
+        "el intérprete de árbol no soporta cadenas, arreglos, clases, excepciones ni lambdas; usa la VM",
     )
 }
 

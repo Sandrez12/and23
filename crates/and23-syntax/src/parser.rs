@@ -1,6 +1,6 @@
 use crate::ast::{
-    BinOp, Block, CtorParam, Expr, FieldDecl, FnDecl, InterpPart, KindDecl, KindMethod, Param,
-    Program, Rescue, Stmt, SuperRef, ThingDecl, TypeParam, TypeRef, UnOp,
+    BinOp, Block, CtorParam, Expr, FieldDecl, FnDecl, InterpPart, KindDecl, KindMethod,
+    LambdaParam, Param, Program, Rescue, Stmt, SuperRef, ThingDecl, TypeParam, TypeRef, UnOp,
 };
 use crate::error::Diagnostic;
 use crate::lexer::{StrPart, Token, TokenKind};
@@ -15,6 +15,7 @@ pub fn parse_tokens(tokens: Vec<Token>) -> Result<Program, Diagnostic> {
         pos: 0,
         fn_depth: 0,
         loop_depth: 0,
+        no_trailing: false,
     }
     .program()
 }
@@ -26,6 +27,8 @@ struct Parser {
     fn_depth: usize,
     /// Cuántos `while` envuelven a la sentencia actual.
     loop_depth: usize,
+    /// Dentro de la condición de un `if`/`while` una `{` abre el cuerpo, no una lambda final.
+    no_trailing: bool,
 }
 
 /// Operador binario, su enlace izquierdo y su enlace derecho.
@@ -152,6 +155,11 @@ impl Parser {
 
     fn block(&mut self) -> Result<Block, Diagnostic> {
         let open = self.expect(TokenKind::LBrace, "`{`")?.span;
+        self.block_rest(open)
+    }
+
+    /// El resto de un bloque cuyo `{` (en `open`) ya se consumió.
+    fn block_rest(&mut self, open: Span) -> Result<Block, Diagnostic> {
         let unclosed = || Diagnostic::new(open, "este bloque no se cierra: falta `}`");
         let mut stmts = Vec::new();
         loop {
@@ -233,7 +241,7 @@ impl Parser {
                 _ => return None,
             }
         }
-        (self.peek().kind == TokenKind::LParen).then_some(args)
+        (self.peek().kind == TokenKind::LParen || self.can_trail()).then_some(args)
     }
 
     fn type_ref(&mut self) -> Result<TypeRef, Diagnostic> {
@@ -251,6 +259,40 @@ impl Parser {
     }
 
     fn base_type_ref(&mut self) -> Result<TypeRef, Diagnostic> {
+        // `(Int, Str) -> Bool` (tipo de función) o `(T)` (agrupación, para `((Int) -> Int)?`).
+        if self.peek().kind == TokenKind::LParen {
+            let open = self.bump().span;
+            let mut items = Vec::new();
+            if self.peek().kind != TokenKind::RParen {
+                loop {
+                    items.push(self.type_ref()?);
+                    if self.peek().kind == TokenKind::Comma {
+                        self.bump();
+                    } else {
+                        break;
+                    }
+                }
+            }
+            let close = self.expect(TokenKind::RParen, "`,` o `)` en el tipo")?.span;
+            if self.peek().kind == TokenKind::Arrow {
+                self.bump();
+                let ret = self.type_ref()?;
+                let span = open.to(ret.span);
+                items.push(ret);
+                return Ok(TypeRef {
+                    name: "Fn".to_string(),
+                    args: items,
+                    span,
+                });
+            }
+            if items.len() == 1 {
+                return Ok(items.pop().expect("un elemento"));
+            }
+            return Err(Diagnostic::new(
+                open.to(close),
+                "un tipo de función necesita `->` y el tipo que devuelve, por ejemplo `(Int) -> Int`",
+            ));
+        }
         if self.peek().kind == TokenKind::LBracket {
             let open = self.bump().span;
             let elem = self.type_ref()?;
@@ -493,14 +535,7 @@ impl Parser {
                         });
                     }
                     TokenKind::Fn => {
-                        let method = self.fn_decl()?;
-                        if let Some(first) = method.type_params.first() {
-                            return Err(Diagnostic::new(
-                                first.span,
-                                "los métodos no pueden tener parámetros de tipo propios; usa los de la clase",
-                            ));
-                        }
-                        methods.push(method);
+                        methods.push(self.fn_decl()?);
                     }
                     other => {
                         return Err(self.error_here(format!(
@@ -707,7 +742,7 @@ impl Parser {
 
     fn if_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         let start = self.bump().span;
-        let cond = self.expr(0)?;
+        let cond = self.condition_expr()?;
         let then = self.block()?;
         let mut end = then.span;
         let otherwise = if self.peek().kind == TokenKind::Else {
@@ -735,9 +770,97 @@ impl Parser {
         })
     }
 
+    /// Condición de `if`/`while`: una `{` tras ella abre el cuerpo, no es una lambda final.
+    fn condition_expr(&mut self) -> Result<Expr, Diagnostic> {
+        let saved = std::mem::replace(&mut self.no_trailing, true);
+        let cond = self.expr(0);
+        self.no_trailing = saved;
+        cond
+    }
+
+    /// Analiza `f` con las lambdas finales permitidas (dentro de paréntesis y corchetes).
+    fn nested<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<T, Diagnostic>,
+    ) -> Result<T, Diagnostic> {
+        let saved = std::mem::replace(&mut self.no_trailing, false);
+        let result = f(self);
+        self.no_trailing = saved;
+        result
+    }
+
+    /// Lambda final (`lista.map { x -> x }`) si el siguiente token es `{` y está permitida.
+    fn trailing_lambda(&mut self) -> Result<Option<Expr>, Diagnostic> {
+        if !self.can_trail() {
+            return Ok(None);
+        }
+        let open = self.bump().span;
+        self.lambda(open).map(Some)
+    }
+
+    /// Lambda `{ a, b: Int -> cuerpo }`; el `{` ya se consumió. Sin `->` no tiene parámetros.
+    fn lambda(&mut self, open: Span) -> Result<Expr, Diagnostic> {
+        let saved = self.pos;
+        let params = match self.lambda_params() {
+            Some(params) => params,
+            None => {
+                self.pos = saved;
+                Vec::new()
+            }
+        };
+        let (fn_depth, loop_depth) = (self.fn_depth, self.loop_depth);
+        self.fn_depth = 1;
+        self.loop_depth = 0;
+        let body = self.nested(|p| p.block_rest(open));
+        self.fn_depth = fn_depth;
+        self.loop_depth = loop_depth;
+        let body = body?;
+        let span = body.span;
+        Ok(Expr::Lambda { params, body, span })
+    }
+
+    /// `a, b: Int ->`; `None` si lo que sigue no es una lista de parámetros.
+    fn lambda_params(&mut self) -> Option<Vec<LambdaParam>> {
+        let mut params: Vec<LambdaParam> = Vec::new();
+        if self.peek().kind == TokenKind::Arrow {
+            self.bump();
+            return Some(params);
+        }
+        loop {
+            let TokenKind::Ident(name) = self.peek().kind.clone() else {
+                return None;
+            };
+            let name_span = self.bump().span;
+            if params.iter().any(|p| p.name == name) {
+                return None;
+            }
+            let ty = if self.peek().kind == TokenKind::Colon {
+                self.bump();
+                Some(self.type_ref().ok()?)
+            } else {
+                None
+            };
+            params.push(LambdaParam {
+                name,
+                name_span,
+                ty,
+            });
+            match self.peek().kind {
+                TokenKind::Comma => {
+                    self.bump();
+                }
+                TokenKind::Arrow => {
+                    self.bump();
+                    return Some(params);
+                }
+                _ => return None,
+            }
+        }
+    }
+
     fn while_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         let start = self.bump().span;
-        let cond = self.expr(0)?;
+        let cond = self.condition_expr()?;
         self.loop_depth += 1;
         let body = self.block();
         self.loop_depth -= 1;
@@ -888,10 +1011,11 @@ impl Parser {
                 }
             }
             TokenKind::LParen => {
-                let inner = self.expr(0)?;
+                let inner = self.nested(|p| p.expr(0))?;
                 self.expect(TokenKind::RParen, "`)`")?;
                 inner
             }
+            TokenKind::LBrace => self.lambda(token.span)?,
             TokenKind::This => Expr::This(token.span),
             TokenKind::Nil => Expr::Nil(token.span),
             TokenKind::Super => {
@@ -914,6 +1038,15 @@ impl Parser {
             TokenKind::Ident(name) => {
                 if self.peek().kind == TokenKind::LParen {
                     self.call(name, Vec::new(), token.span)?
+                } else if let Some(lambda) = self.trailing_lambda()? {
+                    // `repite { ... }`: llamada cuyo único argumento es la lambda.
+                    let span = token.span.to(lambda.span());
+                    Expr::Call {
+                        name,
+                        type_args: Vec::new(),
+                        args: vec![lambda],
+                        span,
+                    }
                 } else if self.peek().kind == TokenKind::Lt {
                     // `f<Int>(x)` o `Lista<Int>()`; si no encaja, era una comparación.
                     let saved = self.pos;
@@ -944,7 +1077,7 @@ impl Parser {
             match self.peek().kind {
                 TokenKind::LBracket => {
                     self.bump();
-                    let index = self.expr(0)?;
+                    let index = self.nested(|p| p.expr(0))?;
                     let close = self.expect(TokenKind::RBracket, "`]`")?;
                     let span = lhs.span().to(close.span);
                     lhs = Expr::Index {
@@ -953,12 +1086,22 @@ impl Parser {
                         span,
                     };
                 }
+                TokenKind::LParen => {
+                    // `f(1)(2)`, `obj.campo(1)(2)`: llama al valor de tipo función de la izquierda.
+                    let (args, close) = self.call_args_trailing()?;
+                    let span = lhs.span().to(close);
+                    lhs = Expr::CallValue {
+                        callee: Box::new(lhs),
+                        args,
+                        span,
+                    };
+                }
                 TokenKind::QDot => {
                     self.bump();
                     let (name, name_span) =
                         self.expect_ident("el nombre de un campo o método después de `?.`")?;
-                    if self.peek().kind == TokenKind::LParen {
-                        let (args, close) = self.call_args()?;
+                    if self.peek().kind == TokenKind::LParen || self.can_trail() {
+                        let (args, close) = self.call_args_trailing()?;
                         let span = lhs.span().to(close);
                         lhs = Expr::SafeCall {
                             target: Box::new(lhs),
@@ -981,13 +1124,23 @@ impl Parser {
                     self.bump();
                     let (name, name_span) =
                         self.expect_ident("el nombre de un campo o método después de `.`")?;
-                    if self.peek().kind == TokenKind::LParen {
-                        let (args, close) = self.call_args()?;
+                    // `obj.metodo<Int>(x)`; si no encaja, `<` era una comparación.
+                    let mut type_args = Vec::new();
+                    if self.peek().kind == TokenKind::Lt {
+                        let saved = self.pos;
+                        match self.try_type_args() {
+                            Some(found) => type_args = found,
+                            None => self.pos = saved,
+                        }
+                    }
+                    if self.peek().kind == TokenKind::LParen || self.can_trail() {
+                        let (args, close) = self.call_args_trailing()?;
                         let span = lhs.span().to(close);
                         lhs = Expr::MethodCall {
                             target: Box::new(lhs),
                             name,
                             name_span,
+                            type_args,
                             args,
                             span,
                         };
@@ -1076,6 +1229,7 @@ impl Parser {
                         pos: 0,
                         fn_depth: self.fn_depth,
                         loop_depth: self.loop_depth,
+                        no_trailing: false,
                     };
                     let expr = inner.expr(0)?;
                     if inner.peek().kind != TokenKind::RBrace {
@@ -1102,7 +1256,7 @@ impl Parser {
             if self.peek().kind == TokenKind::RBracket {
                 break;
             }
-            elems.push(self.expr(0)?);
+            elems.push(self.nested(|p| p.expr(0))?);
             self.skip_newlines();
             if self.peek().kind == TokenKind::Comma {
                 self.bump();
@@ -1125,7 +1279,7 @@ impl Parser {
         type_args: Vec<TypeRef>,
         name_span: Span,
     ) -> Result<Expr, Diagnostic> {
-        let (args, close) = self.call_args()?;
+        let (args, close) = self.call_args_trailing()?;
         Ok(Expr::Call {
             name,
             type_args,
@@ -1134,13 +1288,33 @@ impl Parser {
         })
     }
 
+    /// ¿Sigue una lambda final sin paréntesis (`lista.map { ... }`)?
+    fn can_trail(&self) -> bool {
+        !self.no_trailing && self.peek().kind == TokenKind::LBrace
+    }
+
+    /// Argumentos `(a, b)` y/o una lambda final: `f(a) { ... }`, `x.m { ... }`. Devuelve también la
+    /// posición del último token.
+    fn call_args_trailing(&mut self) -> Result<(Vec<Expr>, Span), Diagnostic> {
+        let (mut args, mut end) = if self.peek().kind == TokenKind::LParen {
+            self.call_args()?
+        } else {
+            (Vec::new(), self.peek().span)
+        };
+        if let Some(lambda) = self.trailing_lambda()? {
+            end = lambda.span();
+            args.push(lambda);
+        }
+        Ok((args, end))
+    }
+
     /// Argumentos `(a, b)`; el siguiente token es `(`. Devuelve también la posición del `)`.
     fn call_args(&mut self) -> Result<(Vec<Expr>, Span), Diagnostic> {
         self.bump();
         let mut args = Vec::new();
         if self.peek().kind != TokenKind::RParen {
             loop {
-                args.push(self.expr(0)?);
+                args.push(self.nested(|p| p.expr(0))?);
                 if self.peek().kind == TokenKind::Comma {
                     self.bump();
                 } else {
@@ -1216,6 +1390,28 @@ mod tests {
             } => {
                 let args: Vec<String> = args.iter().map(sexp).collect();
                 format!("(. {} {name} {})", sexp(target), args.join(" ")).replace(" )", ")")
+            }
+            Expr::CallValue { callee, args, .. } => {
+                let args: Vec<String> = args.iter().map(sexp).collect();
+                format!("(callv {} {})", sexp(callee), args.join(" ")).replace(" )", ")")
+            }
+            Expr::Lambda { params, body, .. } => {
+                let names: Vec<String> = params
+                    .iter()
+                    .map(|p| match &p.ty {
+                        Some(ty) => format!("{}:{}", p.name, ty.name),
+                        None => p.name.clone(),
+                    })
+                    .collect();
+                let body: Vec<String> = body
+                    .stmts
+                    .iter()
+                    .map(|s| match s {
+                        Stmt::Expr(e) => sexp(e),
+                        _ => "stmt".to_string(),
+                    })
+                    .collect();
+                format!("(lambda [{}] {})", names.join(" "), body.join(" "))
             }
         }
     }
@@ -1814,10 +2010,80 @@ mod tests {
         assert!(err("thing P<T()").contains("`>` para cerrar los parámetros de tipo"));
         assert!(err("thing P<T, T>()").contains("está repetido"));
         assert!(err("fn f<T, T>() { }").contains("está repetido"));
-        assert!(err("thing A() { fn m<T>(x: T) { } }")
-            .contains("los métodos no pueden tener parámetros de tipo"));
+        assert!(parse("thing A() { fn m<T>(x: T) { } }").is_ok());
         assert!(err("fix a: Lista<Int = x").contains("`>` para cerrar los argumentos de tipo"));
         assert!(err("fix a: Lista<> = x").contains("un nombre de tipo"));
         assert!(err("thing A() : B<Int(1)").contains("`>` para cerrar los argumentos de tipo"));
+    }
+
+    // --- M8: lambdas y tipos de función ---
+    #[test]
+    fn lambdas() {
+        assert_eq!(shape("{ x -> x + 1 }"), "(lambda [x] (+ x 1))");
+        assert_eq!(shape("{ a, b: Int -> a }"), "(lambda [a b:Int] a)");
+        assert_eq!(shape("{ -> 1 }"), "(lambda [] 1)");
+        assert_eq!(shape("{ 7 }"), "(lambda [] 7)");
+        assert_eq!(shape("{ x }"), "(lambda [] x)");
+        assert_eq!(shape("f({ x -> x })"), "(call f (lambda [x] x))");
+    }
+
+    #[test]
+    fn lambdas_finales() {
+        assert_eq!(
+            shape("lista.map { x -> x }"),
+            "(. lista map (lambda [x] x))"
+        );
+        assert_eq!(shape("f(1) { x -> x }"), "(call f 1 (lambda [x] x))");
+        assert_eq!(shape("f { 1 }"), "(call f (lambda [] 1))");
+        assert_eq!(
+            shape("a.b(1) { x -> x }.c()"),
+            "(. (. a b 1 (lambda [x] x)) c)"
+        );
+        // En la condición de un `if`/`while` la `{` abre el cuerpo.
+        assert!(parse("if a.b { x = 1 }").is_ok());
+        assert!(parse("while f(x) { x += 1 }").is_ok());
+        // Dentro de paréntesis sí es una lambda.
+        assert!(parse("if f({ 1 }) == 1 { x = 1 }").is_ok());
+    }
+
+    #[test]
+    fn tipos_de_funcion() {
+        let program =
+            parse("fn f(a: (Int, Str) -> Bool, b: () -> Unit) -> (Int) -> Int = a").unwrap();
+        let Stmt::Fn(f) = &program.stmts[0] else {
+            panic!()
+        };
+        assert_eq!(f.params[0].ty.name, "Fn");
+        assert_eq!(f.params[0].ty.args.len(), 3);
+        assert_eq!(f.params[1].ty.args.len(), 1);
+        assert_eq!(f.ret.as_ref().unwrap().name, "Fn");
+        assert!(parse("fix g: ((Int) -> Int)? = nil").is_ok());
+        assert!(parse("fix g: [(Int) -> Int] = []").is_ok());
+        assert!(err("fix g: (Int, Int) = nil").contains("necesita `->`"));
+    }
+
+    #[test]
+    fn return_y_break_en_lambdas() {
+        assert!(parse("fix f = { x -> return x }").is_ok());
+        assert!(
+            err("while true { f({ break }) }").contains("solo se puede usar dentro de un `while`")
+        );
+    }
+
+    #[test]
+    fn argumentos_de_tipo_en_metodos_y_llamadas_a_valores() {
+        let program = parse("c.mapea<Float> { x -> x }").unwrap();
+        let Stmt::Expr(Expr::MethodCall {
+            type_args, args, ..
+        }) = &program.stmts[0]
+        else {
+            panic!()
+        };
+        assert_eq!(type_args.len(), 1);
+        assert_eq!(args.len(), 1);
+        assert_eq!(shape("f(1)(2)"), "(callv (call f 1) 2)");
+        assert_eq!(shape("a.b(1)(2)"), "(callv (. a b 1) 2)");
+        // Una comparación no se confunde con argumentos de tipo.
+        assert_eq!(shape("a.b < c"), "(< (. a b) c)");
     }
 }

@@ -141,9 +141,31 @@ pub enum Expr {
         target: Box<Expr>,
         name: String,
         name_span: Span,
+        /// Argumentos de tipo explícitos: `caja.mapea<Float> { ... }`.
+        type_args: Vec<TypeRef>,
         args: Vec<Expr>,
         span: Span,
     },
+    /// `f(1)(2)`: llama al valor de tipo función que produce `callee`.
+    CallValue {
+        callee: Box<Expr>,
+        args: Vec<Expr>,
+        span: Span,
+    },
+    /// `{ a, b -> cuerpo }`: función anónima que puede capturar variables de su alrededor.
+    Lambda {
+        params: Vec<LambdaParam>,
+        body: Block,
+        span: Span,
+    },
+}
+
+/// Parámetro de una lambda; el tipo se puede omitir si el contexto lo dice.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LambdaParam {
+    pub name: String,
+    pub name_span: Span,
+    pub ty: Option<TypeRef>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -175,6 +197,8 @@ impl Expr {
             | Expr::Elvis { span, .. }
             | Expr::Is { span, .. }
             | Expr::Cast { span, .. }
+            | Expr::Lambda { span, .. }
+            | Expr::CallValue { span, .. }
             | Expr::MethodCall { span, .. } => *span,
         }
     }

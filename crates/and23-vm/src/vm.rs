@@ -301,6 +301,56 @@ impl<W: Write> Vm<W> {
                     function = callee;
                     ip = 0;
                 }
+                Op::NewCell => {
+                    gc_point!();
+                    let value = pop!();
+                    let cell = heap.alloc_cell(value);
+                    stack.push(cell);
+                }
+                Op::CellGet => {
+                    let Value::Obj(cell) = pop!() else {
+                        unreachable!("el compilador garantiza una celda");
+                    };
+                    stack.push(heap.cell(cell));
+                }
+                Op::CellSet => {
+                    let Value::Obj(cell) = pop!() else {
+                        unreachable!("el compilador garantiza una celda");
+                    };
+                    let value = pop!();
+                    heap.set_cell(cell, value);
+                }
+                Op::GetCapture(index) => {
+                    let Value::Obj(closure) = stack[base] else {
+                        unreachable!("el local 0 de una lambda es la lambda");
+                    };
+                    stack.push(heap.capture(closure, index));
+                }
+                Op::Closure { func, n } => {
+                    gc_point!();
+                    let captures = stack.split_off(stack.len() - n as usize);
+                    let closure = heap.alloc_closure(func, captures);
+                    stack.push(closure);
+                }
+                Op::CallValue(argc) => {
+                    if frames.len() >= *max_depth {
+                        fail!(
+                            "desbordamiento de pila: más de {} llamadas anidadas",
+                            max_depth
+                        );
+                    }
+                    let Value::Obj(closure) = stack[stack.len() - argc as usize - 1] else {
+                        fail!("no se puede llamar a este valor: no es una función");
+                    };
+                    let Some(target) = heap.closure_function(closure) else {
+                        fail!("no se puede llamar a este valor: no es una función");
+                    };
+                    let callee = &module.functions[target as usize];
+                    frames.push(Frame { function, ip, base });
+                    base = stack.len() - callee.arity;
+                    function = callee;
+                    ip = 0;
+                }
                 Op::IsInstance(ty) => {
                     let Value::Obj(r) = pop!() else {
                         fail!("`is` necesita un objeto");
@@ -335,7 +385,9 @@ impl<W: Write> Vm<W> {
                     let len = match heap.get(r) {
                         Object::Str(s) => s.chars().count(),
                         Object::Array(items) => items.len(),
-                        Object::Instance { .. } => fail!("`len` necesita una cadena o un arreglo"),
+                        Object::Instance { .. } | Object::Closure { .. } | Object::Cell(_) => {
+                            fail!("`len` necesita una cadena o un arreglo")
+                        }
                     };
                     stack.push(Value::Int(len as i64));
                 }

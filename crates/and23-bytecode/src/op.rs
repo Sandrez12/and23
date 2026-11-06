@@ -94,6 +94,21 @@ pub enum Op {
     ArrayPop,
     /// Saca un valor y deja su hash (`hash`): igual para valores iguales, nunca negativo.
     Hash,
+    /// Saca un valor y deja una celda nueva que lo contiene (variable `mut` capturada por una lambda).
+    NewCell,
+    /// Saca una celda y deja su contenido.
+    CellGet,
+    /// Saca una celda y un valor, y guarda el valor en la celda.
+    CellSet,
+    /// Deja el valor capturado número `n` de la lambda en ejecución (el local 0 es la lambda).
+    GetCapture(u32),
+    /// Saca `n` valores capturados y deja una lambda que ejecuta la función `func`.
+    Closure {
+        func: u32,
+        n: u32,
+    },
+    /// Llama a la lambda que está bajo los `argc` argumentos.
+    CallValue(u32),
     /// Llama a la función `n`; sus argumentos ya están en la pila.
     Call(u32),
     /// Devuelve la cima al llamador.

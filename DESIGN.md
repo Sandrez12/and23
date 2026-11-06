@@ -79,7 +79,7 @@ Workspace de Rust en `crates/`:
 | M5 | Herencia, interfaces, vtables, `instanceof` | Ejemplo polimórfico (`examples/polimorfismo.jb`) |
 | M6 | Excepciones y null-safety | `attempt`/`rescue`; el compilador rechaza deref de `T?` (`examples/excepciones.jb`) |
 | M7 | Genéricos con erasure | `List<T>` y `Map<K,V>` propios (`Lista<T>` y `Mapa<K, V>` en `prelude.jb`, escritas en And23) |
-| M8 | Closures y lambdas | `lista.map { ... }` |
+| M8 | Closures y lambdas | `lista.map { ... }` (`examples/lambdas.jb`; `Lista` con `map`/`filter`/`reduce`/`ordena`) |
 | M9 | Módulos y paquetes | Proyecto de 3+ archivos |
 | M10 | Stdlib inicial (IO, strings, math) | Leer y procesar un archivo |
 | M11 | Concurrencia | Productor/consumidor |
@@ -100,6 +100,7 @@ Workspace de Rust en `crates/`:
 - **M5** (hecho): herencia, interfaces, despacho virtual, `is`/`as`/`super`; ver "Herencia e interfaces (M5)".
 - **M6** (hecho): excepciones (`attempt`/`rescue`/`fail`) y opcionales (`T?`, `nil`, `?.`, `?:`, estrechamiento); ver "Excepciones y opcionales (M6)".
 - **M7** (hecho): genéricos con erasure (clases, interfaces y funciones), cotas, `Lista<T>` y `Mapa<K, V>` en el preludio; ver "Genéricos (M7)".
+- **M8** (hecho): lambdas, closures (captura por valor y por referencia), tipos de función, métodos genéricos y `Lista` con `map`/`filter`/...; ver "Closures y lambdas (M8)".
 
 ### Diseño de la VM (M1b)
 
@@ -348,9 +349,40 @@ fix m = Mapa<Str, Int>()                                                // expl�
   antes del programa (unos 30-40 ms de arranque). `Lista<T>` es un arreglo con operaciones; `Mapa<K, V>` es una tabla hash de cubetas
   (arreglos de `Entrada<K, V>`) que duplica sus cubetas al pasar de 2 entradas por cubeta. Nombres reservados por el preludio: `Fallo`,
   `Lista`, `Entrada`, `Mapa` y `_cubetasVacias`.
-- **Límites conocidos de M7:** sin métodos genéricos propios, sin cotas múltiples, sin genéricos en `rescue`, sin comodines ni varianza
+- **Límites conocidos de M7:** (los métodos genéricos propios llegaron en M8) sin cotas múltiples, sin genéricos en `rescue`, sin comodines ni varianza
   (`Lista<out T>`), sin tipos crudos (`Lista` a secas es un error, salvo en `is`), sin deducir los argumentos de tipo de un método a partir del
   tipo esperado, y `Mapa` es una tabla sin orden (los `claves()` salen en el orden de las cubetas).
+
+### Closures y lambdas (M8)
+
+- **Sintaxis:** `{ a, b -> cuerpo }`; los parámetros se anotan (`a: Int`) o se deducen del tipo esperado; `{ cuerpo }` no tiene parámetros. El
+  cuerpo es una lista de sentencias cuya última expresión es el valor (con `Unit` esperado se descarta). `return` sale de la lambda. Una
+  lambda final va fuera del paréntesis (`xs.map { ... }`, `f(a) { ... }`, `f { ... }`); en la condición de un `if`/`while` la `{` abre el
+  cuerpo, así que ahí una lambda necesita paréntesis. Tipos de función: `(A, B) -> R` (el verificador los guarda como `Type::Fn`; en el AST es
+  un `TypeRef` de nombre `Fn` con los parámetros y el resultado como argumentos, por eso `Fn` es un nombre reservado). `f(1)(2)` es
+  `Expr::CallValue`, y `f(x)` donde `f` es una variable, parámetro o campo de tipo función se anota en `Resolutions.valuecalls`.
+- **Inferencia:** una lambda se verifica contra el tipo esperado (`expr_as`). En una llamada genérica, primero se deducen los argumentos que no
+  son lambdas, luego cada lambda con los parámetros ya conocidos (de ahí sale `R` en `map<R>`), y el cuerpo se verifica otra vez con los tipos
+  completos. Sin tipo esperado (`fix f = { ... }`) los parámetros deben llevar anotación. Una función genérica no se puede usar como valor.
+  Asignabilidad: los parámetros son contravariantes, el resultado covariante, y un `-> Unit` solo admite funciones que devuelven `Unit`.
+- **Estrechamiento y lambdas:** una lambda puede ejecutarse más tarde, así que dentro de ella una variable `mut` de fuera vuelve a su tipo
+  declarado (la `fix` conserva el estrechamiento), y las `mut` que la lambda asigna dejan de estar estrechadas al crearla.
+- **Métodos genéricos:** `fn mapea<R>(f: (T) -> R) -> Caja<R>`. Los parámetros de tipo del método se suman a los de la clase (no pueden repetirse)
+  y se deducen en cada llamada como en una función; las interfaces (`kind`) siguen sin métodos genéricos.
+- **Ejecución:** una lambda es un objeto del heap (`Object::Closure{function, captures}`) y su función es una `Function` del módulo cuyo local 0
+  es la propia lambda y cuyos parámetros siguen. `Closure{func, n}` saca `n` valores capturados y crea el objeto; `CallValue(argc)` llama al
+  objeto que está bajo los argumentos; `GetCapture(i)` lee un valor capturado. No hay marcos nuevos ni cambios en la tabla de métodos.
+- **Qué se captura:** el compilador resuelve cada nombre buscando en la función actual, luego en las que la envuelven (cada lambda del camino
+  captura la variable) y al final en las globales, que se usan directamente sin capturar. `fix` y parámetros se copian al crear la lambda. Una
+  variable `mut` capturada vive en una celda (`Object::Cell`; `NewCell`, `CellGet`, `CellSet`) para que la lambda y la función de fuera
+  compartan cambios y la variable sobreviva a su función. Saber qué `mut` van en celda hace falta al declararlas, así que `build` compila cada
+  función una vez, anota las capturadas (por número de orden de declaración) y, si hubo alguna, la compila de nuevo con ellas en celda.
+  Las demás `mut` no pagan nada; el coste es compilar dos veces algunas funciones. `this` se captura como una variable más.
+- **Funciones como valores:** `aplica(triple, 4)` crea una lambda sin capturas que llama a la función (un envoltorio `triple.<ref>`).
+- **Recolector:** el marcado recorre los valores capturados y el contenido de las celdas; `--gc-stress` da la misma salida en todos los tests.
+- **Límites conocidos de M8:** una lambda no puede referirse a sí misma por su nombre dentro de una función (solo vale en el nivel superior y con el tipo anotado,
+  `fix f: (Int) -> Int = { ... f(x) ... }`, donde `f` es global); no hay `it` implícito ni sintaxis `::nombre`; los métodos y constructores no se pasan como
+  valores (envuélvelos en una lambda); no hay lambdas genéricas ni cotas en las interfaces; `ordena` es una inserción estable O(n²).
 
 ## Fuentes de referencia
 

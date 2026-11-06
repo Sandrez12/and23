@@ -497,3 +497,117 @@ fn repl_con_genericos() {
         repl("fix m = Mapa<Str, Int>()\nm.pone(\"a\", 7)\nm.obtiene(\"a\")\nm.obtiene(\"b\")\n");
     assert_eq!(stdout(&out), "7\nnil\n");
 }
+
+#[test]
+fn ejemplo_de_lambdas() {
+    let out = run_example("lambdas.jb");
+    assert!(
+        out.starts_with(
+            "21
+18
+50
+1 2 1 3
+"
+        ),
+        "{out}"
+    );
+    assert!(
+        out.contains(
+            "pares al cuadrado: [4, 16, 36]
+"
+        ),
+        "{out}"
+    );
+    assert!(
+        out.contains(
+            "[\"ana(31)\", \"caro(31)\", \"beto(25)\", \"dani(19)\"]
+"
+        ),
+        "{out}"
+    );
+    assert!(
+        out.contains(
+            "té terminó.té terminó.
+"
+        ),
+        "{out}"
+    );
+    assert!(
+        out.ends_with(
+            "rescatado: paré en 3
+"
+        ),
+        "{out}"
+    );
+}
+
+#[test]
+fn gc_stress_con_lambdas_da_la_misma_salida() {
+    let normal = and23().arg(example("lambdas.jb")).output().unwrap();
+    let stress = and23()
+        .arg("--gc-stress")
+        .arg(example("lambdas.jb"))
+        .output()
+        .unwrap();
+    assert!(stress.status.success(), "{}", stderr(&stress));
+    assert_eq!(stdout(&normal), stdout(&stress));
+}
+
+#[test]
+fn disasm_de_lambdas_muestra_la_creacion_y_las_celdas() {
+    let path = std::env::temp_dir().join(format!("and23_cli_disasm_lam_{}.jb", std::process::id()));
+    std::fs::write(
+        &path,
+        "fn f() -> () -> Int {
+  mut n = 0
+  return { n += 1
+ n }
+}
+",
+    )
+    .unwrap();
+    let out = and23().arg("--disasm").arg(&path).output().unwrap();
+    std::fs::remove_file(&path).ok();
+    let text = stdout(&out);
+    assert!(text.contains("NewCell"), "{text}");
+    assert!(text.contains("Closure"), "{text}");
+    assert!(text.contains("f.<lambda>"), "{text}");
+    assert!(text.contains("GetCapture(0)"), "{text}");
+    assert!(text.contains("CellSet"), "{text}");
+}
+
+#[test]
+fn repl_con_lambdas() {
+    let out = repl(
+        "mut n = 0
+fix inc = { n += 1
+ n }
+inc()
+inc()
+Lista<Int>().map { x -> x }.tam()
+",
+    );
+    let text = stdout(&out);
+    assert!(
+        text.contains(
+            "1
+2
+0
+"
+        ),
+        "{text}"
+    );
+}
+
+#[test]
+fn un_error_de_tipos_en_una_lambda_senala_su_posicion() {
+    let out = run_source(
+        "lambda_err",
+        "fix f: (Int) -> Int = { a -> \"s\" }
+",
+    );
+    assert!(!out.status.success());
+    let err = stderr(&out);
+    assert!(err.contains(":1:30"), "{err}");
+    assert!(err.contains("se esperaba Int, pero es Str"), "{err}");
+}
