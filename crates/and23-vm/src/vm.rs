@@ -347,6 +347,20 @@ impl<W: Write> Vm<W> {
                     heap.push(r, value);
                     stack.push(Value::Unit);
                 }
+                Op::ArrayPop => {
+                    let Value::Obj(r) = pop!() else {
+                        fail!("`pop` necesita un arreglo");
+                    };
+                    match heap.pop(r) {
+                        Some(v) => stack.push(v),
+                        None => fail!("`pop` sobre un arreglo vacío"),
+                    }
+                }
+                Op::Hash => {
+                    let v = pop!();
+                    let h = hash_value(heap, v);
+                    stack.push(Value::Int(h));
+                }
                 Op::GetLocal(n) => {
                     let v = stack[base + n as usize];
                     stack.push(v);
@@ -561,9 +575,41 @@ impl<W: Write> Vm<W> {
     }
 }
 
-/// Como `binary`, pero también compara cadenas (necesita el heap para leerlas).
+/// Hash de un valor: los iguales (`==`) dan lo mismo. Las cadenas, por contenido; los demás objetos,
+/// por identidad. Nunca es negativo.
+fn hash_value(heap: &Heap, v: Value) -> i64 {
+    const FNV: u64 = 0xcbf2_9ce4_8422_2325;
+    let raw = match v {
+        Value::Int(i) => i as u64,
+        // `1 == 1.0` es verdadero, así que un decimal entero comparte el hash del entero.
+        Value::Float(f) if f.fract() == 0.0 && f.abs() < 9.0e15 => f as i64 as u64,
+        Value::Float(f) => f.to_bits(),
+        Value::Bool(b) => b as u64,
+        Value::Unit => 0,
+        Value::Nil => 1,
+        Value::Obj(r) => match heap.get(r) {
+            crate::heap::Object::Str(s) => s
+                .bytes()
+                .fold(FNV, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3)),
+            _ => heap.id(r) as u64,
+        },
+    };
+    // Mezcla final para repartir bien los enteros consecutivos.
+    let mixed = (raw ^ (raw >> 33)).wrapping_mul(0xff51_afd7_ed55_8ccd);
+    ((mixed ^ (mixed >> 29)) & (i64::MAX as u64)) as i64
+}
+
+/// Como `binary`, pero también compara cadenas (necesita el heap para leerlas). Dos objetos que no
+/// son cadenas (arreglos, instancias) se comparan por identidad.
 fn binary_h(heap: &Heap, op: Op, a: Value, b: Value, span: Span) -> Result<Value, Diagnostic> {
     if let (Value::Obj(x), Value::Obj(y)) = (a, b) {
+        if matches!(op, Op::Eq | Op::Ne) {
+            let same = match (heap.get(x), heap.get(y)) {
+                (crate::heap::Object::Str(s), crate::heap::Object::Str(t)) => s == t,
+                _ => x == y,
+            };
+            return Ok(Value::Bool(same == (op == Op::Eq)));
+        }
         let (x, y) = (heap.str(x), heap.str(y));
         let result = match op {
             Op::Eq => x == y,

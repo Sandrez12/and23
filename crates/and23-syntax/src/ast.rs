@@ -80,6 +80,8 @@ pub enum Expr {
     },
     Call {
         name: String,
+        /// Argumentos de tipo explícitos: `Lista<Int>(...)`, `primero<Int>(xs)`.
+        type_args: Vec<TypeRef>,
         args: Vec<Expr>,
         span: Span,
     },
@@ -187,6 +189,15 @@ pub struct TypeRef {
     pub span: Span,
 }
 
+/// Parámetro de tipo de una declaración: `T` o `T: Cota`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeParam {
+    pub name: String,
+    pub name_span: Span,
+    pub bound: Option<TypeRef>,
+    pub span: Span,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Param {
     pub name: String,
@@ -204,6 +215,8 @@ pub struct Block {
 pub struct FnDecl {
     pub name: String,
     pub name_span: Span,
+    /// Solo las funciones del nivel superior pueden ser genéricas.
+    pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,
     pub ret: Option<TypeRef>,
     /// El cuerpo se escribió como `= expr` (sin llaves): su tipo de retorno puede inferirse.
@@ -238,6 +251,8 @@ pub struct FieldDecl {
 pub struct SuperRef {
     pub name: String,
     pub name_span: Span,
+    /// `Padre<Int>(...)` o `Interfaz<Int>`.
+    pub type_args: Vec<TypeRef>,
     pub args: Option<Vec<Expr>>,
     pub span: Span,
 }
@@ -257,6 +272,7 @@ pub struct KindMethod {
 pub struct KindDecl {
     pub name: String,
     pub name_span: Span,
+    pub type_params: Vec<TypeParam>,
     pub methods: Vec<KindMethod>,
     pub span: Span,
 }
@@ -266,6 +282,7 @@ pub struct KindDecl {
 pub struct ThingDecl {
     pub name: String,
     pub name_span: Span,
+    pub type_params: Vec<TypeParam>,
     pub params: Vec<CtorParam>,
     pub supers: Vec<SuperRef>,
     pub fields: Vec<FieldDecl>,

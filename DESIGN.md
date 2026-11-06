@@ -78,7 +78,7 @@ Workspace de Rust en `crates/`:
 | M4 | Clases, campos, métodos, constructores | Programa OO de ~200 líneas (`examples/clases.jb`, 222 líneas) |
 | M5 | Herencia, interfaces, vtables, `instanceof` | Ejemplo polimórfico (`examples/polimorfismo.jb`) |
 | M6 | Excepciones y null-safety | `attempt`/`rescue`; el compilador rechaza deref de `T?` (`examples/excepciones.jb`) |
-| M7 | Genéricos con erasure | `List<T>` y `Map<K,V>` propios |
+| M7 | Genéricos con erasure | `List<T>` y `Map<K,V>` propios (`Lista<T>` y `Mapa<K, V>` en `prelude.jb`, escritas en And23) |
 | M8 | Closures y lambdas | `lista.map { ... }` |
 | M9 | Módulos y paquetes | Proyecto de 3+ archivos |
 | M10 | Stdlib inicial (IO, strings, math) | Leer y procesar un archivo |
@@ -99,6 +99,7 @@ Workspace de Rust en `crates/`:
 - **M4** (hecho): clases, campos, métodos y constructores; ver "Clases (M4)".
 - **M5** (hecho): herencia, interfaces, despacho virtual, `is`/`as`/`super`; ver "Herencia e interfaces (M5)".
 - **M6** (hecho): excepciones (`attempt`/`rescue`/`fail`) y opcionales (`T?`, `nil`, `?.`, `?:`, estrechamiento); ver "Excepciones y opcionales (M6)".
+- **M7** (hecho): genéricos con erasure (clases, interfaces y funciones), cotas, `Lista<T>` y `Mapa<K, V>` en el preludio; ver "Genéricos (M7)".
 
 ### Diseño de la VM (M1b)
 
@@ -147,7 +148,7 @@ Workspace de Rust en `crates/`:
 - **Tipos nuevos:** `Str` y `[T]` (arreglo homogéneo; `TypeRef` lleva `args`, así `[Int]` es `Array<Int>` y deja el camino a los genéricos).
   `Unit` no puede ser elemento ni interpolarse.
 - **Cadenas:** inmutables y UTF-8. `len` cuenta caracteres Unicode. `+` solo une `Str` con `Str`; para mezclar con otros valores se usa
-  `"${...}"`. Comparan por contenido (`==`) y lexicográficamente (`<`). `==` sobre arreglos no existe todavía.
+  `"${...}"`. Comparan por contenido (`==`) y lexicográficamente (`<`). `==` sobre arreglos compara por referencia (desde M7).
 - **Interpolación:** el lexer lee `${expr}` recursivamente (admite cadenas y llaves anidadas) y el parser analiza esos tokens con las
   posiciones del fuente original, así los errores dentro de una interpolación señalan el sitio exacto.
 - **Arreglos:** son referencias (asignar o pasar uno no lo copia); `fix` impide reasignar la variable, no cambiar los elementos.
@@ -191,7 +192,7 @@ c.deposita(5)
 - **Objetos:** viven en el heap como `Instance { class, fields }`, son referencias (compartirlos no los copia) y el GC
   recorre sus campos; los ciclos (`a.hijos` que contiene a `a`) se recolectan y `show` los corta con `...`. `fix` en un campo
   prohíbe reasignarlo (incluso desde los métodos); `fix` en una variable solo prohíbe cambiar la variable.
-  `==` entre objetos no existe todavía (la igualdad estructural llegará con los tipos de datos).
+  `==` entre objetos compara por referencia (desde M7; antes no existía).
   `show` imprime `Clase(campo=valor, ...)`; las cadenas dentro van entre comillas.
 - **Compilación:** un método es una función normal llamada `Clase.metodo` con `this` como local 0 y los parámetros después;
   `obj.m(x)` lleva el receptor como primer argumento (en M4 era una llamada estática; desde M5 es virtual, ver abajo).
@@ -233,7 +234,7 @@ fix p = a as Perro                                      // comprobado al ejecuta
   parámetros del hijo) y después rellena sus propios campos: el orden es padre, cabecera, cuerpo; probado con trazas.
 - **Subtipos:** un tipo clase o interfaz acepta cualquier subclase o implementación donde se espera (asignación, argumentos,
   retorno, `push`, y los elementos de un literal `[...]` si el arreglo anotado es de objetos). Los arreglos son invariantes:
-  un `[Perro]` no es un `[Animal]`. `==` entre objetos sigue sin existir.
+  un `[Perro]` no es un `[Animal]`. `==` entre objetos compara por referencia (desde M7).
 - **Despacho virtual:** `obj.m()`, `this.m()` y `m()` sin receptor compilan a `CallMethod { método, argc }`. Cada clase del módulo
   (`ClassDef`) lleva una tabla `vtable: id de método -> función` ya aplanada (heredados incluidos, los sobrescritos reemplazan),
   que el compilador arma con el padre antes que el hijo. Los ids de método son por nombre (`Module::methods`); no hay
@@ -249,7 +250,7 @@ fix p = a as Perro                                      // comprobado al ejecuta
 - **Costo:** la búsqueda en la tabla es un `HashMap` por llamada; basta por ahora (un caché en línea quedaría para un hito de
   rendimiento). `super` no existe fuera de métodos de una clase con padre.
 - **Límites conocidos de M5:** una sola clase padre (sin herencia múltiple de clases), interfaces sin herencia ni métodos por
-  defecto, sin clases abstractas, sin visibilidad (todo público), sin `==` entre objetos, sin covarianza en sobrescrituras.
+  defecto, sin clases abstractas, sin visibilidad (todo público) y sin covarianza en sobrescrituras.
 
 ### Excepciones y opcionales (M6)
 
@@ -290,7 +291,7 @@ if p != nil { show(p.nombre) }
 - **Operadores:** `a?.campo` y `a?.metodo(args)` (`Op::JumpIfNil`: si `a` es nil el resultado es nil y no se evalúan los argumentos;
   el resultado se vuelve opcional, y una llamada que devuelve `Unit` sigue siendo `Unit`), `a ?: b` (`Op::JumpIfNotNil`, solo
   evalúa `b` si hace falta; es el operador de menor precedencia y asocia a la izquierda). `x == nil` y `x != nil` solo se aceptan
-  sobre un opcional; comparar un valor que nunca es nil con `nil` es un error. `==` entre dos opcionales no existe.
+  sobre un opcional; comparar un valor que nunca es nil con `nil` es un error. `==` entre dos opcionales del mismo tipo vale desde M7 (`nil` es igual a `nil` y distinto de cualquier valor).
 - **Estrechamiento** (solo en el verificador; no genera código): `facts(cond)` extrae qué variables prueba la condición cuando es
   verdadera y cuando es falsa (`!=`/`==` con `nil`, `&&`, `||`, `!`). Se aplica al bloque `then`/`else`, al cuerpo de un `while`,
   al lado derecho de `&&`/`||` y, si un bloque sale (`return`, `fail`, `break`, `continue`), al resto del bloque que lo contiene.
@@ -300,6 +301,56 @@ if p != nil { show(p.nombre) }
   comprobación y el uso. Un `mut` local se estrecha, pero una asignación que pueda dar `nil` lo vuelve a ensanchar, y si se asigna
   dentro de un bucle anidado en el bloque no se estrecha (el bucle repetiría un uso anterior a la asignación).
 - **Límites:** sin `!!` (desreferencia forzada), sin asignación segura (`a?.x = 1`), sin `?:` con `fail`/`return` a la derecha.
+
+### Genéricos (M7)
+
+```
+thing Caja<T>(fix valor: T) { fn dame() -> T = valor }
+thing Pila<T>() : Lista<T>() { fn empuja(x: T) { agrega(x) } }          // herencia entre genéricos
+kind Ordenable<T> { fn antesDe(otro: T) -> Bool }
+fn minimo<T: Ordenable<T>>(a: T, b: T) -> T { ... }                   // con cota
+fix c = Caja(5)                                                         // Caja<Int>, deducido
+fix l: Lista<Str> = Lista()                                             // deducido del tipo esperado
+fix m = Mapa<Str, Int>()                                                // explícito
+```
+
+- **Erasure, de verdad:** el bytecode, la VM y el recolector no cambian: `Value` ya es uniforme (un `Int`, un `Float` o una referencia ocupan
+  lo mismo), así que no hay encajonado ni casts insertados. Los genéricos existen solo en el verificador: un `Mapa<Int, Int>` guarda
+  enteros directamente y `Caja<T>` ocupa lo mismo que `Caja<Str>`. El compilador solo ve nombres de clase (los argumentos de tipo se
+  ignoran, salvo para resolver llamadas) y `is`/`as` comparan solo la clase.
+- **Dónde hay parámetros de tipo:** clases (`thing`), interfaces (`kind`) y funciones del nivel superior. Los métodos usan los de su clase y no
+  pueden declarar los suyos (todavía no hay lambdas que lo justifiquen). Cota opcional por parámetro (`T: Ordenable<T>`, una clase o
+  interfaz, admite referirse a sí mismo).
+- **Tipos nuevos en el verificador:** `Type::Obj(nombre, argumentos)` y `Type::Param(nombre)`. Se verifica **una sola vez** el cuerpo genérico con
+  `T` opaco, no una copia por instanciación: dentro de él un `T` solo se puede asignar, comparar con `==`/`!=`, guardar, pasar, imprimir,
+  interpolar y hashear; no admite aritmética, `<`, campos ni métodos, salvo los de su cota (un `T: Animal` ofrece sus campos y métodos
+  y vale como `Animal`).
+- **Instanciar:** `subst` sustituye parámetros por argumentos (y aplana `T?` cuando `T` ya es opcional: un `Mapa<Str, Int?>` da `Int?` y no
+  `Int??`). Los campos, métodos y constructores se leen con los argumentos del receptor aplicados; la herencia los encadena
+  (`Pila<Str>` → `Lista<Str>`), igual que las interfaces (`as_super` ve un tipo como su ancestro o interfaz con sus argumentos).
+- **Inferencia de argumentos de tipo** (`infer`, en este orden): los explícitos; luego los que salen de unificar el tipo de cada
+  parámetro con el del argumento (`nil` y `[]` no aportan); y, solo para constructores, el tipo que pide el contexto
+  (`fix l: Lista<Int> = Lista()`, argumentos, retornos y campos). Si queda alguno sin deducir es un error que sugiere escribirlos
+  (`Lista<Int>()`). Después se comprueban las cotas.
+- **Invarianza:** `Caja<Perro>` no es `Caja<Animal>` ni `[Perro]` es `[Animal]`; una subclase sí es su tipo instanciado
+  (`CajaP : Caja<Perro>` es `Caja<Perro>`). Las sobrescrituras y las implementaciones de interfaces genéricas se comparan con la firma
+  ya instanciada.
+- **Sintaxis:** los argumentos de tipo van entre `<>` tras un nombre de tipo (`Mapa<Str, [Int]>`, `Lista<Lista<Int>>`) y también al llamar
+  (`Lista<Int>()`, `primero<Int>(xs)`): el parser lo intenta y, si no encaja con un `(` al final, vuelve atrás y lo lee como
+  comparación (`a < b`). No hay token `>>`, así que los cierres anidados no necesitan espacios; sí hace falta un espacio en
+  `Caja<Int> = x` (sin él se lee `>=`).
+- **Igualdad:** para poder escribir un `Mapa` hecho en el lenguaje hizo falta `==` sobre un `T` cualquiera, así que desde M7 `==`/`!=` valen
+  entre valores del mismo tipo (o subtipos): números por valor (`1 == 1.0`), cadenas por contenido, objetos y arreglos por referencia, `nil`
+  contra opcionales. Es una decisión de M7 que sustituye a "no existe" de M3–M6.
+- **Funciones integradas nuevas:** `pop(arreglo)` (quita y devuelve el último; error de ejecución si está vacío) y `hash(valor)` (un `Int` no negativo;
+  cadenas por contenido, `1` y `1.0` coinciden, objetos por identidad). Son las dos piezas que faltaban para escribir `Lista` y `Mapa` en And23.
+- **Preludio:** `crates/and23-syntax/prelude.jb` se incluye en `and23_syntax::PRELUDE` junto con `Fallo` y cada `Session` lo verifica y compila
+  antes del programa (unos 30-40 ms de arranque). `Lista<T>` es un arreglo con operaciones; `Mapa<K, V>` es una tabla hash de cubetas
+  (arreglos de `Entrada<K, V>`) que duplica sus cubetas al pasar de 2 entradas por cubeta. Nombres reservados por el preludio: `Fallo`,
+  `Lista`, `Entrada`, `Mapa` y `_cubetasVacias`.
+- **Límites conocidos de M7:** sin métodos genéricos propios, sin cotas múltiples, sin genéricos en `rescue`, sin comodines ni varianza
+  (`Lista<out T>`), sin tipos crudos (`Lista` a secas es un error, salvo en `is`), sin deducir los argumentos de tipo de un método a partir del
+  tipo esperado, y `Mapa` es una tabla sin orden (los `claves()` salen en el orden de las cubetas).
 
 ## Fuentes de referencia
 

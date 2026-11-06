@@ -1073,11 +1073,19 @@ impl<'a> FnCompiler<'a> {
                     self.emit(binary_op(*op), *span);
                 }
             },
-            Expr::Call { name, args, span } if name == "len" || name == "push" => {
+            Expr::Call {
+                name, args, span, ..
+            } if matches!(name.as_str(), "len" | "push" | "pop" | "hash") => {
                 for arg in args {
                     self.expr(arg)?;
                 }
-                self.emit(if name == "len" { Op::Len } else { Op::Push }, *span);
+                let op = match name.as_str() {
+                    "len" => Op::Len,
+                    "push" => Op::Push,
+                    "pop" => Op::ArrayPop,
+                    _ => Op::Hash,
+                };
+                self.emit(op, *span);
             }
             Expr::Call { args, span, .. } if self.res.virtuals.contains_key(span) => {
                 // Método de la propia clase llamado por su nombre: `this` va primero.
@@ -1094,14 +1102,18 @@ impl<'a> FnCompiler<'a> {
                     *span,
                 );
             }
-            Expr::Call { name, args, span } if self.tables.classes.contains_key(name) => {
+            Expr::Call {
+                name, args, span, ..
+            } if self.tables.classes.contains_key(name) => {
                 let ctor = self.tables.classes[name].ctor;
                 for arg in args {
                     self.expr(arg)?;
                 }
                 self.emit(Op::Call(ctor), *span);
             }
-            Expr::Call { name, args, span } => {
+            Expr::Call {
+                name, args, span, ..
+            } => {
                 let Some(&(index, arity)) = self.tables.funcs.get(name) else {
                     return Err(Diagnostic::new(
                         *span,

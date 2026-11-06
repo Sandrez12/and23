@@ -207,6 +207,19 @@ impl Heap {
         self.bytes += (after - before) * std::mem::size_of::<Value>();
     }
 
+    /// Quita y devuelve el último elemento del arreglo `r`, si hay.
+    pub fn pop(&mut self, r: ObjRef) -> Option<Value> {
+        let Some(Object::Array(items)) = self.slots[r.0 as usize].object.as_mut() else {
+            unreachable!("el verificador de tipos garantiza un arreglo");
+        };
+        items.pop()
+    }
+
+    /// Identidad estable del objeto (no cambia mientras vive: el heap no mueve objetos).
+    pub fn id(&self, r: ObjRef) -> u32 {
+        r.0
+    }
+
     pub fn array_mut(&mut self, r: ObjRef) -> &mut Vec<Value> {
         match self.slots[r.0 as usize].object.as_mut() {
             Some(Object::Array(items)) => items,

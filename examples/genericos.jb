@@ -1,0 +1,132 @@
+// M7: genéricos con erasure. `Lista<T>` y `Mapa<K, V>` vienen escritas en And23 (prelude.jb);
+// aquí se usan, y se declaran clases, interfaces y funciones genéricas propias.
+
+// --- Las dos de la biblioteca ---
+fn cuentaPalabras(texto: [Str]) -> Mapa<Str, Int> {
+    fix cuenta = Mapa<Str, Int>()
+    mut i = 0
+    while i < len(texto) {
+        fix palabra = texto[i]
+        cuenta.pone(palabra, (cuenta.obtiene(palabra) ?: 0) + 1)
+        i += 1
+    }
+    return cuenta
+}
+
+// --- Una clase genérica con dos parámetros; los argumentos de tipo se deducen del constructor ---
+thing Par<A, B>(fix primero: A, fix segundo: B) {
+    fn intercambiado() -> Par<B, A> = Par(segundo, primero)
+    fn texto() -> Str = "(${primero}, ${segundo})"
+}
+
+// --- Herencia entre genéricos: una Pila es una Lista con otros nombres ---
+thing Pila<T>() : Lista<T>() {
+    fn empuja(x: T) { agrega(x) }
+    fn saca() -> T = quita()
+    fn cima() -> T = obtiene(tam() - 1)
+}
+
+// --- Una interfaz genérica y una clase que la implementa ---
+kind Fuente<T> {
+    fn siguiente() -> T?
+}
+
+thing Contador(fix hasta: Int) : Fuente<Int> {
+    mut actual = 0
+    fn siguiente() -> Int? {
+        if actual >= hasta { return nil }
+        actual += 1
+        return actual
+    }
+}
+
+fn recoge<T>(fuente: Fuente<T>) -> Lista<T> {
+    fix res = Lista<T>()
+    mut x = fuente.siguiente()
+    while x != nil {
+        res.agrega(x)
+        x = fuente.siguiente()
+    }
+    return res
+}
+
+// --- Funciones genéricas; `T: Ordenable<T>` exige que T sepa compararse ---
+kind Ordenable<T> {
+    fn antesDe(otro: T) -> Bool
+}
+
+thing Version(fix mayor: Int, fix menor: Int) : Ordenable<Version> {
+    fn antesDe(otro: Version) -> Bool {
+        if mayor != otro.mayor { return mayor < otro.mayor }
+        return menor < otro.menor
+    }
+    fn texto() -> Str = "${mayor}.${menor}"
+}
+
+fn minimo<T: Ordenable<T>>(a: T, b: T) -> T {
+    if a.antesDe(b) { return a }
+    return b
+}
+
+fn primero<T>(xs: [T]) -> T = xs[0]
+
+fn repite<T>(x: T, veces: Int) -> [T] {
+    fix res: [T] = []
+    mut i = 0
+    while i < veces {
+        push(res, x)
+        i += 1
+    }
+    return res
+}
+
+fn main() {
+    // Lista<T>
+    fix numeros = Lista<Int>()
+    mut i = 1
+    while i <= 5 {
+        numeros.agrega(i * i)
+        i += 1
+    }
+    show(numeros.texto())
+    show("tamaño ${numeros.tam()}, ¿tiene 9? ${numeros.contiene(9)}, ¿tiene 10? ${numeros.contiene(10)}")
+    numeros.inserta(1, 100)
+    show("quitado ${numeros.quitaEn(3)} -> ${numeros.texto()}")
+
+    // Mapa<K, V>: contar palabras
+    fix cuentas = cuentaPalabras(["a", "b", "a", "c", "b", "a"])
+    show("a=${cuentas.obtiene("a")} b=${cuentas.obtiene("b")} c=${cuentas.obtiene("c")} d=${cuentas.obtiene("d")}")
+    show("distintas: ${cuentas.tam()}, quita b: ${cuentas.quita("b")}, quedan ${cuentas.tam()}")
+
+    // El mapa crece solo: 500 entradas
+    fix cuadrados = Mapa<Int, Int>()
+    mut n = 0
+    while n < 500 {
+        cuadrados.pone(n, n * n)
+        n += 1
+    }
+    show("500 entradas: ${cuadrados.tam()}, 123 -> ${cuadrados.obtiene(123)}, 999 -> ${cuadrados.obtiene(999)}")
+
+    // Par<A, B> con los tipos deducidos
+    fix p = Par("edad", 30)
+    show("${p.texto()} -> ${p.intercambiado().texto()}")
+
+    // Pila<T> hereda de Lista<T>
+    fix pila = Pila<Str>()
+    pila.empuja("uno")
+    pila.empuja("dos")
+    pila.empuja("tres")
+    show("cima ${pila.cima()}, saco ${pila.saca()}, ${pila.saca()}, quedan ${pila.tam()}")
+
+    // Interfaz genérica
+    fix pares = recoge(Contador(4))
+    show("recogidos: ${pares.texto()}")
+
+    // Cotas y funciones genéricas
+    fix v1 = Version(1, 9)
+    fix v2 = Version(1, 10)
+    show("la menor es ${minimo(v1, v2).texto()}")
+    show("primero: ${primero(["x", "y"])} y ${primero([7, 8, 9])}")
+    show(repite("ja", 3))
+    show(repite<Int>(0, 2))
+}

@@ -444,3 +444,56 @@ fn repl_con_opcionales_y_excepciones() {
         stderr(&out)
     );
 }
+
+#[test]
+fn ejemplo_de_genericos() {
+    let out = run_example("genericos.jb");
+    assert!(out.starts_with("[1, 4, 9, 16, 25]\n"), "{out}");
+    assert!(out.contains("a=3 b=2 c=1 d=nil\n"), "{out}");
+    assert!(
+        out.contains("cima tres, saco tres, dos, quedan 1\n"),
+        "{out}"
+    );
+    assert!(out.ends_with("[\"ja\", \"ja\", \"ja\"]\n[0, 0]\n"), "{out}");
+}
+
+#[test]
+fn gc_stress_con_genericos_da_la_misma_salida() {
+    let normal = and23().arg(example("genericos.jb")).output().unwrap();
+    let stress = and23()
+        .arg("--gc-stress")
+        .arg(example("genericos.jb"))
+        .output()
+        .unwrap();
+    assert!(stress.status.success(), "{}", stderr(&stress));
+    assert_eq!(stdout(&normal), stdout(&stress));
+}
+
+#[test]
+fn un_error_de_genericos_se_informa_con_posicion() {
+    let out = run_source(
+        "gen_err",
+        "fix l = Lista<Int>()\nshow(1)\nl.agrega(\"hola\")\n",
+    );
+    assert!(!out.status.success());
+    assert!(stdout(&out).is_empty(), "no debe ejecutar nada");
+    let err = stderr(&out);
+    assert!(err.contains(":3:10"), "{err}");
+    assert!(err.contains("se esperaba Int, pero es Str"), "{err}");
+}
+
+#[test]
+fn desduccion_fallida_pide_los_argumentos_de_tipo() {
+    let out = run_source("gen_deduce", "fix l = Lista()\n");
+    assert!(!out.status.success());
+    let err = stderr(&out);
+    assert!(err.contains("no se puede deducir el tipo `T`"), "{err}");
+    assert!(err.contains("Lista<Int>(...)"), "{err}");
+}
+
+#[test]
+fn repl_con_genericos() {
+    let out =
+        repl("fix m = Mapa<Str, Int>()\nm.pone(\"a\", 7)\nm.obtiene(\"a\")\nm.obtiene(\"b\")\n");
+    assert_eq!(stdout(&out), "7\nnil\n");
+}

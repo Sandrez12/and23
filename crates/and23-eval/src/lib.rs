@@ -358,7 +358,9 @@ impl<W: Write> Interpreter<W> {
                     binary(*op, a, b, *span)
                 }
             },
-            Expr::Call { name, args, span } => {
+            Expr::Call {
+                name, args, span, ..
+            } => {
                 let Some(decl) = self.funcs.get(name).cloned() else {
                     return Err(Diagnostic::new(
                         *span,

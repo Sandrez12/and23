@@ -1,0 +1,191 @@
+// Biblioteca base de And23, escrita en el propio lenguaje. Toda sesión la ejecuta antes del programa.
+// Usa genéricos con erasure: en ejecución `T` no existe, así que los valores no se "encajonan".
+
+// --- Lista<T>: una lista que crece (sobre un arreglo) ---
+thing Lista<T>() {
+    mut items: [T] = []
+
+    fn agrega(x: T) { push(items, x) }
+    fn tam() -> Int = len(items)
+    fn vacia() -> Bool = len(items) == 0
+    fn obtiene(i: Int) -> T = items[i]
+    fn pone(i: Int, x: T) { items[i] = x }
+
+    /// Quita y devuelve el último elemento.
+    fn quita() -> T = pop(items)
+
+    /// Posición de la primera aparición de `x` (con `==`), o -1.
+    fn indiceDe(x: T) -> Int {
+        mut i = 0
+        while i < len(items) {
+            if items[i] == x { return i }
+            i += 1
+        }
+        return 0 - 1
+    }
+
+    fn contiene(x: T) -> Bool = indiceDe(x) >= 0
+
+    /// Inserta `x` antes de la posición `i` (`i == tam()` agrega al final).
+    fn inserta(i: Int, x: T) {
+        fix nuevo: [T] = []
+        mut j = 0
+        while j < len(items) {
+            if j == i { push(nuevo, x) }
+            push(nuevo, items[j])
+            j += 1
+        }
+        if i >= len(items) { push(nuevo, x) }
+        items = nuevo
+    }
+
+    /// Quita y devuelve el elemento de la posición `i`.
+    fn quitaEn(i: Int) -> T {
+        fix sacado = items[i]
+        fix nuevo: [T] = []
+        mut j = 0
+        while j < len(items) {
+            if j != i { push(nuevo, items[j]) }
+            j += 1
+        }
+        items = nuevo
+        return sacado
+    }
+
+    fn copia() -> Lista<T> {
+        fix otra = Lista<T>()
+        mut i = 0
+        while i < len(items) {
+            otra.agrega(items[i])
+            i += 1
+        }
+        return otra
+    }
+
+    fn texto() -> Str = "${items}"
+}
+
+// --- Mapa<K, V>: una tabla hash con cubetas ---
+thing Entrada<K, V>(fix clave: K, mut valor: V)
+
+fn _cubetasVacias<K, V>(n: Int) -> [[Entrada<K, V>]] {
+    mut todas: [[Entrada<K, V>]] = []
+    mut i = 0
+    while i < n {
+        fix vacia: [Entrada<K, V>] = []
+        push(todas, vacia)
+        i += 1
+    }
+    return todas
+}
+
+thing Mapa<K, V>() {
+    mut cubetas: [[Entrada<K, V>]] = _cubetasVacias<K, V>(8)
+    mut cantidad = 0
+
+    fn tam() -> Int = cantidad
+    fn vacio() -> Bool = cantidad == 0
+
+    fn cubetaDe(clave: K) -> [Entrada<K, V>] = cubetas[hash(clave) % len(cubetas)]
+
+    /// Asocia `clave` con `valor`; si ya estaba, reemplaza el valor.
+    fn pone(clave: K, valor: V) {
+        fix cubeta = cubetaDe(clave)
+        mut i = 0
+        while i < len(cubeta) {
+            if cubeta[i].clave == clave {
+                cubeta[i].valor = valor
+                return
+            }
+            i += 1
+        }
+        push(cubeta, Entrada<K, V>(clave, valor))
+        cantidad += 1
+        if cantidad > len(cubetas) * 2 { crece() }
+    }
+
+    /// El valor de `clave`, o nil si no está.
+    fn obtiene(clave: K) -> V? {
+        fix cubeta = cubetaDe(clave)
+        mut i = 0
+        while i < len(cubeta) {
+            if cubeta[i].clave == clave { return cubeta[i].valor }
+            i += 1
+        }
+        return nil
+    }
+
+    fn contiene(clave: K) -> Bool {
+        fix cubeta = cubetaDe(clave)
+        mut i = 0
+        while i < len(cubeta) {
+            if cubeta[i].clave == clave { return true }
+            i += 1
+        }
+        return false
+    }
+
+    /// Quita `clave`; devuelve si estaba.
+    fn quita(clave: K) -> Bool {
+        fix pos = hash(clave) % len(cubetas)
+        fix cubeta = cubetas[pos]
+        fix nueva: [Entrada<K, V>] = []
+        mut hallada = false
+        mut i = 0
+        while i < len(cubeta) {
+            if cubeta[i].clave == clave { hallada = true } else { push(nueva, cubeta[i]) }
+            i += 1
+        }
+        if hallada {
+            cubetas[pos] = nueva
+            cantidad -= 1
+        }
+        return hallada
+    }
+
+    fn claves() -> Lista<K> {
+        fix res = Lista<K>()
+        mut i = 0
+        while i < len(cubetas) {
+            fix cubeta = cubetas[i]
+            mut j = 0
+            while j < len(cubeta) {
+                res.agrega(cubeta[j].clave)
+                j += 1
+            }
+            i += 1
+        }
+        return res
+    }
+
+    fn valores() -> Lista<V> {
+        fix res = Lista<V>()
+        mut i = 0
+        while i < len(cubetas) {
+            fix cubeta = cubetas[i]
+            mut j = 0
+            while j < len(cubeta) {
+                res.agrega(cubeta[j].valor)
+                j += 1
+            }
+            i += 1
+        }
+        return res
+    }
+
+    fn crece() {
+        fix viejas = cubetas
+        cubetas = _cubetasVacias<K, V>(len(viejas) * 2)
+        cantidad = 0
+        mut i = 0
+        while i < len(viejas) {
+            fix cubeta = viejas[i]
+            mut j = 0
+            while j < len(cubeta) {
+                pone(cubeta[j].clave, cubeta[j].valor)
+                j += 1
+            }
+            i += 1
+        }
+    }
+}

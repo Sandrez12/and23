@@ -1,6 +1,6 @@
 use crate::ast::{
     BinOp, Block, CtorParam, Expr, FieldDecl, FnDecl, InterpPart, KindDecl, KindMethod, Param,
-    Program, Rescue, Stmt, SuperRef, ThingDecl, TypeRef, UnOp,
+    Program, Rescue, Stmt, SuperRef, ThingDecl, TypeParam, TypeRef, UnOp,
 };
 use crate::error::Diagnostic;
 use crate::lexer::{StrPart, Token, TokenKind};
@@ -175,6 +175,67 @@ impl Parser {
         }
     }
 
+    /// Parámetros de tipo `<T, U: Cota>` tras el nombre de una declaración (opcionales).
+    fn type_params(&mut self) -> Result<Vec<TypeParam>, Diagnostic> {
+        let mut params: Vec<TypeParam> = Vec::new();
+        if self.peek().kind != TokenKind::Lt {
+            return Ok(params);
+        }
+        self.bump();
+        loop {
+            let (name, name_span) = self.expect_ident("el nombre del parámetro de tipo")?;
+            if params.iter().any(|p| p.name == name) {
+                return Err(Diagnostic::new(
+                    name_span,
+                    format!("el parámetro de tipo `{name}` está repetido"),
+                ));
+            }
+            let bound = if self.peek().kind == TokenKind::Colon {
+                self.bump();
+                Some(self.type_ref()?)
+            } else {
+                None
+            };
+            let span = bound.as_ref().map_or(name_span, |b| name_span.to(b.span));
+            params.push(TypeParam {
+                name,
+                name_span,
+                bound,
+                span,
+            });
+            if self.peek().kind == TokenKind::Comma {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        self.expect(TokenKind::Gt, "`>` para cerrar los parámetros de tipo")?;
+        Ok(params)
+    }
+
+    /// `<A, B>` seguido de `(`, o nada: así `a < b` no se confunde con argumentos de tipo.
+    fn try_type_args(&mut self) -> Option<Vec<TypeRef>> {
+        if self.peek().kind != TokenKind::Lt {
+            return None;
+        }
+        self.bump();
+        let mut args = Vec::new();
+        loop {
+            args.push(self.type_ref().ok()?);
+            match self.peek().kind {
+                TokenKind::Comma => {
+                    self.bump();
+                }
+                TokenKind::Gt => {
+                    self.bump();
+                    break;
+                }
+                _ => return None,
+            }
+        }
+        (self.peek().kind == TokenKind::LParen).then_some(args)
+    }
+
     fn type_ref(&mut self) -> Result<TypeRef, Diagnostic> {
         let mut ty = self.base_type_ref()?;
         // `T?`; con varios (`T??`) el verificador explica que no tiene sentido.
@@ -201,6 +262,25 @@ impl Parser {
             });
         }
         let (name, span) = self.expect_ident("un nombre de tipo")?;
+        // `Lista<Int>`, `Mapa<Str, [Int]>`
+        if self.peek().kind == TokenKind::Lt {
+            self.bump();
+            let mut args = Vec::new();
+            loop {
+                args.push(self.type_ref()?);
+                if self.peek().kind == TokenKind::Comma {
+                    self.bump();
+                } else {
+                    break;
+                }
+            }
+            let close = self.expect(TokenKind::Gt, "`>` para cerrar los argumentos de tipo")?;
+            return Ok(TypeRef {
+                name,
+                args,
+                span: span.to(close.span),
+            });
+        }
         Ok(TypeRef {
             name,
             args: Vec::new(),
@@ -294,6 +374,7 @@ impl Parser {
     fn thing_decl(&mut self) -> Result<ThingDecl, Diagnostic> {
         let start = self.bump().span;
         let (name, name_span) = self.expect_ident("el nombre de la clase")?;
+        let type_params = self.type_params()?;
         self.expect(TokenKind::LParen, "`(` con los parámetros del constructor")?;
         let mut params: Vec<CtorParam> = Vec::new();
         if self.peek().kind != TokenKind::RParen {
@@ -339,16 +420,33 @@ impl Parser {
             self.bump();
             loop {
                 let (sname, sspan) = self.expect_ident("el nombre de una clase o interfaz")?;
+                let mut type_args = Vec::new();
+                let mut head = sspan;
+                if self.peek().kind == TokenKind::Lt {
+                    self.bump();
+                    loop {
+                        type_args.push(self.type_ref()?);
+                        if self.peek().kind == TokenKind::Comma {
+                            self.bump();
+                        } else {
+                            break;
+                        }
+                    }
+                    head = sspan.to(self
+                        .expect(TokenKind::Gt, "`>` para cerrar los argumentos de tipo")?
+                        .span);
+                }
                 let (args, span) = if self.peek().kind == TokenKind::LParen {
                     let (args, close) = self.call_args()?;
                     (Some(args), sspan.to(close))
                 } else {
-                    (None, sspan)
+                    (None, head)
                 };
                 end = span;
                 supers.push(SuperRef {
                     name: sname,
                     name_span: sspan,
+                    type_args,
                     args,
                     span,
                 });
@@ -394,7 +492,16 @@ impl Parser {
                             span,
                         });
                     }
-                    TokenKind::Fn => methods.push(self.fn_decl()?),
+                    TokenKind::Fn => {
+                        let method = self.fn_decl()?;
+                        if let Some(first) = method.type_params.first() {
+                            return Err(Diagnostic::new(
+                                first.span,
+                                "los métodos no pueden tener parámetros de tipo propios; usa los de la clase",
+                            ));
+                        }
+                        methods.push(method);
+                    }
                     other => {
                         return Err(self.error_here(format!(
                             "dentro de una clase se esperaba un campo (`fix`/`mut`) o un método (`fn`), pero se encontró {}",
@@ -411,6 +518,7 @@ impl Parser {
         Ok(ThingDecl {
             name,
             name_span,
+            type_params,
             params,
             supers,
             fields,
@@ -423,6 +531,7 @@ impl Parser {
     fn kind_decl(&mut self) -> Result<KindDecl, Diagnostic> {
         let start = self.bump().span;
         let (name, name_span) = self.expect_ident("el nombre de la interfaz")?;
+        let type_params = self.type_params()?;
         let open = self.expect(TokenKind::LBrace, "`{`")?.span;
         let mut methods = Vec::new();
         let end;
@@ -481,6 +590,7 @@ impl Parser {
         Ok(KindDecl {
             name,
             name_span,
+            type_params,
             methods,
             span: start.to(end),
         })
@@ -684,6 +794,7 @@ impl Parser {
     fn fn_decl(&mut self) -> Result<FnDecl, Diagnostic> {
         let start = self.bump().span;
         let (name, name_span) = self.expect_ident("el nombre de la función")?;
+        let type_params = self.type_params()?;
         self.expect(TokenKind::LParen, "`(`")?;
         let mut params: Vec<Param> = Vec::new();
         if self.peek().kind != TokenKind::RParen {
@@ -743,6 +854,7 @@ impl Parser {
         Ok(FnDecl {
             name,
             name_span,
+            type_params,
             params,
             ret,
             expr_body,
@@ -801,7 +913,17 @@ impl Parser {
             }
             TokenKind::Ident(name) => {
                 if self.peek().kind == TokenKind::LParen {
-                    self.call(name, token.span)?
+                    self.call(name, Vec::new(), token.span)?
+                } else if self.peek().kind == TokenKind::Lt {
+                    // `f<Int>(x)` o `Lista<Int>()`; si no encaja, era una comparación.
+                    let saved = self.pos;
+                    match self.try_type_args() {
+                        Some(type_args) => self.call(name, type_args, token.span)?,
+                        None => {
+                            self.pos = saved;
+                            Expr::Var(name, token.span)
+                        }
+                    }
                 } else {
                     Expr::Var(name, token.span)
                 }
@@ -997,10 +1119,16 @@ impl Parser {
     }
 
     /// Llamada `nombre(args)`; el nombre ya se consumió y el siguiente token es `(`.
-    fn call(&mut self, name: String, name_span: Span) -> Result<Expr, Diagnostic> {
+    fn call(
+        &mut self,
+        name: String,
+        type_args: Vec<TypeRef>,
+        name_span: Span,
+    ) -> Result<Expr, Diagnostic> {
         let (args, close) = self.call_args()?;
         Ok(Expr::Call {
             name,
+            type_args,
             args,
             span: name_span.to(close),
         })
@@ -1598,5 +1726,98 @@ mod tests {
         assert!(err("a?.").contains("después de `?.`"));
         assert!(err("a ?:").contains("una expresión"));
         assert!(err("fix a: ? = 1").contains("un nombre de tipo"));
+    }
+
+    // --- M7: genéricos ---
+
+    #[test]
+    fn tipos_con_argumentos() {
+        let ty = |src: &str| match &parse(src).unwrap().stmts[0] {
+            Stmt::Let { ty: Some(ty), .. } => ty.clone(),
+            other => panic!("{other:?}"),
+        };
+        let t = ty("fix a: Lista<Int> = x");
+        assert_eq!((t.name.as_str(), t.args.len()), ("Lista", 1));
+        let t = ty("fix a: Mapa<Str, [Int]> = x");
+        assert_eq!(t.args.len(), 2);
+        assert_eq!(t.args[1].name, "Array");
+        let t = ty("fix a: Lista<Lista<Int>> = x");
+        assert_eq!(t.args[0].args[0].name, "Int");
+        let t = ty("fix a: Lista<Int>? = x");
+        assert_eq!(t.name, "Nullable");
+        assert_eq!(t.args[0].args.len(), 1);
+        let t = ty("fix a: Lista<Int?> = x");
+        assert_eq!(t.args[0].name, "Nullable");
+        assert!(parse("fn f(a: Mapa<Str, Int>) -> Lista<Int> = x").is_ok());
+    }
+
+    #[test]
+    fn llamadas_con_argumentos_de_tipo() {
+        let call = |src: &str| match &parse(src).unwrap().stmts[0] {
+            Stmt::Expr(Expr::Call {
+                name,
+                type_args,
+                args,
+                ..
+            }) => (name.clone(), type_args.len(), args.len()),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(call("Lista<Int>()"), ("Lista".to_string(), 1, 0));
+        assert_eq!(call("Mapa<Str, Int>()"), ("Mapa".to_string(), 2, 0));
+        assert_eq!(call("f<Int>(1, 2)"), ("f".to_string(), 1, 2));
+        assert_eq!(call("f(1)"), ("f".to_string(), 0, 1));
+        assert_eq!(call("Lista<Lista<Int>>()"), ("Lista".to_string(), 1, 0));
+    }
+
+    #[test]
+    fn las_comparaciones_no_se_confunden_con_argumentos_de_tipo() {
+        assert_eq!(shape("a < b"), "(< a b)");
+        assert_eq!(shape("a < b && c > d"), "(&& (< a b) (> c d))");
+        assert_eq!(shape("f(a < b, c > d)"), "(call f (< a b) (> c d))");
+        assert_eq!(shape("a < b > c"), "(> (< a b) c)");
+        assert_eq!(shape("x < f(1)"), "(< x (call f 1))");
+        assert_eq!(shape("a < (b)"), "(< a b)");
+    }
+
+    #[test]
+    fn declaraciones_genericas() {
+        let program = parse("thing P<A, B: Ord<A>>(x: A) : Q<A>(x), K<B> { }").unwrap();
+        let Stmt::Thing(t) = &program.stmts[0] else {
+            panic!("no es una clase")
+        };
+        assert_eq!(t.type_params.len(), 2);
+        assert!(t.type_params[0].bound.is_none());
+        assert_eq!(t.type_params[1].bound.as_ref().unwrap().name, "Ord");
+        assert_eq!(t.supers[0].type_args.len(), 1);
+        assert!(t.supers[0].args.is_some());
+        assert_eq!(t.supers[1].type_args.len(), 1);
+        assert!(t.supers[1].args.is_none());
+
+        let program = parse("kind K<T> { fn f(x: T) -> T }").unwrap();
+        let Stmt::Kind(k) = &program.stmts[0] else {
+            panic!("no es una interfaz")
+        };
+        assert_eq!(k.type_params.len(), 1);
+
+        let program = parse("fn f<T, U: K>(a: T) = a").unwrap();
+        let Stmt::Fn(f) = &program.stmts[0] else {
+            panic!("no es una función")
+        };
+        assert_eq!(f.type_params.len(), 2);
+        assert!(parse("thing P<T>()").is_ok());
+        assert!(parse("thing P()").is_ok());
+    }
+
+    #[test]
+    fn errores_de_genericos() {
+        assert!(err("thing P<>()").contains("el nombre del parámetro de tipo"));
+        assert!(err("thing P<T()").contains("`>` para cerrar los parámetros de tipo"));
+        assert!(err("thing P<T, T>()").contains("está repetido"));
+        assert!(err("fn f<T, T>() { }").contains("está repetido"));
+        assert!(err("thing A() { fn m<T>(x: T) { } }")
+            .contains("los métodos no pueden tener parámetros de tipo"));
+        assert!(err("fix a: Lista<Int = x").contains("`>` para cerrar los argumentos de tipo"));
+        assert!(err("fix a: Lista<> = x").contains("un nombre de tipo"));
+        assert!(err("thing A() : B<Int(1)").contains("`>` para cerrar los argumentos de tipo"));
     }
 }

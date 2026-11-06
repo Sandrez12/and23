@@ -3,13 +3,13 @@
 
 use and23_syntax::{
     BinOp, Block, Diagnostic, Expr, FnDecl, InterpPart, KindDecl, Program, Span, Stmt, ThingDecl,
-    TypeRef, UnOp,
+    TypeParam, TypeRef, UnOp,
 };
 use std::collections::HashMap;
 use std::fmt;
 
 /// Funciones integradas; no se pueden redefinir.
-pub const BUILTINS: [&str; 2] = ["len", "push"];
+pub const BUILTINS: [&str; 4] = ["len", "push", "pop", "hash"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
@@ -20,7 +20,9 @@ pub enum Type {
     Unit,
     Array(Box<Type>),
     /// Instancia de una clase (`thing`) o valor cuyo tipo es una interfaz (`kind`).
-    Obj(String),
+    Obj(String, Vec<Type>),
+    /// Un parámetro de tipo (`T`) dentro de la declaración genérica que lo introduce.
+    Param(String),
     /// `T?`: un `T` o `nil`.
     Nullable(Box<Type>),
     /// El tipo del literal `nil`; solo existe mientras se verifica una expresión.
@@ -42,15 +44,40 @@ impl fmt::Display for Type {
             Type::Str => f.write_str("Str"),
             Type::Unit => f.write_str("Unit"),
             Type::Array(elem) => write!(f, "[{elem}]"),
-            Type::Obj(name) => f.write_str(name),
+            Type::Obj(name, args) if args.is_empty() => f.write_str(name),
+            Type::Obj(name, args) => {
+                let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+                write!(f, "{name}<{}>", args.join(", "))
+            }
+            Type::Param(name) => f.write_str(name),
             Type::Nullable(inner) => write!(f, "{inner}?"),
             Type::Nil => f.write_str("nil"),
         }
     }
 }
 
+/// Parámetro de tipo con su cota (`T: Interfaz`).
+#[derive(Clone)]
+struct TParam {
+    name: String,
+    bound: Option<Type>,
+}
+
+/// Qué tipo concreto toma cada parámetro de tipo.
+type TMap = HashMap<String, Type>;
+
+/// Una interfaz: sus parámetros de tipo y los nombres de sus métodos (las firmas están en `funcs`
+/// como `"Interfaz.metodo"`, escritas con los parámetros de la interfaz).
+#[derive(Clone, Default)]
+struct KindInfo {
+    tparams: Vec<TParam>,
+    methods: Vec<String>,
+}
+
 #[derive(Clone)]
 struct Sig {
+    /// Solo las funciones del nivel superior tienen parámetros de tipo propios.
+    tparams: Vec<TParam>,
     params: Vec<Type>,
     /// `None` mientras no se infirió (función con cuerpo `= expr` sin `->`).
     ret: Option<Type>,
@@ -71,12 +98,15 @@ struct FieldInfo {
 /// constructor. Las firmas de los métodos viven en `funcs` bajo `"Clase.metodo"`.
 #[derive(Clone, Default)]
 struct ClassInfo {
-    /// Solo los campos propios; los heredados están en la clase padre.
+    tparams: Vec<TParam>,
+    /// Solo los campos propios; los heredados están en la clase padre. Sus tipos usan los
+    /// parámetros de tipo de esta clase.
     fields: Vec<FieldInfo>,
     ctor: Vec<Type>,
-    parent: Option<String>,
-    /// Interfaces que declara implementar.
-    kinds: Vec<String>,
+    /// Clase padre con sus argumentos de tipo (escritos con los parámetros de esta clase).
+    parent: Option<(String, Vec<Type>)>,
+    /// Interfaces que declara implementar, con sus argumentos de tipo.
+    kinds: Vec<(String, Vec<Type>)>,
 }
 
 /// Lo que el verificador decidió y el compilador necesita (no tiene tipos propios):
@@ -99,8 +129,7 @@ pub struct Resolutions {
 pub struct Checker {
     funcs: HashMap<String, Sig>,
     classes: HashMap<String, ClassInfo>,
-    /// Interfaz -> nombres de sus métodos (las firmas están en `funcs` como `"Interfaz.metodo"`).
-    kinds: HashMap<String, Vec<String>>,
+    kinds: HashMap<String, KindInfo>,
     globals: Vars,
 }
 
@@ -119,6 +148,7 @@ impl Checker {
             decls: HashMap::new(),
             state: HashMap::new(),
             declared: HashMap::new(),
+            scope_params: Vec::new(),
             things: HashMap::new(),
             class_state: HashMap::new(),
             res: Resolutions::default(),
@@ -166,8 +196,10 @@ struct Ctx {
 struct Pass<'p> {
     funcs: HashMap<String, Sig>,
     classes: HashMap<String, ClassInfo>,
-    kinds: HashMap<String, Vec<String>>,
+    kinds: HashMap<String, KindInfo>,
     globals: Vars,
+    /// Parámetros de tipo a la vista (los de la clase o función que se está declarando o verificando).
+    scope_params: Vec<TParam>,
     /// Orden de declaración de las clases de este programa: el padre antes que el hijo.
     declared: HashMap<String, State>,
     /// Funciones y métodos de este programa (clave `"f"` o `"Clase.m"`) y su clase, si es método.
@@ -204,14 +236,27 @@ impl<'p> Pass<'p> {
             }
             match stmt {
                 Stmt::Thing(decl) => {
-                    self.classes.insert(name.clone(), ClassInfo::default());
+                    self.classes.insert(
+                        name.clone(),
+                        ClassInfo {
+                            tparams: unbounded(&decl.type_params),
+                            ..ClassInfo::default()
+                        },
+                    );
                     self.things.insert(name.clone(), decl);
                     self.class_state.insert(name.clone(), State::Unchecked);
                     self.declared.insert(name.clone(), State::Unchecked);
                 }
-                _ => {
-                    self.kinds.insert(name.clone(), Vec::new());
+                Stmt::Kind(decl) => {
+                    self.kinds.insert(
+                        name.clone(),
+                        KindInfo {
+                            tparams: unbounded(&decl.type_params),
+                            methods: Vec::new(),
+                        },
+                    );
                 }
+                _ => {}
             }
         }
 
@@ -296,7 +341,14 @@ impl<'p> Pass<'p> {
     }
 
     /// Firma de una función o método: parámetros y tipo de retorno (`None` si hay que inferirlo).
-    fn signature(&self, decl: &FnDecl) -> Result<Sig, Diagnostic> {
+    fn signature(&mut self, decl: &FnDecl) -> Result<Sig, Diagnostic> {
+        let saved = self.scope_params.clone();
+        // Un método ve los parámetros de su clase; una función, solo los suyos.
+        let tparams = if decl.type_params.is_empty() {
+            Vec::new()
+        } else {
+            self.enter_params(&decl.type_params)?
+        };
         let params = decl
             .params
             .iter()
@@ -307,11 +359,69 @@ impl<'p> Pass<'p> {
             (None, false) => Some(Type::Unit),
             (None, true) => None,
         };
-        Ok(Sig { params, ret })
+        self.scope_params = saved;
+        Ok(Sig {
+            tparams,
+            params,
+            ret,
+        })
+    }
+
+    /// Pone `decls` a la vista como parámetros de tipo (con sus cotas ya resueltas) y los devuelve.
+    /// El llamador guarda y restaura `scope_params`.
+    fn enter_params(&mut self, decls: &[TypeParam]) -> Result<Vec<TParam>, Diagnostic> {
+        self.scope_params = unbounded(decls);
+        let mut out = Vec::new();
+        for decl in decls {
+            let bound = match &decl.bound {
+                Some(bound) => {
+                    let ty = self.resolve(bound)?;
+                    if !matches!(ty, Type::Obj(..)) {
+                        return Err(Diagnostic::new(
+                            bound.span,
+                            format!(
+                                "la cota de `{}` debe ser una clase o una interfaz, pero es {ty}",
+                                decl.name
+                            ),
+                        ));
+                    }
+                    Some(ty)
+                }
+                None => None,
+            };
+            out.push(TParam {
+                name: decl.name.clone(),
+                bound,
+            });
+        }
+        self.scope_params = out.clone();
+        Ok(out)
+    }
+
+    fn param_bound(&self, name: &str) -> Option<Type> {
+        self.scope_params
+            .iter()
+            .find(|p| p.name == name)
+            .and_then(|p| p.bound.clone())
+    }
+
+    /// Los parámetros de tipo de `class` como tipos (`T`, `U`): los argumentos de su propio `this`.
+    fn identity_args(&self, class: &str) -> Vec<Type> {
+        self.classes[class]
+            .tparams
+            .iter()
+            .map(|p| Type::Param(p.name.clone()))
+            .collect()
     }
 
     /// Registra las firmas de los métodos de una interfaz como `"Interfaz.metodo"`.
     fn declare_kind(&mut self, decl: &KindDecl) -> Result<(), Diagnostic> {
+        let saved = self.scope_params.clone();
+        let tparams = self.enter_params(&decl.type_params)?;
+        self.kinds
+            .get_mut(&decl.name)
+            .expect("registrada antes")
+            .tparams = tparams;
         let mut names: Vec<String> = Vec::new();
         for method in &decl.methods {
             if names.contains(&method.name) {
@@ -335,13 +445,18 @@ impl<'p> Pass<'p> {
             self.funcs.insert(
                 format!("{}.{}", decl.name, method.name),
                 Sig {
+                    tparams: Vec::new(),
                     params,
                     ret: Some(ret),
                 },
             );
             names.push(method.name.clone());
         }
-        self.kinds.insert(decl.name.clone(), names);
+        self.kinds
+            .get_mut(&decl.name)
+            .expect("registrada antes")
+            .methods = names;
+        self.scope_params = saved;
         Ok(())
     }
 
@@ -367,36 +482,80 @@ impl<'p> Pass<'p> {
         Ok(())
     }
 
-    /// Todos los campos de una clase: primero los heredados.
-    fn all_fields(&self, class: &str) -> Vec<FieldInfo> {
+    /// Todos los campos de `class<args>`: primero los heredados, con los tipos ya sustituidos.
+    fn all_fields(&self, class: &str, args: &[Type]) -> Vec<FieldInfo> {
         let info = &self.classes[class];
+        let map = tmap(&info.tparams, args);
         let mut fields = match &info.parent {
-            Some(parent) => self.all_fields(parent),
+            Some((parent, parent_args)) => {
+                let parent_args: Vec<Type> = parent_args.iter().map(|a| subst(a, &map)).collect();
+                self.all_fields(parent, &parent_args)
+            }
             None => Vec::new(),
         };
-        fields.extend(info.fields.iter().cloned());
+        fields.extend(info.fields.iter().map(|f| FieldInfo {
+            ty: subst(&f.ty, &map),
+            ..f.clone()
+        }));
         fields
     }
 
-    /// Clave `"Clase.metodo"` del método `name` visible en `ty`: el de la propia clase, el heredado
-    /// más cercano o, si `ty` es una interfaz, el declarado en ella.
-    fn find_method(&self, ty: &str, name: &str) -> Option<String> {
-        if self.kinds.contains_key(ty) {
-            let key = format!("{ty}.{name}");
-            return self.funcs.contains_key(&key).then_some(key);
-        }
-        let mut current = Some(ty.to_string());
-        while let Some(class) = current {
-            let key = format!("{class}.{name}");
-            if self.funcs.contains_key(&key) {
-                return Some(key);
+    /// El método `name` visible en `ty`: el de la propia clase, el heredado más cercano o, si `ty` es
+    /// una interfaz o un parámetro de tipo con cota, el de ella. Devuelve la clave `"Clase.metodo"` de
+    /// quien lo declara y cómo se sustituyen los parámetros de tipo de esa clase.
+    fn find_method(&self, ty: &Type, name: &str) -> Option<(String, TMap)> {
+        match ty {
+            Type::Param(param) => self
+                .param_bound(param)
+                .and_then(|bound| self.find_method(&bound, name)),
+            Type::Obj(class, args) => {
+                if let Some(kind) = self.kinds.get(class) {
+                    let key = format!("{class}.{name}");
+                    return self
+                        .funcs
+                        .contains_key(&key)
+                        .then(|| (key, tmap(&kind.tparams, args)));
+                }
+                let mut current = class.clone();
+                let mut current_args = args.clone();
+                loop {
+                    let info = self.classes.get(&current)?;
+                    let map = tmap(&info.tparams, &current_args);
+                    let key = format!("{current}.{name}");
+                    if self.funcs.contains_key(&key) {
+                        return Some((key, map));
+                    }
+                    let (parent, parent_args) = info.parent.as_ref()?;
+                    current_args = parent_args.iter().map(|a| subst(a, &map)).collect();
+                    current = parent.clone();
+                }
             }
-            current = self.classes.get(&class).and_then(|i| i.parent.clone());
+            _ => None,
         }
-        None
     }
 
-    /// ¿`sub` es `sup` o hereda de él o lo implementa?
+    /// `ty` visto como `target` (un ancestro o una interfaz que cumple), con sus argumentos de tipo.
+    fn as_super(&self, ty: &Type, target: &str) -> Option<Type> {
+        let Type::Obj(class, args) = ty else {
+            return None;
+        };
+        if class == target {
+            return Some(ty.clone());
+        }
+        let info = self.classes.get(class)?;
+        let map = tmap(&info.tparams, args);
+        for (kind, kind_args) in &info.kinds {
+            if kind == target {
+                let kind_args = kind_args.iter().map(|a| subst(a, &map)).collect();
+                return Some(Type::Obj(kind.clone(), kind_args));
+            }
+        }
+        let (parent, parent_args) = info.parent.as_ref()?;
+        let parent_args = parent_args.iter().map(|a| subst(a, &map)).collect();
+        self.as_super(&Type::Obj(parent.clone(), parent_args), target)
+    }
+
+    /// ¿`sub` es `sup` o hereda de él o lo implementa? (por nombre, sin mirar argumentos de tipo)
     fn is_sub(&self, sub: &str, sup: &str) -> bool {
         let mut current = Some(sub.to_string());
         while let Some(class) = current {
@@ -406,10 +565,10 @@ impl<'p> Pass<'p> {
             let Some(info) = self.classes.get(&class) else {
                 return false;
             };
-            if info.kinds.iter().any(|k| k == sup) {
+            if info.kinds.iter().any(|(k, _)| k == sup) {
                 return true;
             }
-            current = info.parent.clone();
+            current = info.parent.as_ref().map(|(p, _)| p.clone());
         }
         false
     }
@@ -422,7 +581,14 @@ impl<'p> Pass<'p> {
             (Type::Nullable(_), Type::Nil) => true,
             (Type::Nullable(e), Type::Nullable(f)) => self.assignable(e, f),
             (Type::Nullable(e), f) => self.assignable(e, f),
-            (Type::Obj(e), Type::Obj(f)) => self.is_sub(f, e),
+            // Los argumentos de tipo son invariantes: `Caja<Perro>` no es `Caja<Animal>`.
+            (Type::Obj(e, _), Type::Obj(..)) => {
+                self.as_super(found, e).is_some_and(|t| t == *expected)
+            }
+            // Un parámetro de tipo con cota vale como su cota.
+            (_, Type::Param(name)) => self
+                .param_bound(name)
+                .is_some_and(|bound| self.assignable(expected, &bound)),
             _ => false,
         }
     }
@@ -464,13 +630,19 @@ impl<'p> Pass<'p> {
     /// implementa todo lo que prometen sus interfaces.
     fn validate_class(&self, decl: &ThingDecl) -> Result<(), Diagnostic> {
         let info = &self.classes[&decl.name];
-        if let Some(parent) = &info.parent {
+        let instantiate = |sig: &Sig, map: &TMap| Sig {
+            tparams: Vec::new(),
+            params: sig.params.iter().map(|p| subst(p, map)).collect(),
+            ret: sig.ret.as_ref().map(|r| subst(r, map)),
+        };
+        if let Some((parent, parent_args)) = &info.parent {
+            let parent_ty = Type::Obj(parent.clone(), parent_args.clone());
             for method in &decl.methods {
-                let Some(inherited) = self.find_method(parent, &method.name) else {
+                let Some((inherited, map)) = self.find_method(&parent_ty, &method.name) else {
                     continue;
                 };
                 let own = &self.funcs[&format!("{}.{}", decl.name, method.name)];
-                let base = &self.funcs[&inherited];
+                let base = instantiate(&self.funcs[&inherited], &map);
                 if own.params != base.params || own.ret != base.ret {
                     return Err(Diagnostic::new(
                         method.name_span,
@@ -479,16 +651,19 @@ impl<'p> Pass<'p> {
                             method.name,
                             inherited.split('.').next().unwrap_or(parent),
                             Self::sig_text(own),
-                            Self::sig_text(base)
+                            Self::sig_text(&base)
                         ),
                     ));
                 }
             }
         }
-        for kind in &info.kinds {
-            for name in &self.kinds[kind] {
-                let wanted = &self.funcs[&format!("{kind}.{name}")];
-                let Some(key) = self.find_method(&decl.name, name) else {
+        let this_ty = Type::Obj(decl.name.clone(), self.identity_args(&decl.name));
+        for (kind, kind_args) in &info.kinds {
+            let kind_info = &self.kinds[kind];
+            let kind_map = tmap(&kind_info.tparams, kind_args);
+            for name in &kind_info.methods {
+                let wanted = instantiate(&self.funcs[&format!("{kind}.{name}")], &kind_map);
+                let Some((key, map)) = self.find_method(&this_ty, name) else {
                     return Err(Diagnostic::new(
                         decl.name_span,
                         format!(
@@ -497,15 +672,15 @@ impl<'p> Pass<'p> {
                         ),
                     ));
                 };
-                let found = &self.funcs[&key];
+                let found = instantiate(&self.funcs[&key], &map);
                 if found.params != wanted.params || found.ret != wanted.ret {
                     return Err(Diagnostic::new(
                         decl.name_span,
                         format!(
                             "el método `{name}` de `{}` tiene la firma {}, pero la interfaz `{kind}` pide {}",
                             decl.name,
-                            Self::sig_text(found),
-                            Self::sig_text(wanted)
+                            Self::sig_text(&found),
+                            Self::sig_text(&wanted)
                         ),
                     ));
                 }
@@ -517,26 +692,53 @@ impl<'p> Pass<'p> {
     /// Registra los campos, el constructor y las firmas de los métodos de una clase.
     /// Los campos del cuerpo sin anotación llevan `Unit` provisional hasta `ensure_class`.
     fn declare_class(&mut self, decl: &'p ThingDecl) -> Result<(), Diagnostic> {
-        let mut parent: Option<String> = None;
-        let mut kinds: Vec<String> = Vec::new();
+        let saved = self.scope_params.clone();
+        let tparams = self.enter_params(&decl.type_params)?;
+        self.classes
+            .get_mut(&decl.name)
+            .expect("registrada antes")
+            .tparams = tparams;
+        let mut parent: Option<(String, Vec<Type>)> = None;
+        let mut kinds: Vec<(String, Vec<Type>)> = Vec::new();
         for sup in &decl.supers {
             let unknown =
                 || Diagnostic::new(sup.name_span, format!("el tipo `{}` no existe", sup.name));
-            match (
-                &sup.args,
-                self.classes.contains_key(&sup.name),
-                self.kinds.contains_key(&sup.name),
-            ) {
-                (Some(_), true, _) => {
+            let is_class = self.classes.contains_key(&sup.name);
+            let is_kind = self.kinds.contains_key(&sup.name);
+            if !is_class && !is_kind {
+                return Err(unknown());
+            }
+            let wanted = if is_class {
+                self.classes[&sup.name].tparams.len()
+            } else {
+                self.kinds[&sup.name].tparams.len()
+            };
+            if sup.type_args.len() != wanted {
+                return Err(Diagnostic::new(
+                    sup.span,
+                    format!(
+                        "`{}` necesita {wanted} argumento(s) de tipo, pero recibió {}",
+                        sup.name,
+                        sup.type_args.len()
+                    ),
+                ));
+            }
+            let type_args = sup
+                .type_args
+                .iter()
+                .map(|t| self.resolve(t))
+                .collect::<Result<Vec<_>, _>>()?;
+            match (&sup.args, is_class) {
+                (Some(_), true) => {
                     if parent.is_some() {
                         return Err(Diagnostic::new(
                             sup.span,
                             "una clase solo puede heredar de una clase",
                         ));
                     }
-                    parent = Some(sup.name.clone());
+                    parent = Some((sup.name.clone(), type_args));
                 }
-                (Some(_), _, true) => {
+                (Some(_), false) => {
                     return Err(Diagnostic::new(
                         sup.span,
                         format!(
@@ -545,16 +747,16 @@ impl<'p> Pass<'p> {
                         ),
                     ));
                 }
-                (None, _, true) => {
-                    if kinds.contains(&sup.name) {
+                (None, false) => {
+                    if kinds.iter().any(|(k, _)| *k == sup.name) {
                         return Err(Diagnostic::new(
                             sup.span,
                             format!("la interfaz `{}` está repetida", sup.name),
                         ));
                     }
-                    kinds.push(sup.name.clone());
+                    kinds.push((sup.name.clone(), type_args));
                 }
-                (None, true, _) => {
+                (None, true) => {
                     return Err(Diagnostic::new(
                         sup.span,
                         format!(
@@ -563,11 +765,10 @@ impl<'p> Pass<'p> {
                         ),
                     ));
                 }
-                _ => return Err(unknown()),
             }
         }
         let inherited: Vec<FieldInfo> = match &parent {
-            Some(parent) => self.all_fields(parent),
+            Some((parent, parent_args)) => self.all_fields(parent, parent_args),
             None => Vec::new(),
         };
         let mut fields: Vec<FieldInfo> = Vec::new();
@@ -651,6 +852,7 @@ impl<'p> Pass<'p> {
         info.ctor = ctor;
         info.parent = parent;
         info.kinds = kinds;
+        self.scope_params = saved;
         Ok(())
     }
 
@@ -668,7 +870,7 @@ impl<'p> Pass<'p> {
             Some(State::Unchecked) => {
                 self.class_state
                     .insert(name.to_string(), State::InProgress);
-                if let Some(parent) = self.classes[name].parent.clone() {
+                if let Some((parent, _)) = self.classes[name].parent.clone() {
                     self.ensure_class(&parent)?;
                 }
                 let decl: &'p ThingDecl = self.things[name];
@@ -682,6 +884,10 @@ impl<'p> Pass<'p> {
     /// Verifica los valores iniciales de los campos del cuerpo. Ven los parámetros del
     /// constructor y los campos anteriores, pero no `this`.
     fn class_initializers(&mut self, decl: &'p ThingDecl) -> Result<(), Diagnostic> {
+        let saved = std::mem::replace(
+            &mut self.scope_params,
+            self.classes[&decl.name].tparams.clone(),
+        );
         let mut scope = Vars::new();
         for (param, ty) in decl
             .params
@@ -699,7 +905,13 @@ impl<'p> Pass<'p> {
         // Argumentos para el constructor de la clase padre: ven los parámetros de esta.
         if let Some(sup) = decl.supers.iter().find(|s| s.args.is_some()) {
             let args = sup.args.as_deref().unwrap_or(&[]);
-            let wanted = self.classes[&sup.name].ctor.clone();
+            let (_, parent_args) = self.classes[&decl.name]
+                .parent
+                .clone()
+                .expect("declarada antes");
+            let parent_info = &self.classes[&sup.name];
+            let map = tmap(&parent_info.tparams, &parent_args);
+            let wanted: Vec<Type> = parent_info.ctor.iter().map(|t| subst(t, &map)).collect();
             if wanted.len() != args.len() {
                 return Err(Diagnostic::new(
                     sup.span,
@@ -742,6 +954,7 @@ impl<'p> Pass<'p> {
             info.fields[first + i].ty = ty.clone();
             self.declare(&mut ctx, &field.name, (ty, false), field.name_span)?;
         }
+        self.scope_params = saved;
         Ok(())
     }
 
@@ -752,6 +965,12 @@ impl<'p> Pass<'p> {
         }
         self.state.insert(key.to_string(), State::InProgress);
         let sig = self.funcs[key].clone();
+        // Los métodos ven los parámetros de tipo de su clase; las funciones, los suyos.
+        let params_here = match &class {
+            Some(class) => self.classes[class].tparams.clone(),
+            None => sig.tparams.clone(),
+        };
+        let saved_params = std::mem::replace(&mut self.scope_params, params_here);
         let mut scope = Vars::new();
         for (param, ty) in decl.params.iter().zip(&sig.params) {
             scope.insert(param.name.clone(), (ty.clone(), false, None));
@@ -785,6 +1004,7 @@ impl<'p> Pass<'p> {
             _ => {}
         }
         self.state.insert(key.to_string(), State::Done);
+        self.scope_params = saved_params;
         Ok(())
     }
 
@@ -802,7 +1022,7 @@ impl<'p> Pass<'p> {
             return Some((ty.clone(), *mutable, None));
         }
         if let Some(class) = &ctx.this {
-            let fields = self.all_fields(class);
+            let fields = self.all_fields(class, &self.identity_args(class));
             if let Some(i) = fields.iter().position(|f| f.name == name) {
                 let f = &fields[i];
                 return Some((f.ty.clone(), f.mutable, Some(i as u32)));
@@ -825,7 +1045,11 @@ impl<'p> Pass<'p> {
             return Some((ty.clone(), *mutable, declared.clone(), true));
         }
         if let Some(class) = &ctx.this {
-            if self.all_fields(class).iter().any(|f| f.name == name) {
+            if self
+                .all_fields(class, &self.identity_args(class))
+                .iter()
+                .any(|f| f.name == name)
+            {
                 return None;
             }
         }
@@ -967,7 +1191,11 @@ impl<'p> Pass<'p> {
 
     fn ensure_class_of(&mut self, ty: &Type) -> Result<(), Diagnostic> {
         match ty {
-            Type::Obj(class) => self.ensure_class(class),
+            Type::Obj(class, _) => self.ensure_class(class),
+            Type::Param(name) => match self.param_bound(name) {
+                Some(Type::Obj(class, _)) => self.ensure_class(&class),
+                _ => Ok(()),
+            },
             _ => Ok(()),
         }
     }
@@ -980,7 +1208,13 @@ impl<'p> Pass<'p> {
         name_span: Span,
         target_span: Span,
     ) -> Result<(u32, Type, bool), Diagnostic> {
-        let Type::Obj(class) = ty else {
+        // Un parámetro de tipo con cota de clase muestra los campos de su cota.
+        let bound = match ty {
+            Type::Param(name) => self.param_bound(name),
+            _ => None,
+        };
+        let ty = bound.as_ref().unwrap_or(ty);
+        let Type::Obj(class, args) = ty else {
             return Err(Diagnostic::new(target_span, not_object(ty, "campos")));
         };
         if self.kinds.contains_key(class) {
@@ -989,7 +1223,7 @@ impl<'p> Pass<'p> {
                 format!("`{class}` es una interfaz y no tiene campos"),
             ));
         }
-        let fields = self.all_fields(class);
+        let fields = self.all_fields(class, args);
         match fields.iter().position(|f| f.name == name) {
             Some(i) => Ok((i as u32, fields[i].ty.clone(), fields[i].mutable)),
             None => Err(Diagnostic::new(
@@ -1027,8 +1261,21 @@ impl<'p> Pass<'p> {
                 return Ok(());
             }
             // Un arreglo de objetos acepta elementos de subclases: `[Perro(..), Gato(..)]` como `[Animal]`.
-            if matches!(**elem, Type::Obj(_) | Type::Nullable(_)) {
+            if matches!(**elem, Type::Obj(..) | Type::Nullable(_)) {
                 return elems.iter().try_for_each(|e| self.expr_as(ctx, e, elem));
+            }
+        }
+        // `fix l: Lista<Int> = Lista()`: el tipo esperado completa los argumentos de tipo.
+        if let Expr::Call {
+            name,
+            args,
+            type_args,
+            span,
+        } = expr
+        {
+            if !BUILTINS.contains(&name.as_str()) {
+                let found = self.call(ctx, name, args, type_args, *span, Some(expected))?;
+                return self.expect(expected, &found, expr.span());
             }
         }
         let found = self.expr(ctx, expr)?;
@@ -1168,7 +1415,7 @@ impl<'p> Pass<'p> {
             Stmt::Fail(value, _) => {
                 let found = self.expr(ctx, value)?;
                 match &found {
-                    Type::Obj(class) if self.is_sub(class, "Fallo") => {}
+                    Type::Obj(class, _) if self.is_sub(class, "Fallo") => {}
                     other => {
                         return Err(Diagnostic::new(
                             value.span(),
@@ -1183,7 +1430,7 @@ impl<'p> Pass<'p> {
                 self.block(ctx, body)?;
                 for rescue in rescues {
                     let ty = self.resolve(&rescue.ty)?;
-                    let Type::Obj(class) = &ty else {
+                    let Type::Obj(class, _) = &ty else {
                         return Err(Diagnostic::new(
                             rescue.ty.span,
                             format!("`rescue` necesita una clase que herede de `Fallo`, pero esto es {ty}"),
@@ -1311,7 +1558,7 @@ impl<'p> Pass<'p> {
                 Ok(ty)
             }
             Expr::This(span) => match &ctx.this {
-                Some(class) => Ok(Type::Obj(class.clone())),
+                Some(class) => Ok(Type::Obj(class.clone(), self.identity_args(class))),
                 None => Err(Diagnostic::new(
                     *span,
                     "`this` solo se puede usar dentro de un método",
@@ -1337,25 +1584,19 @@ impl<'p> Pass<'p> {
                 span,
             } => {
                 let target_ty = self.expr(ctx, target)?;
-                let Type::Obj(class) = &target_ty else {
-                    return Err(Diagnostic::new(
-                        target.span(),
-                        not_object(&target_ty, "métodos"),
-                    ));
-                };
-                let Some(key) = self.find_method(class, name) else {
-                    let what = if self.kinds.contains_key(class) {
-                        "la interfaz"
-                    } else {
-                        "la clase"
+                let receiver = self.method_receiver(&target_ty, target.span())?;
+                let Some((key, map)) = self.find_method(&receiver, name) else {
+                    let what = match &receiver {
+                        Type::Obj(class, _) if self.kinds.contains_key(class) => "la interfaz",
+                        _ => "la clase",
                     };
                     return Err(Diagnostic::new(
                         *name_span,
-                        format!("{what} `{class}` no tiene el método `{name}`"),
+                        format!("{what} `{receiver}` no tiene el método `{name}`"),
                     ));
                 };
                 self.res.virtuals.insert(*span, name.clone());
-                self.call_sig(ctx, &key, name, "el método", args, *span)
+                self.call_sig(ctx, &key, name, "el método", args, &[], *span, map, None)
             }
             Expr::SuperCall {
                 name,
@@ -1366,21 +1607,22 @@ impl<'p> Pass<'p> {
                 let parent = ctx
                     .this
                     .as_ref()
-                    .and_then(|class| self.classes[class].parent.clone());
+                    .and_then(|class| self.classes[class].parent.clone())
+                    .map(|(name, args)| Type::Obj(name, args));
                 let Some(parent) = parent else {
                     return Err(Diagnostic::new(
                         *span,
                         "`super` solo se puede usar en un método de una clase que hereda de otra",
                     ));
                 };
-                let Some(key) = self.find_method(&parent, name) else {
+                let Some((key, map)) = self.find_method(&parent, name) else {
                     return Err(Diagnostic::new(
                         *name_span,
                         format!("la clase padre `{parent}` no tiene el método `{name}`"),
                     ));
                 };
                 self.res.methods.insert(*span, key.clone());
-                self.call_sig(ctx, &key, name, "el método", args, *span)
+                self.call_sig(ctx, &key, name, "el método", args, &[], *span, map, None)
             }
             Expr::Is { expr, ty, .. } => {
                 self.type_test(ctx, expr, ty, "is")?;
@@ -1447,7 +1689,11 @@ impl<'p> Pass<'p> {
                 ctx.scopes.push(entries.into_iter().collect());
                 let b = self.expr(ctx, rhs);
                 ctx.scopes.pop();
-                binary_type(*op, &a, &b?, *span)
+                let b = b?;
+                if matches!(op, BinOp::Eq | BinOp::Ne) {
+                    return self.equality_type(&a, &b, *span);
+                }
+                binary_type(*op, &a, &b, *span)
             }
             Expr::Nil(_) => Ok(Type::Nil),
             Expr::Elvis { lhs, rhs, span } => {
@@ -1499,31 +1745,32 @@ impl<'p> Pass<'p> {
                     Type::Nullable(inner) => *inner,
                     other => other,
                 };
-                let Type::Obj(class) = &inner else {
-                    return Err(Diagnostic::new(
-                        target.span(),
-                        not_object(&inner, "métodos"),
-                    ));
-                };
-                let Some(key) = self.find_method(class, name) else {
+                let receiver = self.method_receiver(&inner, target.span())?;
+                let Some((key, map)) = self.find_method(&receiver, name) else {
                     return Err(Diagnostic::new(
                         *name_span,
-                        format!("`{class}` no tiene el método `{name}`"),
+                        format!("`{receiver}` no tiene el método `{name}`"),
                     ));
                 };
                 self.res.virtuals.insert(*span, name.clone());
-                let ret = self.call_sig(ctx, &key, name, "el método", args, *span)?;
+                let ret =
+                    self.call_sig(ctx, &key, name, "el método", args, &[], *span, map, None)?;
                 Ok(if ret == Type::Unit {
                     ret
                 } else {
                     optional(ret)
                 })
             }
-            Expr::Call { name, args, span } => {
+            Expr::Call {
+                name,
+                args,
+                type_args,
+                span,
+            } => {
                 if BUILTINS.contains(&name.as_str()) {
                     self.builtin(ctx, name, args, *span)
                 } else {
-                    self.call(ctx, name, args, *span)
+                    self.call(ctx, name, args, type_args, *span, None)
                 }
             }
         }
@@ -1536,7 +1783,7 @@ impl<'p> Pass<'p> {
         args: &[Expr],
         span: Span,
     ) -> Result<Type, Diagnostic> {
-        let wanted = if name == "len" { 1 } else { 2 };
+        let wanted = if name == "push" { 2 } else { 1 };
         if args.len() != wanted {
             return Err(Diagnostic::new(
                 span,
@@ -1547,24 +1794,42 @@ impl<'p> Pass<'p> {
             ));
         }
         let first = self.expr(ctx, &args[0])?;
-        if name == "len" {
-            return match first {
+        match name {
+            "len" => match first {
                 Type::Str | Type::Array(_) => Ok(Type::Int),
                 other => Err(Diagnostic::new(
                     args[0].span(),
                     format!("`len` admite Str o un arreglo, pero recibió {other}"),
                 )),
-            };
+            },
+            "hash" => {
+                if first == Type::Unit || first == Type::Nil {
+                    return Err(Diagnostic::new(
+                        args[0].span(),
+                        format!("`hash` necesita un valor, pero recibió {first}"),
+                    ));
+                }
+                Ok(Type::Int)
+            }
+            "pop" => match first {
+                Type::Array(elem) => Ok(*elem),
+                other => Err(Diagnostic::new(
+                    args[0].span(),
+                    format!("`pop` necesita un arreglo, pero recibió {other}"),
+                )),
+            },
+            _ => {
+                // push(arreglo, valor)
+                let Type::Array(elem) = first else {
+                    return Err(Diagnostic::new(
+                        args[0].span(),
+                        format!("`push` necesita un arreglo, pero recibió {first}"),
+                    ));
+                };
+                self.expr_as(ctx, &args[1], &elem)?;
+                Ok(Type::Unit)
+            }
         }
-        // push(arreglo, valor)
-        let Type::Array(elem) = first else {
-            return Err(Diagnostic::new(
-                args[0].span(),
-                format!("`push` necesita un arreglo, pero recibió {first}"),
-            ));
-        };
-        self.expr_as(ctx, &args[1], &elem)?;
-        Ok(Type::Unit)
     }
 
     /// `expr is T` / `expr as T`: ambos lados deben ser objetos y estar emparentados.
@@ -1576,41 +1841,115 @@ impl<'p> Pass<'p> {
         op: &str,
     ) -> Result<Type, Diagnostic> {
         let found = self.expr(ctx, expr)?;
-        let target = self.resolve(ty)?;
-        let (Type::Obj(from), Type::Obj(to)) = (&found, &target) else {
-            let bad = if matches!(found, Type::Obj(_)) {
-                (ty.span, target.to_string(), "un objeto")
-            } else {
-                (expr.span(), found.to_string(), "un objeto")
-            };
+        let Type::Obj(from, _) = &found else {
             return Err(Diagnostic::new(
-                bad.0,
-                format!("`{op}` compara {}, pero {} no lo es", bad.2, bad.1),
+                expr.span(),
+                format!("`{op}` compara un objeto, pero {found} no lo es"),
             ));
+        };
+        // Los argumentos de tipo no existen en ejecución: `is` mira solo la clase.
+        let (to, result) = if op == "is" {
+            if !self.classes.contains_key(&ty.name) && !self.kinds.contains_key(&ty.name) {
+                let other = self.resolve(ty)?;
+                return Err(Diagnostic::new(
+                    ty.span,
+                    format!("`is` compara con una clase o interfaz, pero {other} no lo es"),
+                ));
+            }
+            if !ty.args.is_empty() {
+                return Err(Diagnostic::new(
+                    ty.span,
+                    format!(
+                        "los argumentos de tipo se borran en ejecución: escribe `is {}`",
+                        ty.name
+                    ),
+                ));
+            }
+            (ty.name.clone(), Type::Bool)
+        } else {
+            let target = self.resolve(ty)?;
+            let Type::Obj(to, args) = &target else {
+                return Err(Diagnostic::new(
+                    ty.span,
+                    format!("`as` convierte a una clase o interfaz, pero {target} no lo es"),
+                ));
+            };
+            if !args.is_empty() {
+                return Err(Diagnostic::new(
+                    ty.span,
+                    "no se puede convertir a un tipo genérico: los argumentos de tipo se borran en ejecución",
+                ));
+            }
+            (to.clone(), target)
         };
         // Dos clases sin relación nunca coinciden; con una interfaz de por medio sí puede.
         let unrelated = self.classes.contains_key(from)
-            && self.classes.contains_key(to)
-            && !self.is_sub(from, to)
-            && !self.is_sub(to, from);
+            && self.classes.contains_key(&to)
+            && !self.is_sub(from, &to)
+            && !self.is_sub(&to, from);
         if unrelated {
             return Err(Diagnostic::new(
                 ty.span,
                 format!("un `{from}` nunca puede ser un `{to}`: no están emparentadas"),
             ));
         }
-        Ok(target)
+        Ok(result)
     }
 
-    /// Llamada `nombre(args)`: constructor de una clase, método de `this` o función.
+    /// El tipo donde buscar métodos al llamar sobre `ty`: el propio objeto o, para un parámetro de tipo,
+    /// su cota.
+    fn method_receiver(&self, ty: &Type, span: Span) -> Result<Type, Diagnostic> {
+        match ty {
+            Type::Obj(..) => Ok(ty.clone()),
+            Type::Param(name) => self.param_bound(name).ok_or_else(|| {
+                Diagnostic::new(
+                    span,
+                    format!(
+                        "`{name}` no tiene métodos: añade una cota al parámetro de tipo, por ejemplo `<{name}: Interfaz>`"
+                    ),
+                )
+            }),
+            other => Err(Diagnostic::new(span, not_object(other, "métodos"))),
+        }
+    }
+
+    /// Tipo de `a == b` / `a != b`: dos valores del mismo tipo (o numéricos, o emparentados) se pueden
+    /// comparar; `nil` solo con un opcional. Los objetos y arreglos se comparan por referencia.
+    fn equality_type(&self, a: &Type, b: &Type, span: Span) -> Result<Type, Diagnostic> {
+        let invalid = |hint: &str| {
+            Diagnostic::new(span, format!("la operación `==` no admite {a} y {b}{hint}"))
+        };
+        match (a, b) {
+            (Type::Nil, Type::Nullable(_) | Type::Nil) | (Type::Nullable(_), Type::Nil) => {
+                Ok(Type::Bool)
+            }
+            _ if *a == Type::Nil || *b == Type::Nil => Err(invalid(
+                "; ese valor nunca es nil, así que no hace falta compararlo",
+            )),
+            _ if *a == Type::Unit || *b == Type::Unit => Err(invalid("")),
+            _ if (a.is_numeric() && b.is_numeric())
+                || self.assignable(a, b)
+                || self.assignable(b, a) =>
+            {
+                Ok(Type::Bool)
+            }
+            _ => Err(invalid("")),
+        }
+    }
+
+    /// Llamada `nombre(args)`: constructor de una clase, método de `this` o función. `expected` es el
+    /// tipo que pide el contexto (completa los argumentos de tipo de `Lista()`).
     fn call(
         &mut self,
         ctx: &mut Ctx,
         name: &str,
         args: &[Expr],
+        type_args: &[TypeRef],
         span: Span,
+        expected: Option<&Type>,
     ) -> Result<Type, Diagnostic> {
         if let Some(info) = self.classes.get(name) {
+            let tparams = info.tparams.clone();
             let params = info.ctor.clone();
             if params.len() != args.len() {
                 return Err(Diagnostic::new(
@@ -1622,10 +1961,32 @@ impl<'p> Pass<'p> {
                     ),
                 ));
             }
-            for (arg, expected) in args.iter().zip(&params) {
-                self.expr_as(ctx, arg, expected)?;
+            let template = Type::Obj(
+                name.to_string(),
+                tparams
+                    .iter()
+                    .map(|p| Type::Param(p.name.clone()))
+                    .collect(),
+            );
+            let map = self.infer(
+                ctx,
+                &Inference {
+                    what: "la clase",
+                    shown: name,
+                    tparams: &tparams,
+                    params: &params,
+                    args,
+                    explicit: type_args,
+                    template: Some(&template),
+                    expected,
+                    span,
+                },
+                TMap::new(),
+            )?;
+            for (arg, param) in args.iter().zip(&params) {
+                self.expr_as(ctx, arg, &subst(param, &map))?;
             }
-            return Ok(Type::Obj(name.to_string()));
+            return Ok(subst(&template, &map));
         }
         if self.kinds.contains_key(name) {
             return Err(Diagnostic::new(
@@ -1634,15 +1995,152 @@ impl<'p> Pass<'p> {
             ));
         }
         if let Some(class) = ctx.this.clone() {
-            if let Some(key) = self.find_method(&class, name) {
+            let this_ty = Type::Obj(class.clone(), self.identity_args(&class));
+            if let Some((key, map)) = self.find_method(&this_ty, name) {
                 self.res.virtuals.insert(span, name.to_string());
-                return self.call_sig(ctx, &key, name, "el método", args, span);
+                return self.call_sig(ctx, &key, name, "el método", args, &[], span, map, None);
             }
         }
-        self.call_sig(ctx, name, name, "la función", args, span)
+        self.call_sig(
+            ctx,
+            name,
+            name,
+            "la función",
+            args,
+            type_args,
+            span,
+            TMap::new(),
+            None,
+        )
     }
 
-    /// Llamada a la función o método de clave `key`; `shown` y `what` son para los mensajes.
+    /// Completa los argumentos de tipo de una llamada: los explícitos (`f<Int>(x)`), los que salen de
+    /// los argumentos y, si aún faltan, los que pide el contexto. Comprueba las cotas.
+    fn infer(
+        &mut self,
+        ctx: &mut Ctx,
+        call: &Inference,
+        mut map: TMap,
+    ) -> Result<TMap, Diagnostic> {
+        let Inference {
+            what,
+            shown,
+            tparams,
+            params,
+            args,
+            explicit,
+            template,
+            expected,
+            span,
+        } = *call;
+        if tparams.is_empty() {
+            if !explicit.is_empty() {
+                return Err(Diagnostic::new(
+                    span,
+                    format!("{what} `{shown}` no es genérica y no admite argumentos de tipo"),
+                ));
+            }
+            return Ok(map);
+        }
+        let names: Vec<&str> = tparams.iter().map(|p| p.name.as_str()).collect();
+        if !explicit.is_empty() {
+            if explicit.len() != tparams.len() {
+                return Err(Diagnostic::new(
+                    span,
+                    format!(
+                        "{what} `{shown}` necesita {} argumento(s) de tipo, pero recibió {}",
+                        tparams.len(),
+                        explicit.len()
+                    ),
+                ));
+            }
+            for (param, given) in tparams.iter().zip(explicit) {
+                let ty = self.resolve(given)?;
+                if ty == Type::Unit {
+                    return Err(Diagnostic::new(
+                        given.span,
+                        "un argumento de tipo no puede ser Unit",
+                    ));
+                }
+                map.insert(param.name.clone(), ty);
+            }
+        } else {
+            for (arg, param) in args.iter().zip(params) {
+                if !mentions_unresolved(param, &names, &map) {
+                    continue;
+                }
+                // `nil` y `[]` no dicen de qué tipo son.
+                if matches!(arg, Expr::Nil(_))
+                    || matches!(arg, Expr::Array { elems, .. } if elems.is_empty())
+                {
+                    continue;
+                }
+                let found = self.expr(ctx, arg)?;
+                self.unify(param, &found, &names, &mut map);
+            }
+            if let (Some(template), Some(expected)) = (template, expected) {
+                // La clase vista como el tipo esperado (puede ser un ancestro o una interfaz).
+                if let Some(Type::Obj(target, _)) = Some(expected) {
+                    if let Some(seen) = self.as_super(template, target) {
+                        self.unify(&seen, expected, &names, &mut map);
+                    }
+                }
+            }
+        }
+        for param in tparams {
+            if !map.contains_key(&param.name) {
+                return Err(Diagnostic::new(
+                    span,
+                    format!(
+                        "no se puede deducir el tipo `{}` de {what} `{shown}`; escríbelo, por ejemplo `{shown}<Int>(...)`",
+                        param.name
+                    ),
+                ));
+            }
+        }
+        for param in tparams {
+            if let Some(bound) = &param.bound {
+                let bound = subst(bound, &map);
+                let actual = &map[&param.name];
+                if !self.assignable(&bound, actual) {
+                    return Err(Diagnostic::new(
+                        span,
+                        format!(
+                            "el tipo {actual} no cumple la cota `{}: {bound}` de {what} `{shown}`",
+                            param.name
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(map)
+    }
+
+    /// Anota en `map` qué toma cada parámetro de tipo de `param` para que case con `found`.
+    fn unify(&self, param: &Type, found: &Type, names: &[&str], map: &mut TMap) {
+        match (param, found) {
+            (Type::Param(name), _) if names.contains(&name.as_str()) => {
+                if !map.contains_key(name) && *found != Type::Nil && *found != Type::Unit {
+                    map.insert(name.clone(), found.clone());
+                }
+            }
+            (Type::Array(p), Type::Array(f)) => self.unify(p, f, names, map),
+            (Type::Nullable(p), Type::Nullable(f)) => self.unify(p, f, names, map),
+            (Type::Nullable(p), f) if *f != Type::Nil => self.unify(p, f, names, map),
+            (Type::Obj(class, p_args), Type::Obj(..)) => {
+                if let Some(Type::Obj(_, f_args)) = self.as_super(found, class) {
+                    for (p, f) in p_args.iter().zip(&f_args) {
+                        self.unify(p, f, names, map);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Llamada a la función o método de clave `key`; `shown` y `what` son para los mensajes. `map` ya
+    /// trae los parámetros de tipo de la clase del receptor; los de la función se infieren aquí.
+    #[allow(clippy::too_many_arguments)]
     fn call_sig(
         &mut self,
         ctx: &mut Ctx,
@@ -1650,9 +2148,12 @@ impl<'p> Pass<'p> {
         shown: &str,
         what: &str,
         args: &[Expr],
+        type_args: &[TypeRef],
         span: Span,
+        map: TMap,
+        expected: Option<&Type>,
     ) -> Result<Type, Diagnostic> {
-        let Some(sig) = self.funcs.get(key) else {
+        let Some(sig) = self.funcs.get(key).cloned() else {
             return Err(Diagnostic::new(
                 span,
                 format!("la función `{shown}` no está definida"),
@@ -1668,9 +2169,23 @@ impl<'p> Pass<'p> {
                 ),
             ));
         }
-        let params = sig.params.clone();
-        for (arg, expected) in args.iter().zip(&params) {
-            self.expr_as(ctx, arg, expected)?;
+        let map = self.infer(
+            ctx,
+            &Inference {
+                what,
+                shown,
+                tparams: &sig.tparams,
+                params: &sig.params,
+                args,
+                explicit: type_args,
+                template: None,
+                expected,
+                span,
+            },
+            map,
+        )?;
+        for (arg, param) in args.iter().zip(&sig.params) {
+            self.expr_as(ctx, arg, &subst(param, &map))?;
         }
         // Si el tipo de retorno aún no se infirió, se verifica ahora el cuerpo de esa función.
         if self.funcs[key].ret.is_none() {
@@ -1690,7 +2205,8 @@ impl<'p> Pass<'p> {
                 }
             }
         }
-        Ok(self.funcs[key].ret.clone().unwrap_or(Type::Unit))
+        let ret = self.funcs[key].ret.clone().unwrap_or(Type::Unit);
+        Ok(subst(&ret, &map))
     }
 
     fn resolve(&self, ty: &TypeRef) -> Result<Type, Diagnostic> {
@@ -1698,7 +2214,7 @@ impl<'p> Pass<'p> {
             Diagnostic::new(
                 ty.span,
                 format!(
-                    "el tipo `{}` no existe (hay Int, Float, Bool, Str, Unit, [T], las clases y las interfaces declaradas)",
+                    "el tipo `{}` no existe (hay Int, Float, Bool, Str, Unit, [T], las clases, las interfaces y los parámetros de tipo declarados)",
                     ty.name
                 ),
             )
@@ -1729,12 +2245,103 @@ impl<'p> Pass<'p> {
                 }
                 Ok(Type::Nullable(Box::new(inner_ty)))
             }
-            (name, []) if self.classes.contains_key(name) || self.kinds.contains_key(name) => {
-                Ok(Type::Obj(name.to_string()))
+            (name, args) => {
+                if args.is_empty() && self.scope_params.iter().any(|p| p.name == name) {
+                    return Ok(Type::Param(name.to_string()));
+                }
+                let arity = if let Some(class) = self.classes.get(name) {
+                    class.tparams.len()
+                } else if let Some(kind) = self.kinds.get(name) {
+                    kind.tparams.len()
+                } else {
+                    return Err(unknown());
+                };
+                if args.len() != arity {
+                    return Err(Diagnostic::new(
+                        ty.span,
+                        if arity == 0 {
+                            format!("`{name}` no es genérica y no admite argumentos de tipo")
+                        } else {
+                            format!(
+                                "`{name}` necesita {arity} argumento(s) de tipo, por ejemplo `{name}<...>`"
+                            )
+                        },
+                    ));
+                }
+                let resolved = args
+                    .iter()
+                    .map(|a| {
+                        let t = self.resolve(a)?;
+                        if t == Type::Unit {
+                            return Err(Diagnostic::new(
+                                a.span,
+                                "un argumento de tipo no puede ser Unit",
+                            ));
+                        }
+                        Ok(t)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Type::Obj(name.to_string(), resolved))
             }
-            _ => Err(unknown()),
         }
     }
+}
+
+/// Los parámetros de tipo `decls` sin cotas todavía (para poder nombrarse unos a otros).
+fn unbounded(decls: &[TypeParam]) -> Vec<TParam> {
+    decls
+        .iter()
+        .map(|d| TParam {
+            name: d.name.clone(),
+            bound: None,
+        })
+        .collect()
+}
+
+/// Empareja los parámetros de tipo de una declaración con los argumentos concretos.
+fn tmap(tparams: &[TParam], args: &[Type]) -> TMap {
+    tparams
+        .iter()
+        .map(|p| p.name.clone())
+        .zip(args.iter().cloned())
+        .collect()
+}
+
+/// Sustituye los parámetros de tipo de `ty` según `map`. Un opcional de un opcional se aplana.
+fn subst(ty: &Type, map: &TMap) -> Type {
+    match ty {
+        Type::Param(name) => map.get(name).cloned().unwrap_or_else(|| ty.clone()),
+        Type::Array(elem) => Type::Array(Box::new(subst(elem, map))),
+        Type::Nullable(inner) => optional(subst(inner, map)),
+        Type::Obj(name, args) => {
+            Type::Obj(name.clone(), args.iter().map(|a| subst(a, map)).collect())
+        }
+        other => other.clone(),
+    }
+}
+
+/// ¿`ty` nombra algún parámetro de tipo de `names` que `map` aún no resuelve?
+fn mentions_unresolved(ty: &Type, names: &[&str], map: &TMap) -> bool {
+    match ty {
+        Type::Param(name) => names.contains(&name.as_str()) && !map.contains_key(name),
+        Type::Array(inner) | Type::Nullable(inner) => mentions_unresolved(inner, names, map),
+        Type::Obj(_, args) => args.iter().any(|a| mentions_unresolved(a, names, map)),
+        _ => false,
+    }
+}
+
+/// Lo que hace falta para completar los argumentos de tipo de una llamada.
+struct Inference<'a> {
+    what: &'a str,
+    shown: &'a str,
+    tparams: &'a [TParam],
+    params: &'a [Type],
+    args: &'a [Expr],
+    explicit: &'a [TypeRef],
+    /// El tipo que produce la llamada, con sus parámetros de tipo (solo los constructores).
+    template: Option<&'a Type>,
+    expected: Option<&'a Type>,
+    span: Span,
 }
 
 /// Mensaje cuando se usa `.` sobre algo que no es un objeto (con pista si es un opcional).
@@ -1848,7 +2455,7 @@ fn binary_type(op: BinOp, a: &Type, b: &Type, span: Span) -> Result<Type, Diagno
             "; ese valor nunca es nil, así que no hace falta compararlo",
         )),
         BinOp::Eq | BinOp::Ne => {
-            let comparable = !matches!(a, Type::Array(_) | Type::Obj(_) | Type::Nullable(_));
+            let comparable = !matches!(a, Type::Array(_) | Type::Obj(..) | Type::Nullable(_));
             if (a == b && comparable) || (a.is_numeric() && b.is_numeric()) {
                 Ok(Type::Bool)
             } else {
@@ -2090,7 +2697,7 @@ mod tests {
         assert!(err("push(1, 2)").contains("`push` necesita un arreglo"));
         assert!(err("show(len(1))").contains("`len` admite Str o un arreglo"));
         assert!(err("show(len())").contains("espera 1 argumento(s)"));
-        assert!(err("show([1] == [1])").contains("no admite [Int] y [Int]"));
+        assert!(err("show([1] == 1)").contains("no admite [Int] y Int"));
         assert!(err("fix a: [Int] = [true]").contains("se esperaba [Int], pero es [Bool]"));
         assert!(err("fix a: [Cosa] = []").contains("`Cosa`"));
     }
@@ -2143,7 +2750,7 @@ mod tests {
                 "show(this)",
                 "`this` solo se puede usar dentro de un método",
             ),
-            ("show(p == p)", "no admite P y P"),
+            ("show(p == 1)", "no admite P y Int"),
             (
                 "show(len(p))",
                 "`len` admite Str o un arreglo, pero recibió P",
@@ -2369,9 +2976,9 @@ mod tests {
             ("fix n = 1\nshow(n is Int)", "compara un objeto"),
             (
                 "thing A()\nfix a = A()\nshow(a is Int)",
-                "compara un objeto",
+                "compara con una clase o interfaz",
             ),
-            ("thing A()\nshow(A() == A())", "no admite A y A"),
+            ("thing A()\nthing B()\nshow(A() == B())", "no admite A y B"),
         ];
         for (src, expected) in cases {
             let message = err(src);
@@ -2456,10 +3063,7 @@ mod tests {
                 "se esperaba Int, pero es Int?",
             ),
             ("fix x: Int? = 1\nshow(x + 1)", "no admite Int? y Int"),
-            (
-                "fix x: Int? = 1\nfix y: Int? = 2\nshow(x == y)",
-                "no admite Int? y Int?",
-            ),
+            ("fix x: Int? = 1\nshow(x == \"a\")", "no admite Int? y Str"),
             ("fix x: Int?? = 1", "no tiene sentido"),
             ("fix x: Unit? = nil", "no tiene sentido"),
             ("fix x: Cosa? = nil", "el tipo `Cosa` no existe"),
@@ -2604,5 +3208,132 @@ mod tests {
             "thing E(fix c: Int) : Fallo(\"x\")\nattempt { }\nrescue e: Fallo { show(e.c) }",
         );
         assert!(message.contains("no tiene el campo `c`"), "{message}");
+    }
+
+    // --- M7: genéricos ---
+
+    #[test]
+    fn genericos_bien_tipados() {
+        for src in [
+            "thing Caja<T>(fix v: T) { fn dame() -> T = v }\nfix c = Caja(1)\nshow(c.dame() + 1)",
+            "thing Caja<T>(fix v: T)\nfix c: Caja<Int> = Caja<Int>(1)\nshow(c.v)",
+            "fix l: Lista<Str> = Lista()\nl.agrega(\"a\")\nshow(l.obtiene(0) + \"b\")",
+            "fn id<T>(x: T) -> T = x\nshow(id(1) + 1)\nshow(id(\"a\") + \"b\")\nshow(id<Int>(2))",
+            "fn dos<A, B>(a: A, b: B) -> Par<B, A> = Par(b, a)\nthing Par<A, B>(fix a: A, fix b: B)\nshow(dos(1, \"x\").a)",
+            "thing Base<T>(fix x: T)\nthing Hijo<U>(y: U) : Base<U>(y)\nfix b: Base<Int> = Hijo(1)\nshow(b.x + 1)",
+            "kind K<T> { fn f() -> T }\nthing A() : K<Int> { fn f() -> Int = 1 }\nfix k: K<Int> = A()\nshow(k.f() + 1)",
+            "kind O<T> { fn antes(o: T) -> Bool }\nfn min<T: O<T>>(a: T, b: T) -> T {\n if a.antes(b) { return a }\n return b\n}",
+            "thing A(fix n: Int)\nfn f<T: A>(x: T) -> Int = x.n",
+            "fn f<T>(xs: [T]) -> Int = len(xs)\nshow(f([1, 2]))\nshow(f<Str>([]))",
+            "fn eq<T>(a: T, b: T) -> Bool = a == b",
+            "fn mu<T>(x: T) -> T? = x\nshow(mu(1) ?: 0)",
+            "thing Nodo<T>(fix v: T, mut sig: Nodo<T>?)\nfix n = Nodo(1, nil)\nshow(n.sig == nil)",
+            "fix m = Mapa<Str, Int>()\nm.pone(\"a\", 1)\nshow((m.obtiene(\"a\") ?: 0) + 1)",
+            "fix p: Lista<Int>? = nil\nshow(p?.tam())",
+            "show(hash(1) + 1)\nfix xs = [1]\nshow(pop(xs) + 1)",
+        ] {
+            assert_eq!(check(src), Ok(()), "{src}");
+        }
+    }
+
+    #[test]
+    fn errores_de_genericos() {
+        let cases = [
+            ("fix l: Lista<Int, Int> = Lista()", "necesita 1 argumento(s) de tipo"),
+            ("fix l: Lista = Lista<Int>()", "necesita 1 argumento(s) de tipo"),
+            ("thing A()\nfix a: A<Int> = A()", "no es genérica"),
+            ("fix l = Lista()", "no se puede deducir el tipo `T`"),
+            ("fix m = Mapa<Int>()", "necesita 2 argumento(s) de tipo, pero recibió 1"),
+            ("fix l = Lista<Int>()\nl.agrega(\"a\")", "se esperaba Int, pero es Str"),
+            ("fix l = Lista<Int>()\nfix s: Str = l.obtiene(0)", "se esperaba Str, pero es Int"),
+            ("thing A()\nthing B() : A()\nfix l: Lista<A> = Lista<B>()", "se esperaba Lista<A>, pero es Lista<B>"),
+            ("fix l = Lista<Cosa>()", "el tipo `Cosa` no existe"),
+            ("fix l = Lista<Unit>()", "no puede ser Unit"),
+            ("fn id<T>(x: T) -> T = x\nshow(id(1, 2))", "espera 1 argumento(s), pero recibió 2"),
+            ("fn id<T>(x: T) -> T = x\nshow(id<Int, Int>(1))", "necesita 1 argumento(s) de tipo, pero recibió 2"),
+            ("fn id(x: Int) -> Int = x\nshow(id<Int>(1))", "no es genérica"),
+            ("fn mismo<T>(a: T, b: T) -> T = a\nshow(mismo(1, \"a\"))", "se esperaba Int, pero es Str"),
+            ("fn vacia<T>() -> [T] = []\nfix x = vacia()", "no se puede deducir el tipo `T`"),
+            ("fn f<T>(x: T) -> Int = x + 1", "no admite T y Int"),
+            ("fn f<T>(x: T) -> Int = x", "se esperaba Int, pero es T"),
+            ("fn f<T>(x: T) -> T = 1", "se esperaba T, pero es Int"),
+            ("fn f<T>(x: T) -> Str = x.nombre", "solo los objetos tienen campos, pero esto es T"),
+            ("fn f<T>(x: T) { x.m() }", "no tiene métodos: añade una cota"),
+            ("fn f<T>(a: T, b: T) -> Bool = a < b", "no admite T y T"),
+            ("fn f<T>(x: T) -> Bool = x is Lista", "compara un objeto"),
+            ("fn f<T, T>(x: T) { }", "está repetido"),
+            ("fn f<T: Int>(x: T) { }", "debe ser una clase o una interfaz"),
+            ("thing A(fix n: Int)\nfn f<T: A>(x: T) { }\nf(1)", "no cumple la cota"),
+            ("thing A(fix n: Int)\nthing B()\nfn f<T: A>(x: T) { }\nf(B())", "no cumple la cota"),
+            ("kind O<T> { fn antes(o: T) -> Bool }\nthing N() : O<Int> { fn antes(o: Int) -> Bool = true }\nfn m<T: O<T>>(a: T) { }\nm(N())", "no cumple la cota"),
+            ("thing Base<T>(fix x: T)\nthing H() : Base(1)", "necesita 1 argumento(s) de tipo"),
+            ("thing Base<T>(fix x: T)\nthing H() : Base<Int>(\"a\")", "se esperaba Int, pero es Str"),
+            ("kind K<T> { fn f() -> T }\nthing A() : K<Int> { fn f() -> Str = \"\" }", "pide () -> Int"),
+            ("kind K<T> { fn f() -> T }\nthing A() : K { fn f() -> Int = 1 }", "necesita 1 argumento(s) de tipo"),
+            ("thing Base<T>(fix x: T) { fn dame() -> T = x }\nthing H() : Base<Int>(1) { fn dame() -> Str = \"\" }", "sobrescribe el de `Base`"),
+            ("fix l = Lista<Int>()\nshow(l is Lista<Int>)", "los argumentos de tipo se borran en ejecución"),
+            ("fix l = Lista<Int>()\nshow(l as Lista<Int>)", "no se puede convertir a un tipo genérico"),
+            ("show(pop(1))", "`pop` necesita un arreglo"),
+            ("show(hash())", "espera 1 argumento(s)"),
+            ("fn hash(x: Int) = x", "función integrada"),
+            ("thing Lista()", "ya está en uso"),
+        ];
+        for (src, expected) in cases {
+            let message = err(src);
+            assert!(
+                message.contains(expected),
+                "{src}: se esperaba «{expected}», pero fue «{message}»"
+            );
+        }
+    }
+
+    #[test]
+    fn la_variancia_es_invariante_y_los_subtipos_funcionan_con_argumentos() {
+        // Caja<Perro> no es Caja<Animal>, pero una subclase de Caja<T> sí es Caja<T>.
+        let pre = "thing Animal()\nthing Perro() : Animal()\nthing Caja<T>(fix v: T)\nthing CajaP() : Caja<Perro>(Perro())\n";
+        assert_eq!(check(&format!("{pre}fix c: Caja<Perro> = CajaP()")), Ok(()));
+        assert_eq!(
+            check(&format!("{pre}fix c: Caja<Animal> = Caja<Animal>(Perro())")),
+            Ok(())
+        );
+        let message = err(&format!("{pre}fix c: Caja<Animal> = CajaP()"));
+        assert!(
+            message.contains("se esperaba Caja<Animal>, pero es CajaP"),
+            "{message}"
+        );
+        let message = err(&format!("{pre}fix c: Caja<Animal> = Caja<Perro>(Perro())"));
+        assert!(
+            message.contains("se esperaba Caja<Animal>, pero es Caja<Perro>"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn los_parametros_de_tipo_no_se_filtran_a_otras_declaraciones() {
+        let message = err("fn f<T>(x: T) -> T = x\nfn g(y: T) -> Int = 1");
+        assert!(message.contains("el tipo `T` no existe"), "{message}");
+        let message = err("thing A<T>(fix v: T)\nfix x: T = 1");
+        assert!(message.contains("el tipo `T` no existe"), "{message}");
+    }
+
+    #[test]
+    fn los_genericos_se_recuerdan_entre_entradas() {
+        let mut c = Checker::new();
+        let run = |c: &mut Checker, src: &str| {
+            c.check(&parse(src).unwrap())
+                .map(|_| ())
+                .map_err(|d| d.message)
+        };
+        assert_eq!(
+            run(
+                &mut c,
+                &format!("{}\nthing Caja<T>(fix v: T)", and23_syntax::PRELUDE)
+            ),
+            Ok(())
+        );
+        assert_eq!(run(&mut c, "fix a = Caja(1)"), Ok(()));
+        assert_eq!(run(&mut c, "fix b: Caja<Int> = a"), Ok(()));
+        assert!(run(&mut c, "fix d: Caja<Str> = a").is_err());
+        assert!(run(&mut c, "fix e: Caja = a").is_err());
     }
 }

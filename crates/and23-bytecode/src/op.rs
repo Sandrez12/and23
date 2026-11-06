@@ -90,6 +90,10 @@ pub enum Op {
     Len,
     /// Saca valor y arreglo, agrega el valor al final y deja `()` (`push`).
     Push,
+    /// Saca un arreglo y deja su último elemento, que quita del arreglo (`pop`).
+    ArrayPop,
+    /// Saca un valor y deja su hash (`hash`): igual para valores iguales, nunca negativo.
+    Hash,
     /// Llama a la función `n`; sus argumentos ya están en la pila.
     Call(u32),
     /// Devuelve la cima al llamador.
