@@ -4,7 +4,7 @@ And23 es un lenguaje de programación estático y orientado a objetos, de nivel 
 
 Los archivos de código usan la extensión `.jb`. Los identificadores admiten Unicode (`dueño`, `ñandú`).
 
-> **Estado: M1a.** Hoy ejecuta programas con variables, booleanos, `if`/`while` y funciones recursivas sobre un intérprete de árbol. El bytecode y la VM (M1b), los tipos estáticos, las clases y el resto llegan en los siguientes hitos (ver [`DESIGN.md`](DESIGN.md)).
+> **Estado: M1.** Hoy compila programas con variables, booleanos, `if`/`while` y funciones recursivas a bytecode y los ejecuta en una VM de pila (`fib(30)` en ~0,17 s, unas 9 veces más rápido que el intérprete de árbol anterior). Los tipos estáticos, las clases y el resto llegan en los siguientes hitos (ver [`DESIGN.md`](DESIGN.md)).
 
 ## Cómo se ve (objetivo del lenguaje)
 
@@ -74,6 +74,8 @@ Requiere [Rust](https://rustup.rs) estable.
 ```
 cargo run -p and23-cli -- examples/funciones.jb    # ejecuta un archivo
 cargo run -p and23-cli                             # REPL (":q" sale)
+cargo run -p and23-cli -- --disasm examples/funciones.jb   # muestra el bytecode
+cargo run -p and23-cli -- --tree examples/funciones.jb     # intérprete de árbol (referencia)
 cargo test --workspace                             # tests
 ```
 
@@ -82,7 +84,9 @@ cargo test --workspace                             # tests
 | Crate | Contenido |
 |---|---|
 | `and23-syntax` | lexer, AST, parser Pratt y diagnósticos con línea y columna |
-| `and23-eval` | evaluador de árbol (provisional; lo reemplaza la VM en M1) |
+| `and23-bytecode` | instrucciones, compilador del AST a bytecode y desensamblador |
+| `and23-vm` | VM de pila y sesión (compilador + VM con estado para el REPL) |
+| `and23-eval` | intérprete de árbol; queda como referencia para comparar comportamiento y velocidad |
 | `and23-cli` | binario `and23`: ejecuta archivos `.jb` y ofrece un REPL |
 
 ## Hoja de ruta

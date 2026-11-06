@@ -60,10 +60,12 @@ igualdad estructural, strings UTF-8, sin boxing visible al usuario.
 Workspace de Rust en `crates/`:
 
 - `and23-syntax`: lexer, AST, parser y diagnósticos (spans con línea y columna).
-- `and23-eval`: evaluador de árbol (etapa M0). En M1 lo reemplaza el compilador a bytecode y la VM.
+- `and23-bytecode`: `Op`, `Module`/`Function`, compilador AST → bytecode y desensamblador.
+- `and23-vm`: VM de pila (`Vm`) y `Session`, que une compilador y VM conservando el estado del REPL.
+- `and23-eval`: intérprete de árbol (M0/M1a). Ya no es el camino de ejecución; se conserva como oráculo en los tests diferenciales y para `--tree`.
 - `and23-cli`: binario `and23` (ejecuta archivos `.jb` y ofrece un REPL).
 
-Crates previstos: `and23-types` (M2), `and23-bytecode` y `and23-vm` (M1 y siguientes).
+Crate previsto: `and23-types` (M2).
 
 ## Hitos
 
@@ -89,7 +91,20 @@ Crates previstos: `and23-types` (M2), `and23-bytecode` y `and23-vm` (M1 y siguie
 - **M0** (hecho): lexer, parser Pratt y expresiones aritméticas. `examples/aritmetica.jb`.
 - **M1a** (hecho): variables, booleanos, `if`/`while`, funciones y recursión sobre el intérprete de árbol.
   `examples/funciones.jb` y `examples/control.jb`. Referencia para M1b: `fib(30)` = 832040 en ~1,7 s (release).
-- **M1b** (pendiente): compilador a bytecode y VM de pila; debe superar esa referencia.
+- **M1b** (hecho): compilador a bytecode y VM de pila. `fib(30)` = 832040 en ~0,17 s (release) contra ~1,6 s del
+  árbol (≈9×). Tests diferenciales: la VM da la misma salida y los mismos errores que el intérprete de árbol.
+
+### Diseño de la VM (M1b)
+
+- Instrucciones `Op` (enum `Copy`, destinos de salto absolutos) y una tabla de `Span` por instrucción para los errores.
+- Los locales son las primeras posiciones del marco en la pila; cada bloque saca los suyos al salir (`Pop`/`PopN`),
+  y `break`/`continue` sacan los que declaró el cuerpo del bucle antes de saltar.
+- Las `fix`/`mut` del nivel superior son globales (ranuras); las funciones y globales del archivo se registran antes de
+  compilar, así que una función puede usar una global declarada más abajo (falla al ejecutar si aún no tiene valor).
+- Las llamadas no usan la pila nativa de Rust: un marco por llamada en un `Vec`, con límite de 10 000.
+- Variable no definida, asignación a `fix`, aridad incorrecta y función desconocida se detectan **al compilar**
+  (antes de ejecutar nada); los errores de tipo, desbordamiento y división entre cero, al ejecutar.
+- Si la compilación falla, el compilador queda intacto (REPL). `and23 --disasm archivo.jb` imprime el bytecode.
 
 ### Semántica fijada en M1a
 
@@ -102,6 +117,7 @@ Crates previstos: `and23-types` (M2), `and23-bytecode` y `and23-vm` (M1 y siguie
   globales, no las locales del llamador. Si el archivo define `main()`, se llama tras el código del nivel superior.
 - Las anotaciones de tipo (`n: Int`, `-> Int`) son obligatorias en los parámetros pero **no se verifican hasta M2**.
 - Recursión limitada a 10 000 llamadas anidadas: más allá es un error con posición, no un cierre del proceso.
+- Desde M1b esos errores de nombres y aridad se informan al compilar, no al ejecutar.
 - Palabras clave: `fix mut fn if else while return break continue true false show`.
 
 ## Fuentes de referencia

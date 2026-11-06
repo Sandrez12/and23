@@ -1,18 +1,22 @@
+use and23_bytecode::{disassemble, Compiler};
 use and23_eval::Interpreter;
+use and23_vm::Session;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::process::ExitCode;
 
 const USAGE: &str = "\
-And23 (M1a)
+And23 (M1b)
 
 Uso:
   and23 <archivo.jb>   ejecuta un programa (y llama a main() si existe)
   and23                abre el REPL (escribe :q o Ctrl+Z para salir)
+  and23 --disasm <archivo.jb>   muestra el bytecode en vez de ejecutar
+  and23 --tree <archivo.jb>     usa el intérprete de árbol (referencia de M1a)
   and23 --version
 ";
 
-/// El intérprete de árbol recurre en la pila nativa; con 256 MB caben las 10 000 llamadas
-/// anidadas que permite antes de dar un error en lugar de abortar el proceso.
+/// La VM no recurre en la pila nativa, pero el parser sí (expresiones muy anidadas) y el
+/// intérprete de árbol (`--tree`) también: con 256 MB caben sus 10 000 llamadas anidadas.
 const STACK_BYTES: usize = 256 * 1024 * 1024;
 
 fn main() -> ExitCode {
@@ -40,6 +44,8 @@ fn dispatch(args: &[String]) -> u8 {
             print!("{USAGE}");
             0
         }
+        [flag, path] if flag == "--disasm" => disasm_file(path),
+        [flag, path] if flag == "--tree" => run_file_tree(path),
         [path] => run_file(path),
         _ => {
             eprint!("{USAGE}");
@@ -48,30 +54,79 @@ fn dispatch(args: &[String]) -> u8 {
     }
 }
 
-/// Analiza y ejecuta `src` en `interp`. El error ya viene formateado con su posición.
+/// Lee el archivo; el error ya viene listo para mostrarse.
+fn read_source(path: &str) -> Result<String, u8> {
+    std::fs::read_to_string(path).map_err(|e| {
+        eprintln!("error: no se pudo leer `{path}`: {e}");
+        1
+    })
+}
+
+/// Analiza, compila y ejecuta `src` en `session`. El error ya viene formateado con su posición.
 fn execute<W: Write>(
-    interp: &mut Interpreter<W>,
+    session: &mut Session<W>,
     src: &str,
     file: &str,
     echo: bool,
 ) -> Result<(), String> {
     let program = and23_syntax::parse(src).map_err(|d| d.render(file, src))?;
-    interp.run(&program, echo).map_err(|d| d.render(file, src))
+    session.run(&program, echo).map_err(|d| d.render(file, src))
 }
 
 fn run_file(path: &str) -> u8 {
-    let src = match std::fs::read_to_string(path) {
+    let src = match read_source(path) {
         Ok(src) => src,
-        Err(e) => {
-            eprintln!("error: no se pudo leer `{path}`: {e}");
-            return 1;
-        }
+        Err(code) => return code,
+    };
+    let mut session = Session::new(io::stdout());
+    let result = execute(&mut session, &src, path, false)
+        .and_then(|()| session.run_main().map_err(|d| d.render(path, &src)));
+    // La salida normal debe quedar escrita antes del mensaje de error.
+    let _ = session.out().flush();
+    finish(result)
+}
+
+/// Ejecuta con el intérprete de árbol: sirve para comparar velocidad y comportamiento.
+fn run_file_tree(path: &str) -> u8 {
+    let src = match read_source(path) {
+        Ok(src) => src,
+        Err(code) => return code,
     };
     let mut interp = Interpreter::new(io::stdout());
-    let result = execute(&mut interp, &src, path, false)
+    let result = and23_syntax::parse(&src)
+        .map_err(|d| d.render(path, &src))
+        .and_then(|program| {
+            interp
+                .run(&program, false)
+                .map_err(|d| d.render(path, &src))
+        })
         .and_then(|()| interp.run_main().map_err(|d| d.render(path, &src)));
-    // La salida normal debe quedar escrita antes del mensaje de error.
     let _ = interp.out.flush();
+    finish(result)
+}
+
+fn disasm_file(path: &str) -> u8 {
+    let src = match read_source(path) {
+        Ok(src) => src,
+        Err(code) => return code,
+    };
+    let result = and23_syntax::parse(&src)
+        .map_err(|d| d.render(path, &src))
+        .and_then(|program| {
+            let mut compiler = Compiler::new();
+            compiler
+                .compile(&program, false)
+                .map_err(|d| d.render(path, &src))?;
+            let module = compiler.module();
+            for function in &module.functions {
+                println!("{}", disassemble(module, function));
+            }
+            Ok(())
+        });
+    finish(result)
+}
+
+fn finish(result: Result<(), String>) -> u8 {
     match result {
         Ok(()) => 0,
         Err(rendered) => {
@@ -98,7 +153,7 @@ fn open_braces(src: &str) -> isize {
 fn repl() -> u8 {
     let stdin = io::stdin();
     let interactive = stdin.is_terminal();
-    let mut interp = Interpreter::new(io::stdout());
+    let mut session = Session::new(io::stdout());
     let mut pending = String::new();
     loop {
         if interactive {
@@ -129,18 +184,18 @@ fn repl() -> u8 {
             continue;
         }
         let src = std::mem::take(&mut pending);
-        if let Err(rendered) = execute(&mut interp, &src, "<repl>", true) {
+        if let Err(rendered) = execute(&mut session, &src, "<repl>", true) {
             eprint!("{rendered}");
         }
-        let _ = interp.out.flush();
+        let _ = session.out().flush();
     }
     // Si la entrada terminó con un bloque sin cerrar, se muestra el error en vez de ignorarlo.
     if !pending.trim().is_empty() {
-        if let Err(rendered) = execute(&mut interp, &pending, "<repl>", true) {
+        if let Err(rendered) = execute(&mut session, &pending, "<repl>", true) {
             eprint!("{rendered}");
         }
     }
-    let _ = interp.out.flush();
+    let _ = session.out().flush();
     0
 }
 

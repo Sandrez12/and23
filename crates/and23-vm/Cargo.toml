@@ -1,0 +1,13 @@
+[package]
+name = "and23-vm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Máquina virtual de pila de And23"
+
+[dependencies]
+and23-syntax = { path = "../and23-syntax" }
+and23-bytecode = { path = "../and23-bytecode" }
+
+[dev-dependencies]
+and23-eval = { path = "../and23-eval" }
