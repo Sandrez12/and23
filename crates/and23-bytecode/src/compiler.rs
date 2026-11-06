@@ -391,6 +391,8 @@ struct LoopCtx {
     locals: usize,
     /// Saltos de `break` por completar.
     breaks: Vec<usize>,
+    /// `attempt` abiertos al entrar en el bucle: salir de él debe cerrar los que se abrieron dentro.
+    tries: usize,
 }
 
 struct FnCompiler<'a> {
@@ -405,6 +407,8 @@ struct FnCompiler<'a> {
     locals: Vec<Local>,
     depth: u32,
     loops: Vec<LoopCtx>,
+    /// `attempt` abiertos en este punto de la función.
+    tries: usize,
     /// Es el código del nivel superior: sus `fix`/`mut` de profundidad 0 son globales.
     script: bool,
     echo: bool,
@@ -430,6 +434,7 @@ impl<'a> FnCompiler<'a> {
             locals: Vec::new(),
             depth: 0,
             loops: Vec::new(),
+            tries: 0,
             script: false,
             echo: false,
         }
@@ -609,6 +614,9 @@ impl<'a> FnCompiler<'a> {
             Op::JumpIfFalse(_) => Op::JumpIfFalse(target),
             Op::AndJump(_) => Op::AndJump(target),
             Op::OrJump(_) => Op::OrJump(target),
+            Op::JumpIfNil(_) => Op::JumpIfNil(target),
+            Op::JumpIfNotNil(_) => Op::JumpIfNotNil(target),
+            Op::Try(_) => Op::Try(target),
             other => other,
         };
     }
@@ -788,6 +796,7 @@ impl<'a> FnCompiler<'a> {
                     head,
                     locals: self.locals.len(),
                     breaks: Vec::new(),
+                    tries: self.tries,
                 });
                 self.block(body)?;
                 self.emit(Op::Jump(head), body.span);
@@ -810,7 +819,11 @@ impl<'a> FnCompiler<'a> {
             Stmt::Break(span) => {
                 if let Some(ctx) = self.loops.last() {
                     let extra = self.locals.len() - ctx.locals;
+                    let open = self.tries - ctx.tries;
                     self.pop_locals(extra, *span);
+                    for _ in 0..open {
+                        self.emit(Op::EndTry, *span);
+                    }
                     let at = self.emit(Op::Jump(0), *span);
                     if let Some(ctx) = self.loops.last_mut() {
                         ctx.breaks.push(at);
@@ -820,8 +833,52 @@ impl<'a> FnCompiler<'a> {
             Stmt::Continue(span) => {
                 if let Some(ctx) = self.loops.last() {
                     let (head, extra) = (ctx.head, self.locals.len() - ctx.locals);
+                    let open = self.tries - ctx.tries;
                     self.pop_locals(extra, *span);
+                    for _ in 0..open {
+                        self.emit(Op::EndTry, *span);
+                    }
                     self.emit(Op::Jump(head), *span);
+                }
+            }
+            Stmt::Fail(value, span) => {
+                self.expr(value)?;
+                self.emit(Op::Fail, *span);
+            }
+            Stmt::Attempt {
+                body,
+                rescues,
+                span,
+            } => {
+                let try_at = self.emit(Op::Try(0), *span);
+                self.tries += 1;
+                self.block(body)?;
+                self.tries -= 1;
+                self.emit(Op::EndTry, *span);
+                let mut ends = vec![self.emit(Op::Jump(0), *span)];
+                // Aquí cae una excepción: el objeto lanzado está en la cima de la pila.
+                self.patch(try_at);
+                for rescue in rescues {
+                    let ty = self.type_index(&rescue.ty.name, rescue.ty.span)?;
+                    self.emit(Op::Dup, rescue.span);
+                    self.emit(Op::IsInstance(ty), rescue.span);
+                    let next = self.emit(Op::JumpIfFalse(0), rescue.span);
+                    // El objeto de la cima pasa a ser el local de la cláusula.
+                    self.locals.push(Local {
+                        name: rescue.name.clone(),
+                        mutable: false,
+                        depth: self.depth,
+                    });
+                    self.block(&rescue.body)?;
+                    self.locals.pop();
+                    self.emit(Op::Pop, rescue.span);
+                    ends.push(self.emit(Op::Jump(0), rescue.span));
+                    self.patch(next);
+                }
+                // Ninguna cláusula la quiso: sigue subiendo.
+                self.emit(Op::Fail, *span);
+                for at in ends {
+                    self.patch(at);
                 }
             }
             // Las registró `compile_program`.
@@ -878,6 +935,41 @@ impl<'a> FnCompiler<'a> {
             }
             Expr::This(span) => {
                 self.emit(Op::GetLocal(0), *span);
+            }
+            Expr::Nil(span) => {
+                self.emit(Op::Nil, *span);
+            }
+            Expr::Elvis { lhs, rhs, span } => {
+                self.expr(lhs)?;
+                let done = self.emit(Op::JumpIfNotNil(0), *span);
+                self.emit(Op::Pop, *span);
+                self.expr(rhs)?;
+                self.patch(done);
+            }
+            Expr::SafeField { target, span, .. } => {
+                let field = self.field_index(*span)?;
+                self.expr(target)?;
+                let skip = self.emit(Op::JumpIfNil(0), *span);
+                self.emit(Op::GetField(field), *span);
+                self.patch(skip);
+            }
+            Expr::SafeCall {
+                target, args, span, ..
+            } => {
+                let method = self.virtual_id(*span)?;
+                self.expr(target)?;
+                let skip = self.emit(Op::JumpIfNil(0), *span);
+                for arg in args {
+                    self.expr(arg)?;
+                }
+                self.emit(
+                    Op::CallMethod {
+                        method,
+                        argc: args.len() as u32,
+                    },
+                    *span,
+                );
+                self.patch(skip);
             }
             Expr::Field { target, span, .. } => {
                 let field = self.field_index(*span)?;

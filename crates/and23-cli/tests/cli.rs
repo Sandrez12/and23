@@ -359,3 +359,88 @@ fn disasm_muestra_llamadas_virtuales_e_is() {
     assert!(text.contains("IsInstance"), "{text}");
     assert!(text.contains("fn A.<init>/1"), "{text}");
 }
+
+#[test]
+fn ejemplo_de_excepciones() {
+    let out = run_example("excepciones.jb");
+    assert!(out.starts_with("ok: 30\nfaltan 430\n"), "{out}");
+    assert!(
+        out.contains("error: la cuenta de Ana está cerrada\n"),
+        "{out}"
+    );
+    assert!(out.ends_with("6\n0\n3\nnil\n"), "{out}");
+}
+
+#[test]
+fn gc_stress_con_excepciones_da_la_misma_salida() {
+    let normal = and23().arg(example("excepciones.jb")).output().unwrap();
+    let stress = and23()
+        .arg("--gc-stress")
+        .arg(example("excepciones.jb"))
+        .output()
+        .unwrap();
+    assert!(stress.status.success(), "{}", stderr(&stress));
+    assert_eq!(stdout(&normal), stdout(&stress));
+}
+
+#[test]
+fn una_excepcion_sin_capturar_termina_con_error_y_posicion() {
+    let out = run_source(
+        "sin_capturar",
+        "thing E(fix c: Int) : Fallo(\"se rompió\")\nshow(\"antes\")\nfn f() { fail E(3) }\nf()\nshow(\"despues\")\n",
+    );
+    assert!(!out.status.success());
+    assert_eq!(stdout(&out), "antes\n");
+    let err = stderr(&out);
+    assert!(
+        err.contains("excepción sin capturar `E`: se rompió"),
+        "{err}"
+    );
+    assert!(err.contains(":3:10"), "{err}");
+}
+
+#[test]
+fn desreferenciar_un_opcional_se_rechaza_antes_de_ejecutar() {
+    let out = run_source(
+        "opcional_err",
+        "thing P(fix n: Int)\nfix p: P? = nil\nshow(1)\nshow(p.n)\n",
+    );
+    assert!(!out.status.success());
+    assert!(stdout(&out).is_empty(), "no debe ejecutar nada");
+    let err = stderr(&out);
+    assert!(err.contains(":4:6"), "{err}");
+    assert!(err.contains("puede ser nil"), "{err}");
+}
+
+#[test]
+fn disasm_de_excepciones_no_muestra_el_preludio() {
+    let path = std::env::temp_dir().join(format!("and23_cli_disasm_exc_{}.jb", std::process::id()));
+    std::fs::write(
+        &path,
+        "thing E() : Fallo(\"x\")\nattempt { fail E() }\nrescue e: E { show(e.msg) }\n",
+    )
+    .unwrap();
+    let out = and23().arg("--disasm").arg(&path).output().unwrap();
+    std::fs::remove_file(&path).ok();
+    let text = stdout(&out);
+    assert!(text.contains("Try"), "{text}");
+    assert!(text.contains("Fail"), "{text}");
+    assert!(text.contains("EndTry"), "{text}");
+    assert!(text.contains("fn E/0"), "{text}");
+    assert!(!text.contains("fn Fallo/"), "{text}");
+}
+
+#[test]
+fn repl_con_opcionales_y_excepciones() {
+    let out = repl(
+        "thing E() : Fallo(\"x\")\nfix a: Int? = nil\na ?: 5\nattempt { fail E() } rescue e: E { show(e.msg) }\nfail E()\n1 + 1\n",
+    );
+    let text = stdout(&out);
+    assert!(text.contains("5\nx\n"), "{text}");
+    assert!(text.contains("2\n"), "{text}");
+    assert!(
+        stderr(&out).contains("excepción sin capturar `E`"),
+        "{}",
+        stderr(&out)
+    );
+}

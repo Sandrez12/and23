@@ -6,7 +6,7 @@ use std::io::{self, BufRead, IsTerminal, Write};
 use std::process::ExitCode;
 
 const USAGE: &str = "\
-And23 (M5)
+And23 (M6)
 
 Uso:
   and23 <archivo.jb>   ejecuta un programa (y llama a main() si existe)
@@ -122,15 +122,21 @@ fn disasm_file(path: &str) -> u8 {
     let result = and23_syntax::parse(&src)
         .map_err(|d| d.render(path, &src))
         .and_then(|program| {
-            let res = Checker::new()
-                .check(&program)
-                .map_err(|d| d.render(path, &src))?;
+            // El preludio (la clase `Fallo`) se compila primero y no se muestra.
+            let prelude = and23_syntax::parse(and23_syntax::PRELUDE).expect("preludio válido");
+            let mut checker = Checker::new();
             let mut compiler = Compiler::new();
+            let res = checker.check(&prelude).expect("preludio válido");
+            compiler
+                .compile(&prelude, &res, false)
+                .expect("preludio válido");
+            let skip = compiler.module().functions.len();
+            let res = checker.check(&program).map_err(|d| d.render(path, &src))?;
             compiler
                 .compile(&program, &res, false)
                 .map_err(|d| d.render(path, &src))?;
             let module = compiler.module();
-            for function in &module.functions {
+            for function in &module.functions[skip..] {
                 println!("{}", disassemble(module, function));
             }
             Ok(())

@@ -18,6 +18,16 @@ pub struct Vm<W: Write> {
     max_depth: usize,
 }
 
+/// Manejador instalado por un `attempt`: a dónde volver si se lanza una excepción.
+struct Handler<'m> {
+    /// Marcos suspendidos cuando se instaló (los de las llamadas más profundas se descartan).
+    frames_len: usize,
+    stack_len: usize,
+    function: &'m Function,
+    base: usize,
+    catch_ip: usize,
+}
+
 /// Marco de un llamador suspendido: su función, la instrucción siguiente y su base en la pila.
 struct Frame<'m> {
     function: &'m Function,
@@ -88,6 +98,7 @@ impl<W: Write> Vm<W> {
             max_depth,
         } = self;
         let mut frames: Vec<Frame<'m>> = Vec::new();
+        let mut handlers: Vec<Handler<'m>> = Vec::new();
         let mut function = entry;
         let mut ip = 0usize;
         let mut base = 0usize;
@@ -425,6 +436,51 @@ impl<W: Write> Vm<W> {
                 Op::Gt => compare!(op, >),
                 Op::Ge => compare!(op, >=),
                 Op::Jump(target) => ip = target as usize,
+                Op::Nil => stack.push(Value::Nil),
+                Op::JumpIfNil(target) => {
+                    if *top!() == Value::Nil {
+                        ip = target as usize;
+                    }
+                }
+                Op::JumpIfNotNil(target) => {
+                    if *top!() != Value::Nil {
+                        ip = target as usize;
+                    }
+                }
+                Op::Try(target) => handlers.push(Handler {
+                    frames_len: frames.len(),
+                    stack_len: stack.len(),
+                    function,
+                    base,
+                    catch_ip: target as usize,
+                }),
+                Op::EndTry => {
+                    handlers.pop();
+                }
+                Op::Fail => {
+                    let exception = pop!();
+                    match handlers.pop() {
+                        Some(handler) => {
+                            frames.truncate(handler.frames_len);
+                            function = handler.function;
+                            base = handler.base;
+                            ip = handler.catch_ip;
+                            stack.truncate(handler.stack_len);
+                            stack.push(exception);
+                        }
+                        None => {
+                            let Value::Obj(r) = exception else {
+                                fail!("`fail` necesita un objeto");
+                            };
+                            let name = heap
+                                .class_of(r)
+                                .map_or("?", |c| module.classes[c as usize].name.as_str());
+                            // `msg` es el primer campo de toda clase que hereda de `Fallo`.
+                            let msg = heap.render(heap.field(r, 0));
+                            fail!("excepción sin capturar `{name}`: {msg}");
+                        }
+                    }
+                }
                 Op::JumpIfFalse(target) => match pop!() {
                     Value::Bool(true) => {}
                     Value::Bool(false) => ip = target as usize,
@@ -468,6 +524,13 @@ impl<W: Write> Vm<W> {
                 }
                 Op::Return => {
                     let result = pop!();
+                    // Los `attempt` de esta función que no llegaron a su `EndTry` ya no valen.
+                    while handlers
+                        .last()
+                        .is_some_and(|h| h.frames_len >= frames.len())
+                    {
+                        handlers.pop();
+                    }
                     stack.truncate(base);
                     match frames.pop() {
                         Some(frame) => {
@@ -576,7 +639,8 @@ fn binary(op: Op, a: Value, b: Value, span: Span) -> Result<Value, Diagnostic> {
             let equal = match (a, b) {
                 (Value::Int(x), Value::Int(y)) => x == y,
                 (Value::Bool(x), Value::Bool(y)) => x == y,
-                (Value::Unit, Value::Unit) => true,
+                (Value::Unit, Value::Unit) | (Value::Nil, Value::Nil) => true,
+                (Value::Nil, _) | (_, Value::Nil) => false,
                 _ => match (a.as_f64(), b.as_f64()) {
                     (Some(x), Some(y)) => x == y,
                     _ => return Err(type_error(op, a, b, span)),

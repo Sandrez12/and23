@@ -85,6 +85,29 @@ pub enum Expr {
     },
     /// `this`: el objeto sobre el que corre un método.
     This(Span),
+    /// `nil`: la ausencia de valor de un tipo opcional (`T?`).
+    Nil(Span),
+    /// `obj?.campo`: nil si `obj` es nil.
+    SafeField {
+        target: Box<Expr>,
+        name: String,
+        name_span: Span,
+        span: Span,
+    },
+    /// `obj?.metodo(args)`: nil (y no llama) si `obj` es nil.
+    SafeCall {
+        target: Box<Expr>,
+        name: String,
+        name_span: Span,
+        args: Vec<Expr>,
+        span: Span,
+    },
+    /// `a ?: b`: `a` si no es nil; si lo es, `b`.
+    Elvis {
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+        span: Span,
+    },
     /// `super.metodo(args)`: el método de la clase padre, sin despacho virtual.
     SuperCall {
         name: String,
@@ -135,6 +158,7 @@ impl Expr {
             | Expr::Bool(_, span)
             | Expr::Str(_, span)
             | Expr::Var(_, span)
+            | Expr::Nil(span)
             | Expr::This(span) => *span,
             Expr::Interp { span, .. }
             | Expr::Array { span, .. }
@@ -144,6 +168,9 @@ impl Expr {
             | Expr::Call { span, .. }
             | Expr::Field { span, .. }
             | Expr::SuperCall { span, .. }
+            | Expr::SafeField { span, .. }
+            | Expr::SafeCall { span, .. }
+            | Expr::Elvis { span, .. }
             | Expr::Is { span, .. }
             | Expr::Cast { span, .. }
             | Expr::MethodCall { span, .. } => *span,
@@ -306,12 +333,31 @@ pub enum Stmt {
     Thing(Box<ThingDecl>),
     /// Interfaz; solo al nivel superior del archivo.
     Kind(Box<KindDecl>),
+    /// `attempt { ... } rescue e: Tipo { ... }`
+    Attempt {
+        body: Block,
+        rescues: Vec<Rescue>,
+        span: Span,
+    },
+    /// `fail expr`: lanza un objeto de una clase que hereda de `Fallo`.
+    Fail(Expr, Span),
+}
+
+/// Cláusula `rescue nombre: Tipo { ... }` de un `attempt`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Rescue {
+    pub name: String,
+    pub name_span: Span,
+    pub ty: TypeRef,
+    pub body: Block,
+    pub span: Span,
 }
 
 impl Stmt {
     pub fn span(&self) -> Span {
         match self {
             Stmt::Show(_, span)
+            | Stmt::Fail(_, span)
             | Stmt::Return(_, span)
             | Stmt::Break(span)
             | Stmt::Continue(span) => *span,
@@ -320,6 +366,7 @@ impl Stmt {
             | Stmt::Assign { span, .. }
             | Stmt::IndexAssign { span, .. }
             | Stmt::FieldAssign { span, .. }
+            | Stmt::Attempt { span, .. }
             | Stmt::If { span, .. }
             | Stmt::While { span, .. } => *span,
             Stmt::Fn(decl) => decl.span,

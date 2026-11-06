@@ -291,6 +291,7 @@ impl<W: Write> Interpreter<W> {
             }
             Stmt::Thing(decl) => return Err(unsupported(decl.span)),
             Stmt::Kind(decl) => return Err(unsupported(decl.span)),
+            Stmt::Attempt { span, .. } | Stmt::Fail(_, span) => return Err(unsupported(*span)),
             // El parser solo admite funciones al nivel superior; `run` ya las registró.
             Stmt::Fn(_) => {}
         }
@@ -323,6 +324,10 @@ impl<W: Write> Interpreter<W> {
             | Expr::Field { span, .. }
             | Expr::MethodCall { span, .. }
             | Expr::SuperCall { span, .. }
+            | Expr::SafeField { span, .. }
+            | Expr::SafeCall { span, .. }
+            | Expr::Elvis { span, .. }
+            | Expr::Nil(span)
             | Expr::Is { span, .. }
             | Expr::Cast { span, .. }
             | Expr::This(span) => Err(unsupported(*span)),
@@ -458,7 +463,7 @@ impl<W: Write> Interpreter<W> {
 fn unsupported(span: Span) -> Diagnostic {
     Diagnostic::new(
         span,
-        "el intérprete de árbol no soporta cadenas, arreglos ni clases; usa la VM",
+        "el intérprete de árbol no soporta cadenas, arreglos, clases ni excepciones; usa la VM",
     )
 }
 

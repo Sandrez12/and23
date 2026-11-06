@@ -8,6 +8,8 @@ pub enum Op {
     Float(f64),
     Bool(bool),
     Unit,
+    /// `nil`.
+    Nil,
     /// Cadena constante número `n` del módulo.
     Str(u32),
     /// Local `n` del marco actual (relativo a su base).
@@ -67,6 +69,17 @@ pub enum Op {
         method: u32,
         argc: u32,
     },
+    /// Si la cima es `nil`, salta conservándola (`a?.b`); si no, sigue sin tocarla.
+    JumpIfNil(u32),
+    /// Si la cima no es `nil`, salta conservándola (`a ?: b`); si no, sigue sin tocarla.
+    JumpIfNotNil(u32),
+    /// Instala un manejador de excepciones (`attempt`): una excepción salta al destino con el
+    /// objeto lanzado en la cima y la pila como estaba aquí.
+    Try(u32),
+    /// Quita el manejador instalado por el `Try` más reciente (el cuerpo del `attempt` terminó).
+    EndTry,
+    /// Saca un objeto y lo lanza hasta el manejador más cercano; sin manejador es un error.
+    Fail,
     /// Saca un objeto y deja si es instancia del tipo `n` (clase, subclase o interfaz).
     IsInstance(u32),
     /// Exige que la cima sea instancia del tipo `n`; si no, es un error de ejecución.

@@ -25,6 +25,10 @@ pub enum TokenKind {
     Super,
     Is,
     As,
+    Nil,
+    Attempt,
+    Rescue,
+    Fail,
     If,
     Else,
     While,
@@ -66,6 +70,12 @@ pub enum TokenKind {
     Comma,
     Colon,
     Dot,
+    /// `?` de los tipos opcionales (`Perro?`).
+    Question,
+    /// `?.`
+    QDot,
+    /// `?:`
+    Elvis,
     /// Salto de línea o `;`.
     Newline,
     Eof,
@@ -99,6 +109,10 @@ impl TokenKind {
             T::Super => "super",
             T::Is => "is",
             T::As => "as",
+            T::Nil => "nil",
+            T::Attempt => "attempt",
+            T::Rescue => "rescue",
+            T::Fail => "fail",
             T::If => "if",
             T::Else => "else",
             T::While => "while",
@@ -138,6 +152,9 @@ impl TokenKind {
             T::Comma => ",",
             T::Colon => ":",
             T::Dot => ".",
+            T::Question => "?",
+            T::QDot => "?.",
+            T::Elvis => "?:",
             T::Int(_) | T::Float(_) | T::Ident(_) | T::Str(_) | T::Newline | T::Eof => "",
         }
     }
@@ -161,6 +178,10 @@ fn keyword(name: &str) -> Option<TokenKind> {
         "super" => T::Super,
         "is" => T::Is,
         "as" => T::As,
+        "nil" => T::Nil,
+        "attempt" => T::Attempt,
+        "rescue" => T::Rescue,
+        "fail" => T::Fail,
         "if" => T::If,
         "else" => T::Else,
         "while" => T::While,
@@ -190,6 +211,8 @@ fn operator(c: char, next: Option<char>) -> Option<(TokenKind, usize)> {
         ('*', Some('=')) => Some(T::StarEq),
         ('/', Some('=')) => Some(T::SlashEq),
         ('%', Some('=')) => Some(T::PercentEq),
+        ('?', Some('.')) => Some(T::QDot),
+        ('?', Some(':')) => Some(T::Elvis),
         _ => None,
     };
     if let Some(kind) = two {
@@ -214,6 +237,7 @@ fn operator(c: char, next: Option<char>) -> Option<(TokenKind, usize)> {
         ',' => T::Comma,
         ':' => T::Colon,
         '.' => T::Dot,
+        '?' => T::Question,
         _ => return None,
     };
     Some((one, 1))

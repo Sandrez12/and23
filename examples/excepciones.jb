@@ -1,0 +1,126 @@
+// M6: excepciones (`attempt`/`rescue`/`fail`) y null-safety (`T?`, `nil`, `?.`, `?:`).
+// Un banco con errores propios y una agenda con contactos opcionales.
+
+// --- Errores propios: heredan de `Fallo`, que ya trae el campo `msg` ---
+thing SaldoInsuficiente(fix pedido: Int, fix disponible: Int) : Fallo("saldo insuficiente: pides ${pedido} y hay ${disponible}")
+thing CuentaCerrada(fix titular: Str) : Fallo("la cuenta de ${titular} está cerrada")
+thing MontoInvalido(fix monto: Int) : Fallo("monto inválido: ${monto}")
+
+thing Cuenta(fix titular: Str, mut saldo: Int) {
+    mut abierta = true
+
+    fn retira(monto: Int) {
+        if !abierta { fail CuentaCerrada(titular) }
+        if monto <= 0 { fail MontoInvalido(monto) }
+        if monto > saldo { fail SaldoInsuficiente(monto, saldo) }
+        saldo -= monto
+    }
+
+    fn cierra() { abierta = false }
+}
+
+// Una función que no captura: el error sube hasta quien sí lo haga.
+fn transfiere(de: Cuenta, a: Cuenta, monto: Int) {
+    de.retira(monto)
+    a.saldo += monto
+}
+
+// Devuelve un texto en los dos caminos: `attempt` cuenta como terminal si todos retornan.
+fn intenta(de: Cuenta, a: Cuenta, monto: Int) -> Str {
+    attempt {
+        transfiere(de, a, monto)
+        return "ok: ${monto}"
+    }
+    rescue e: SaldoInsuficiente { return "faltan ${e.pedido - e.disponible}" }
+    rescue e: Fallo { return "error: ${e.msg}" }
+}
+
+// --- Contactos opcionales ---
+thing Direccion(fix ciudad: Str, fix calle: Str?)
+
+thing Contacto(fix nombre: Str, fix telefono: Str?, fix direccion: Direccion?) {
+    fn resumen() -> Str {
+        // `?:` da un valor por defecto cuando es nil
+        fix tel = telefono ?: "sin teléfono"
+        return "${nombre} (${tel})"
+    }
+}
+
+fn ciudadDe(c: Contacto) -> Str {
+    // `?.` encadena: si algo es nil, todo es nil
+    return c.direccion?.ciudad ?: "desconocida"
+}
+
+fn calleDe(c: Contacto) -> Str? = c.direccion?.calle
+
+// Estrechar con `if`: dentro del bloque el valor ya no es opcional
+fn describe(c: Contacto?) -> Str {
+    if c == nil { return "nadie" }
+    // después del `if` anterior, `c` es un Contacto
+    return c.resumen() + " en " + ciudadDe(c)
+}
+
+// Una lista enlazada de enteros con siguiente opcional
+thing Nodo(fix valor: Int, mut siguiente: Nodo?)
+
+fn suma(cabeza: Nodo?) -> Int {
+    mut actual = cabeza
+    mut total = 0
+    while actual != nil {
+        total += actual.valor
+        actual = actual.siguiente
+    }
+    return total
+}
+
+fn main() {
+    fix ana = Cuenta("Ana", 100)
+    fix luis = Cuenta("Luis", 10)
+
+    show(intenta(ana, luis, 30))
+    show(intenta(ana, luis, 500))
+    show(intenta(ana, luis, 0 - 5))
+    ana.cierra()
+    show(intenta(ana, luis, 1))
+    show("saldos: ${ana.saldo} y ${luis.saldo}")
+
+    // Un `attempt` dentro de un bucle: cada vuelta captura su error
+    mut fallos = 0
+    mut i = 1
+    while i <= 5 {
+        attempt {
+            if i % 2 == 0 { fail MontoInvalido(i) }
+            show("vuelta ${i} sin problema")
+        }
+        rescue e: MontoInvalido { fallos += 1 }
+        i += 1
+    }
+    show("vueltas con error: ${fallos}")
+
+    // Relanzar: el `attempt` interno no sabe de CuentaCerrada y lo deja subir
+    attempt {
+        attempt { ana.retira(1) }
+        rescue e: MontoInvalido { show("no debería verse") }
+    }
+    rescue e: CuentaCerrada { show("afuera: ${e.msg}") }
+
+    // Opcionales
+    fix a = Contacto("Ana", "555-1234", Direccion("Bogotá", "Calle 1"))
+    fix b = Contacto("Beto", nil, Direccion("Cali", nil))
+    fix c = Contacto("Carla", nil, nil)
+    show(a.resumen())
+    show(b.resumen())
+    show(ciudadDe(a) + ", " + ciudadDe(b) + ", " + ciudadDe(c))
+    show(calleDe(a))
+    show(calleDe(b))
+    show(describe(a))
+    show(describe(c))
+    show(describe(nil))
+
+    fix lista = Nodo(1, Nodo(2, Nodo(3, nil)))
+    show(suma(lista))
+    show(suma(nil))
+    fix tercero = lista.siguiente?.siguiente
+    show(tercero?.valor)
+    show(lista.siguiente?.siguiente?.siguiente?.valor)
+}

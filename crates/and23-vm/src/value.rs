@@ -10,6 +10,8 @@ pub enum Value {
     Obj(ObjRef),
     /// Resultado de una función sin valor de retorno.
     Unit,
+    /// La ausencia de valor de un tipo `T?`.
+    Nil,
 }
 
 impl Value {
@@ -20,6 +22,7 @@ impl Value {
             Value::Bool(_) => "Bool",
             Value::Obj(_) => "Obj",
             Value::Unit => "Unit",
+            Value::Nil => "nil",
         }
     }
 
@@ -42,6 +45,7 @@ impl fmt::Display for Value {
             // Los objetos se imprimen con `Heap::render`, que conoce su contenido.
             Value::Obj(_) => f.write_str("<obj>"),
             Value::Unit => f.write_str("()"),
+            Value::Nil => f.write_str("nil"),
         }
     }
 }

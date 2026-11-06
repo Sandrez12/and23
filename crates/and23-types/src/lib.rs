@@ -21,6 +21,10 @@ pub enum Type {
     Array(Box<Type>),
     /// Instancia de una clase (`thing`) o valor cuyo tipo es una interfaz (`kind`).
     Obj(String),
+    /// `T?`: un `T` o `nil`.
+    Nullable(Box<Type>),
+    /// El tipo del literal `nil`; solo existe mientras se verifica una expresión.
+    Nil,
 }
 
 impl Type {
@@ -39,6 +43,8 @@ impl fmt::Display for Type {
             Type::Unit => f.write_str("Unit"),
             Type::Array(elem) => write!(f, "[{elem}]"),
             Type::Obj(name) => f.write_str(name),
+            Type::Nullable(inner) => write!(f, "{inner}?"),
+            Type::Nil => f.write_str("nil"),
         }
     }
 }
@@ -50,7 +56,9 @@ struct Sig {
     ret: Option<Type>,
 }
 
-type Vars = HashMap<String, (Type, bool)>;
+/// Variable: tipo, si es mutable y, si es un estrechamiento (`if x != nil`), su tipo declarado `T?`.
+type VarEntry = (Type, bool, Option<Type>);
+type Vars = HashMap<String, VarEntry>;
 
 #[derive(Clone)]
 struct FieldInfo {
@@ -149,6 +157,8 @@ enum Ret {
 struct Ctx {
     scopes: Vec<Vars>,
     ret: Ret,
+    /// Globales `fix` estrechadas en el nivel superior (no hay ámbito donde guardarlas).
+    script_narrow: HashMap<String, Type>,
     /// Clase cuyo método se está verificando (`this` y sus campos están a la vista).
     this: Option<String>,
 }
@@ -251,6 +261,7 @@ impl<'p> Pass<'p> {
         let mut script = Ctx {
             scopes: Vec::new(),
             ret: Ret::Script,
+            script_narrow: HashMap::new(),
             this: None,
         };
         for stmt in &program.stmts {
@@ -404,18 +415,34 @@ impl<'p> Pass<'p> {
     }
 
     fn assignable(&self, expected: &Type, found: &Type) -> bool {
-        expected == found
-            || matches!((expected, found), (Type::Obj(e), Type::Obj(f)) if self.is_sub(f, e))
+        if expected == found {
+            return true;
+        }
+        match (expected, found) {
+            (Type::Nullable(_), Type::Nil) => true,
+            (Type::Nullable(e), Type::Nullable(f)) => self.assignable(e, f),
+            (Type::Nullable(e), f) => self.assignable(e, f),
+            (Type::Obj(e), Type::Obj(f)) => self.is_sub(f, e),
+            _ => false,
+        }
     }
 
     fn expect(&self, expected: &Type, found: &Type, span: Span) -> Result<(), Diagnostic> {
         if self.assignable(expected, found) {
             return Ok(());
         }
+        if *found == Type::Nil {
+            return Err(Diagnostic::new(
+                span,
+                format!("`nil` solo cabe en un tipo opcional (`T?`), pero se esperaba {expected}"),
+            ));
+        }
         let hint = if *expected == Type::Float && *found == Type::Int {
-            "; no hay conversión implícita de Int a Float (escribe `1.0` en vez de `1`)"
+            "; no hay conversión implícita de Int a Float (escribe `1.0` en vez de `1`)".to_string()
+        } else if matches!(found, Type::Nullable(inner) if self.assignable(expected, inner)) {
+            "; el valor puede ser nil: comprueba `if x != nil` o usa `x ?: otro`".to_string()
         } else {
-            ""
+            String::new()
         };
         Err(Diagnostic::new(
             span,
@@ -661,11 +688,12 @@ impl<'p> Pass<'p> {
             .iter()
             .zip(self.classes[&decl.name].ctor.clone())
         {
-            scope.insert(param.name.clone(), (ty, false));
+            scope.insert(param.name.clone(), (ty, false, None));
         }
         let mut ctx = Ctx {
             scopes: vec![scope],
             ret: Ret::Script,
+            script_narrow: HashMap::new(),
             this: None,
         };
         // Argumentos para el constructor de la clase padre: ven los parámetros de esta.
@@ -695,7 +723,11 @@ impl<'p> Pass<'p> {
                     self.expr_as(&mut ctx, &field.init, &expected)?;
                     expected
                 }
-                None => self.expr(&mut ctx, &field.init)?,
+                None => {
+                    let found = self.expr(&mut ctx, &field.init)?;
+                    no_nil(&found, field.init.span())?;
+                    found
+                }
             };
             if ty == Type::Unit {
                 return Err(Diagnostic::new(
@@ -722,7 +754,7 @@ impl<'p> Pass<'p> {
         let sig = self.funcs[key].clone();
         let mut scope = Vars::new();
         for (param, ty) in decl.params.iter().zip(&sig.params) {
-            scope.insert(param.name.clone(), (ty.clone(), false));
+            scope.insert(param.name.clone(), (ty.clone(), false, None));
         }
         let mut ctx = Ctx {
             scopes: vec![scope],
@@ -730,6 +762,7 @@ impl<'p> Pass<'p> {
                 Some(ty) => Ret::Declared(ty),
                 None => Ret::Infer(None),
             },
+            script_narrow: HashMap::new(),
             this: class,
         };
         self.block(&mut ctx, &decl.body)?;
@@ -765,7 +798,7 @@ impl<'p> Pass<'p> {
     /// Busca una variable: ámbitos locales, campos de `this` y globales, en ese orden.
     /// Devuelve tipo, si es mutable y, si es un campo, su índice.
     fn lookup(&self, ctx: &Ctx, name: &str) -> Option<(Type, bool, Option<u32>)> {
-        if let Some((ty, mutable)) = ctx.scopes.iter().rev().find_map(|scope| scope.get(name)) {
+        if let Some((ty, mutable, _)) = ctx.scopes.iter().rev().find_map(|scope| scope.get(name)) {
             return Some((ty.clone(), *mutable, None));
         }
         if let Some(class) = &ctx.this {
@@ -775,9 +808,161 @@ impl<'p> Pass<'p> {
                 return Some((f.ty.clone(), f.mutable, Some(i as u32)));
             }
         }
+        if let Some(ty) = ctx.script_narrow.get(name) {
+            return Some((ty.clone(), false, None));
+        }
         self.globals
             .get(name)
-            .map(|(ty, mutable)| (ty.clone(), *mutable, None))
+            .map(|(ty, mutable, _)| (ty.clone(), *mutable, None))
+    }
+
+    /// Como `lookup` pero solo para estrechar: tipo, mutabilidad, tipo declarado si ya estaba
+    /// estrechada y si es un local (los campos no se estrechan).
+    fn narrowable(&self, ctx: &Ctx, name: &str) -> Option<(Type, bool, Option<Type>, bool)> {
+        if let Some((ty, mutable, declared)) =
+            ctx.scopes.iter().rev().find_map(|scope| scope.get(name))
+        {
+            return Some((ty.clone(), *mutable, declared.clone(), true));
+        }
+        if let Some(class) = &ctx.this {
+            if self.all_fields(class).iter().any(|f| f.name == name) {
+                return None;
+            }
+        }
+        if ctx.script_narrow.contains_key(name) {
+            return None;
+        }
+        self.globals
+            .get(name)
+            .map(|(ty, mutable, declared)| (ty.clone(), *mutable, declared.clone(), false))
+    }
+
+    /// Variables que `cond` prueba como no nulas cuando es verdadera y cuando es falsa.
+    fn facts(cond: &Expr) -> (Vec<String>, Vec<String>) {
+        fn nil_test(lhs: &Expr, rhs: &Expr) -> Option<String> {
+            match (lhs, rhs) {
+                (Expr::Var(name, _), Expr::Nil(_)) | (Expr::Nil(_), Expr::Var(name, _)) => {
+                    Some(name.clone())
+                }
+                _ => None,
+            }
+        }
+        match cond {
+            Expr::Binary {
+                op: BinOp::Ne,
+                lhs,
+                rhs,
+                ..
+            } => (nil_test(lhs, rhs).into_iter().collect(), Vec::new()),
+            Expr::Binary {
+                op: BinOp::Eq,
+                lhs,
+                rhs,
+                ..
+            } => (Vec::new(), nil_test(lhs, rhs).into_iter().collect()),
+            Expr::Binary {
+                op: BinOp::And,
+                lhs,
+                rhs,
+                ..
+            } => {
+                let (mut t, _) = Self::facts(lhs);
+                t.extend(Self::facts(rhs).0);
+                (t, Vec::new())
+            }
+            Expr::Binary {
+                op: BinOp::Or,
+                lhs,
+                rhs,
+                ..
+            } => {
+                let (_, mut f) = Self::facts(lhs);
+                f.extend(Self::facts(rhs).1);
+                (Vec::new(), f)
+            }
+            Expr::Unary {
+                op: UnOp::Not,
+                expr,
+                ..
+            } => {
+                let (t, f) = Self::facts(expr);
+                (f, t)
+            }
+            _ => (Vec::new(), Vec::new()),
+        }
+    }
+
+    /// Entradas de ámbito que dejan `names` sin `nil`. Un `mut` solo se estrecha si no se asigna dentro
+    /// de un bucle anidado en `body` (en línea recta una asignación basta con volver a ensancharlo).
+    fn narrowing(
+        &self,
+        ctx: &Ctx,
+        names: &[String],
+        body: Option<&Block>,
+    ) -> Vec<(String, VarEntry)> {
+        let mut out = Vec::new();
+        for name in names {
+            let Some((ty, mutable, declared, local)) = self.narrowable(ctx, name) else {
+                continue;
+            };
+            let Type::Nullable(inner) = &ty else { continue };
+            if mutable && (!local || body.is_some_and(|b| assigned_in_loop(b, name))) {
+                continue;
+            }
+            out.push((
+                name.clone(),
+                (
+                    (**inner).clone(),
+                    mutable,
+                    Some(declared.unwrap_or(ty.clone())),
+                ),
+            ));
+        }
+        out
+    }
+
+    /// Estrecha en el resto del ámbito actual (`if x == nil { return }`).
+    fn narrow_here(&self, ctx: &mut Ctx, names: &[String]) {
+        for (name, entry) in self.narrowing(ctx, names, None) {
+            match ctx.scopes.last_mut() {
+                Some(scope) => {
+                    scope.insert(name, entry);
+                }
+                None => {
+                    ctx.script_narrow.insert(name, entry.0);
+                }
+            }
+        }
+    }
+
+    /// Verifica un bloque con `names` estrechadas dentro de él.
+    fn block_narrowed(
+        &mut self,
+        ctx: &mut Ctx,
+        block: &Block,
+        names: &[String],
+    ) -> Result<(), Diagnostic> {
+        let entries = self.narrowing(ctx, names, Some(block));
+        // Un ámbito para los estrechamientos y otro para el bloque: así el bloque puede volver a
+        // declarar el mismo nombre.
+        ctx.scopes.push(entries.into_iter().collect());
+        ctx.scopes.push(Vars::new());
+        let result = block.stmts.iter().try_for_each(|stmt| self.stmt(ctx, stmt));
+        ctx.scopes.pop();
+        ctx.scopes.pop();
+        result
+    }
+
+    /// Tras asignar un valor posiblemente nulo, la variable vuelve a su tipo declarado.
+    fn widen(ctx: &mut Ctx, name: &str) {
+        for scope in ctx.scopes.iter_mut().rev() {
+            if let Some(entry) = scope.get_mut(name) {
+                if let Some(declared) = entry.2.clone() {
+                    entry.0 = declared;
+                }
+                return;
+            }
+        }
     }
 
     fn ensure_class_of(&mut self, ty: &Type) -> Result<(), Diagnostic> {
@@ -796,10 +981,7 @@ impl<'p> Pass<'p> {
         target_span: Span,
     ) -> Result<(u32, Type, bool), Diagnostic> {
         let Type::Obj(class) = ty else {
-            return Err(Diagnostic::new(
-                target_span,
-                format!("solo los objetos tienen campos, pero esto es {ty}"),
-            ));
+            return Err(Diagnostic::new(target_span, not_object(ty, "campos")));
         };
         if self.kinds.contains_key(class) {
             return Err(Diagnostic::new(
@@ -834,7 +1016,7 @@ impl<'p> Pass<'p> {
                 format!("`{name}` ya está declarada en este ámbito"),
             ));
         }
-        scope.insert(name.to_string(), info);
+        scope.insert(name.to_string(), (info.0, info.1, None));
         Ok(())
     }
 
@@ -845,7 +1027,7 @@ impl<'p> Pass<'p> {
                 return Ok(());
             }
             // Un arreglo de objetos acepta elementos de subclases: `[Perro(..), Gato(..)]` como `[Animal]`.
-            if matches!(**elem, Type::Obj(_)) {
+            if matches!(**elem, Type::Obj(_) | Type::Nullable(_)) {
                 return elems.iter().try_for_each(|e| self.expr_as(ctx, e, elem));
             }
         }
@@ -872,7 +1054,11 @@ impl<'p> Pass<'p> {
                         self.expr_as(ctx, init, &expected)?;
                         expected
                     }
-                    None => self.expr(ctx, init)?,
+                    None => {
+                        let found = self.expr(ctx, init)?;
+                        no_nil(&found, init.span())?;
+                        found
+                    }
                 };
                 if declared == Type::Unit {
                     return Err(Diagnostic::new(
@@ -901,7 +1087,27 @@ impl<'p> Pass<'p> {
                 if let Some(i) = field {
                     self.res.fields.insert(*name_span, i);
                 }
-                self.assigned(ctx, &ty, *op, value, *span)?;
+                // Una variable estrechada acepta lo que admite su tipo declarado; si el valor puede
+                // ser nil, deja de estar estrechada.
+                let declared = ctx
+                    .scopes
+                    .iter()
+                    .rev()
+                    .find_map(|scope| scope.get(name.as_str()))
+                    .and_then(|entry| entry.2.clone());
+                match (&declared, op) {
+                    (Some(declared), None) => {
+                        self.assigned(ctx, declared, None, value, *span)?;
+                        let may_be_nil = !matches!(
+                            self.expr(ctx, value),
+                            Ok(found) if !matches!(found, Type::Nullable(_) | Type::Nil)
+                        );
+                        if may_be_nil && !matches!(value, Expr::Array { .. }) {
+                            Self::widen(ctx, name);
+                        }
+                    }
+                    _ => self.assigned(ctx, &ty, *op, value, *span)?,
+                }
             }
             Stmt::FieldAssign {
                 target,
@@ -941,14 +1147,61 @@ impl<'p> Pass<'p> {
                 ..
             } => {
                 self.condition(ctx, cond)?;
-                self.block(ctx, then)?;
+                let (when_true, when_false) = Self::facts(cond);
+                self.block_narrowed(ctx, then, &when_true)?;
                 if let Some(otherwise) = otherwise {
-                    self.block(ctx, otherwise)?;
+                    self.block_narrowed(ctx, otherwise, &when_false)?;
+                }
+                // `if x == nil { return }`: después del `if`, `x` no es nil.
+                if exits(then) {
+                    self.narrow_here(ctx, &when_false);
+                }
+                if otherwise.as_ref().is_some_and(exits) {
+                    self.narrow_here(ctx, &when_true);
                 }
             }
             Stmt::While { cond, body, .. } => {
                 self.condition(ctx, cond)?;
+                let (when_true, _) = Self::facts(cond);
+                self.block_narrowed(ctx, body, &when_true)?;
+            }
+            Stmt::Fail(value, _) => {
+                let found = self.expr(ctx, value)?;
+                match &found {
+                    Type::Obj(class) if self.is_sub(class, "Fallo") => {}
+                    other => {
+                        return Err(Diagnostic::new(
+                            value.span(),
+                            format!(
+                                "solo se pueden lanzar objetos de clases que hereden de `Fallo`, pero esto es {other}"
+                            ),
+                        ));
+                    }
+                }
+            }
+            Stmt::Attempt { body, rescues, .. } => {
                 self.block(ctx, body)?;
+                for rescue in rescues {
+                    let ty = self.resolve(&rescue.ty)?;
+                    let Type::Obj(class) = &ty else {
+                        return Err(Diagnostic::new(
+                            rescue.ty.span,
+                            format!("`rescue` necesita una clase que herede de `Fallo`, pero esto es {ty}"),
+                        ));
+                    };
+                    if !self.is_sub(class, "Fallo") {
+                        return Err(Diagnostic::new(
+                            rescue.ty.span,
+                            format!("solo se pueden rescatar clases que hereden de `Fallo`; `{class}` no lo hace"),
+                        ));
+                    }
+                    let mut scope = Vars::new();
+                    scope.insert(rescue.name.clone(), (ty.clone(), false, None));
+                    ctx.scopes.push(scope);
+                    let result = self.block(ctx, &rescue.body);
+                    ctx.scopes.pop();
+                    result?;
+                }
             }
             Stmt::Return(expr, span) => {
                 let expected = match &ctx.ret {
@@ -971,6 +1224,7 @@ impl<'p> Pass<'p> {
                     }
                     (Some(expr), None) => {
                         let found = self.expr(ctx, expr)?;
+                        no_nil(&found, expr.span())?;
                         if let Ret::Infer(slot) = &mut ctx.ret {
                             *slot = Some(found);
                         }
@@ -1086,7 +1340,7 @@ impl<'p> Pass<'p> {
                 let Type::Obj(class) = &target_ty else {
                     return Err(Diagnostic::new(
                         target.span(),
-                        format!("solo los objetos tienen métodos, pero esto es {target_ty}"),
+                        not_object(&target_ty, "métodos"),
                     ));
                 };
                 let Some(key) = self.find_method(class, name) else {
@@ -1154,6 +1408,7 @@ impl<'p> Pass<'p> {
                     ));
                 };
                 let elem = self.expr(ctx, first)?;
+                no_nil(&elem, first.span())?;
                 if elem == Type::Unit {
                     return Err(Diagnostic::new(
                         first.span(),
@@ -1182,8 +1437,87 @@ impl<'p> Pass<'p> {
             }
             Expr::Binary { op, lhs, rhs, span } => {
                 let a = self.expr(ctx, lhs)?;
-                let b = self.expr(ctx, rhs)?;
-                binary_type(*op, &a, &b, *span)
+                // `x != nil && x.f`: el lado derecho ve lo que el izquierdo probó.
+                let proven = match op {
+                    BinOp::And => Self::facts(lhs).0,
+                    BinOp::Or => Self::facts(lhs).1,
+                    _ => Vec::new(),
+                };
+                let entries = self.narrowing(ctx, &proven, None);
+                ctx.scopes.push(entries.into_iter().collect());
+                let b = self.expr(ctx, rhs);
+                ctx.scopes.pop();
+                binary_type(*op, &a, &b?, *span)
+            }
+            Expr::Nil(_) => Ok(Type::Nil),
+            Expr::Elvis { lhs, rhs, span } => {
+                let found = self.expr(ctx, lhs)?;
+                let Type::Nullable(inner) = found else {
+                    return Err(Diagnostic::new(
+                        lhs.span(),
+                        format!("el operador `?:` necesita un valor opcional (`T?`), pero esto es {found}"),
+                    ));
+                };
+                let other = self.expr(ctx, rhs)?;
+                if self.assignable(&inner, &other) {
+                    Ok(*inner)
+                } else if matches!(&other, Type::Nullable(o) if self.assignable(&inner, o))
+                    || other == Type::Nil
+                {
+                    Ok(Type::Nullable(inner))
+                } else {
+                    let _ = span;
+                    self.expect(&inner, &other, rhs.span())?;
+                    Ok(*inner)
+                }
+            }
+            Expr::SafeField {
+                target,
+                name,
+                name_span,
+                span,
+            } => {
+                let target_ty = self.expr(ctx, target)?;
+                let inner = match target_ty {
+                    Type::Nullable(inner) => *inner,
+                    other => other,
+                };
+                self.ensure_class_of(&inner)?;
+                let (i, ty, _) = self.field_of(&inner, name, *name_span, target.span())?;
+                self.res.fields.insert(*span, i);
+                Ok(optional(ty))
+            }
+            Expr::SafeCall {
+                target,
+                name,
+                name_span,
+                args,
+                span,
+            } => {
+                let target_ty = self.expr(ctx, target)?;
+                let inner = match target_ty {
+                    Type::Nullable(inner) => *inner,
+                    other => other,
+                };
+                let Type::Obj(class) = &inner else {
+                    return Err(Diagnostic::new(
+                        target.span(),
+                        not_object(&inner, "métodos"),
+                    ));
+                };
+                let Some(key) = self.find_method(class, name) else {
+                    return Err(Diagnostic::new(
+                        *name_span,
+                        format!("`{class}` no tiene el método `{name}`"),
+                    ));
+                };
+                self.res.virtuals.insert(*span, name.clone());
+                let ret = self.call_sig(ctx, &key, name, "el método", args, *span)?;
+                Ok(if ret == Type::Unit {
+                    ret
+                } else {
+                    optional(ret)
+                })
             }
             Expr::Call { name, args, span } => {
                 if BUILTINS.contains(&name.as_str()) {
@@ -1385,12 +1719,98 @@ impl<'p> Pass<'p> {
                 }
                 Ok(Type::Array(Box::new(elem)))
             }
+            ("Nullable", [inner]) => {
+                let inner_ty = self.resolve(inner)?;
+                if matches!(inner_ty, Type::Unit | Type::Nullable(_)) {
+                    return Err(Diagnostic::new(
+                        ty.span,
+                        format!("`{inner_ty}?` no tiene sentido: un tipo opcional no puede ser Unit ni otro opcional"),
+                    ));
+                }
+                Ok(Type::Nullable(Box::new(inner_ty)))
+            }
             (name, []) if self.classes.contains_key(name) || self.kinds.contains_key(name) => {
                 Ok(Type::Obj(name.to_string()))
             }
             _ => Err(unknown()),
         }
     }
+}
+
+/// Mensaje cuando se usa `.` sobre algo que no es un objeto (con pista si es un opcional).
+fn not_object(ty: &Type, what: &str) -> String {
+    match ty {
+        Type::Nullable(inner) => format!(
+            "este valor es {ty} y puede ser nil: usa `?.`, `?:` o comprueba `if x != nil` antes de acceder a los {what} de {inner}"
+        ),
+        other => format!("solo los objetos tienen {what}, pero esto es {other}"),
+    }
+}
+
+/// `nil` no dice de qué tipo es: no se puede deducir el tipo de una variable, arreglo o campo.
+fn no_nil(ty: &Type, span: Span) -> Result<(), Diagnostic> {
+    if *ty == Type::Nil {
+        return Err(Diagnostic::new(
+            span,
+            "no se puede deducir el tipo de `nil`; anótalo, por ejemplo `fix x: Perro? = nil`",
+        ));
+    }
+    Ok(())
+}
+
+/// Un `T` visto como opcional (`T?`); un opcional se queda como está.
+fn optional(ty: Type) -> Type {
+    match ty {
+        Type::Nullable(_) => ty,
+        other => Type::Nullable(Box::new(other)),
+    }
+}
+
+/// ¿El bloque siempre sale (`return`, `fail`, `break` o `continue`) antes de terminar?
+fn exits(block: &Block) -> bool {
+    block.stmts.iter().any(|stmt| match stmt {
+        Stmt::Return(..) | Stmt::Fail(..) | Stmt::Break(_) | Stmt::Continue(_) => true,
+        Stmt::If {
+            then,
+            otherwise: Some(otherwise),
+            ..
+        } => exits(then) && exits(otherwise),
+        _ => false,
+    })
+}
+
+/// ¿Se asigna `name` dentro de algún `while` anidado en `block`?
+fn assigned_in_loop(block: &Block, name: &str) -> bool {
+    block.stmts.iter().any(|stmt| match stmt {
+        Stmt::While { body, .. } => assigns(body, name),
+        Stmt::If {
+            then, otherwise, ..
+        } => {
+            assigned_in_loop(then, name)
+                || otherwise
+                    .as_ref()
+                    .is_some_and(|b| assigned_in_loop(b, name))
+        }
+        Stmt::Attempt { body, rescues, .. } => {
+            assigned_in_loop(body, name) || rescues.iter().any(|r| assigned_in_loop(&r.body, name))
+        }
+        _ => false,
+    })
+}
+
+/// ¿Se asigna `name` en algún punto de `block`, a cualquier profundidad?
+fn assigns(block: &Block, name: &str) -> bool {
+    block.stmts.iter().any(|stmt| match stmt {
+        Stmt::Assign { name: n, .. } => n == name,
+        Stmt::While { body, .. } => assigns(body, name),
+        Stmt::If {
+            then, otherwise, ..
+        } => assigns(then, name) || otherwise.as_ref().is_some_and(|b| assigns(b, name)),
+        Stmt::Attempt { body, rescues, .. } => {
+            assigns(body, name) || rescues.iter().any(|r| assigns(&r.body, name))
+        }
+        _ => false,
+    })
 }
 
 fn undefined_variable(name: &str, span: Span) -> Diagnostic {
@@ -1416,8 +1836,19 @@ fn binary_type(op: BinOp, a: &Type, b: &Type, span: Span) -> Result<Type, Diagno
             )),
             _ => Err(invalid("")),
         },
+        BinOp::Eq | BinOp::Ne
+            if matches!(
+                (a, b),
+                (Type::Nil, Type::Nullable(_) | Type::Nil) | (Type::Nullable(_), Type::Nil)
+            ) =>
+        {
+            Ok(Type::Bool)
+        }
+        BinOp::Eq | BinOp::Ne if *a == Type::Nil || *b == Type::Nil => Err(invalid(
+            "; ese valor nunca es nil, así que no hace falta compararlo",
+        )),
         BinOp::Eq | BinOp::Ne => {
-            let comparable = !matches!(a, Type::Array(_) | Type::Obj(_));
+            let comparable = !matches!(a, Type::Array(_) | Type::Obj(_) | Type::Nullable(_));
             if (a == b && comparable) || (a.is_numeric() && b.is_numeric()) {
                 Ok(Type::Bool)
             } else {
@@ -1447,7 +1878,10 @@ fn binary_type(op: BinOp, a: &Type, b: &Type, span: Span) -> Result<Type, Diagno
 /// ¿Todos los caminos del bloque terminan en `return`?
 fn block_returns(block: &Block) -> bool {
     block.stmts.iter().any(|stmt| match stmt {
-        Stmt::Return(..) => true,
+        Stmt::Return(..) | Stmt::Fail(..) => true,
+        Stmt::Attempt { body, rescues, .. } => {
+            block_returns(body) && rescues.iter().all(|r| block_returns(&r.body))
+        }
         Stmt::If {
             then,
             otherwise: Some(otherwise),
@@ -1463,7 +1897,12 @@ mod tests {
     use and23_syntax::parse;
 
     fn check(src: &str) -> Result<(), String> {
-        Checker::new()
+        // Como en una sesión, el preludio (la clase `Fallo`) se verifica antes.
+        let mut checker = Checker::new();
+        checker
+            .check(&parse(and23_syntax::PRELUDE).map_err(|d| d.message)?)
+            .map_err(|d| d.message)?;
+        checker
             .check(&parse(src).map_err(|d| d.message)?)
             .map(|_| ())
             .map_err(|d| d.message)
@@ -1960,5 +2399,210 @@ mod tests {
         let mut fields: Vec<u32> = res.fields.values().copied().collect();
         fields.sort();
         assert_eq!(fields, vec![0, 1, 2]);
+    }
+
+    // --- M6: excepciones y opcionales ---
+
+    /// `check` ya incluye el preludio con `Fallo`.
+    const FALLO: &str = "";
+
+    fn check_con_fallo(src: &str) -> Result<(), String> {
+        check(&format!("{FALLO}{src}"))
+    }
+
+    fn err_con_fallo(src: &str) -> String {
+        err(&format!("{FALLO}{src}"))
+    }
+
+    #[test]
+    fn excepciones_y_opcionales_bien_tipados() {
+        for src in [
+            "thing E() : Fallo(\"x\")\nattempt { fail E() }\nrescue e: E { show(e.msg) }",
+            "attempt { fail Fallo(\"a\") }\nrescue e: Fallo { show(e) }\nrescue e: Fallo { show(1) }",
+            "fn f() -> Int {\n attempt { return 1 }\n rescue e: Fallo { return 2 }\n}",
+            "fn f() -> Int { fail Fallo(\"x\") }",
+            "fix a: Int? = nil\nfix b: Int? = 3\nshow(a ?: b ?: 0)",
+            "thing P(fix n: Int)\nfix p: P? = nil\nshow(p?.n)\nshow(p ?: P(1))",
+            "thing P(fix n: Int)\nfn f(p: P?) -> Int {\n if p == nil { return 0 }\n return p.n\n}",
+            "thing P(fix n: Int)\nfn f(p: P?) -> Bool = p != nil && p.n > 1",
+            "thing P(fix n: Int)\nfn f(p: P?) -> Bool = p == nil || p.n > 1",
+            "thing P(fix n: Int)\nfn f(p: P?) -> Int {\n if p != nil { return p.n } else { return 0 }\n}",
+            "thing N(fix v: Int, mut s: N?)\nfn f(c: N?) -> Int {\n mut x = c\n mut t = 0\n while x != nil {\n t += x.v\n x = x.s\n }\n return t\n}",
+            "fix a: [Int?] = [1, nil]\nshow(a[0] ?: 2)",
+            "fn f() -> Int? = nil\nshow(f() == nil)",
+        ] {
+            assert_eq!(check_con_fallo(src), Ok(()), "{src}");
+        }
+    }
+
+    #[test]
+    fn errores_de_opcionales() {
+        let pre = "thing P(fix n: Int) { fn m() -> Int = n }\nfix p: P? = nil\n";
+        let cases = [
+            (
+                "show(p.n)",
+                "puede ser nil: usa `?.`, `?:` o comprueba `if x != nil`",
+            ),
+            ("p.m()", "puede ser nil"),
+            ("p.n = 1", "puede ser nil"),
+            ("fix q: P = nil", "`nil` solo cabe en un tipo opcional"),
+            ("fix q: P = p", "el valor puede ser nil"),
+            ("fix x = nil", "no se puede deducir el tipo de `nil`"),
+            ("fix xs = [nil]", "no se puede deducir el tipo de `nil`"),
+            ("fix n: Int = 1\nshow(n ?: 2)", "necesita un valor opcional"),
+            ("fix n: Int = 1\nshow(n == nil)", "nunca es nil"),
+            (
+                "fn f(a: Int) { }\nfix x: Int? = 1\nf(x)",
+                "se esperaba Int, pero es Int?",
+            ),
+            ("fix x: Int? = 1\nshow(x + 1)", "no admite Int? y Int"),
+            (
+                "fix x: Int? = 1\nfix y: Int? = 2\nshow(x == y)",
+                "no admite Int? y Int?",
+            ),
+            ("fix x: Int?? = 1", "no tiene sentido"),
+            ("fix x: Unit? = nil", "no tiene sentido"),
+            ("fix x: Cosa? = nil", "el tipo `Cosa` no existe"),
+            (
+                "fix x: Int? = 1\nshow(x ?: \"a\")",
+                "se esperaba Int, pero es Str",
+            ),
+            (
+                "fn f() -> Int { return nil }",
+                "`nil` solo cabe en un tipo opcional",
+            ),
+            (
+                "fix n: Int = 5\nshow(n?.x)",
+                "solo los objetos tienen campos",
+            ),
+            ("show(p?.zz)", "no tiene el campo `zz`"),
+            ("show(p?.zz())", "no tiene el método `zz`"),
+            ("fix x: Int? = 1\nif x { }", "la condición debe ser Bool"),
+        ];
+        for (tail, expected) in cases {
+            let message = err_con_fallo(&format!("{pre}{tail}"));
+            assert!(
+                message.contains(expected),
+                "{tail}: se esperaba «{expected}», pero fue «{message}»"
+            );
+        }
+    }
+
+    #[test]
+    fn el_estrechamiento_tiene_limites_claros() {
+        let pre = "thing P(fix n: Int)\n";
+        let cases = [
+            // no se estrecha sin comprobar, ni fuera del bloque
+            ("fn f(p: P?) -> Int {\n if p != nil { show(1) }\n return p.n\n}", "puede ser nil"),
+            // `if p == nil { show(1) }` no sale: no estrecha
+            ("fn f(p: P?) -> Int {\n if p == nil { show(1) }\n return p.n\n}", "puede ser nil"),
+            // el else de `!=` es el caso nil
+            ("fn f(p: P?) -> Int {\n if p != nil { return 1 } else { return p.n }\n}", "puede ser nil"),
+            // una asignación de nil deshace el estrechamiento
+            ("fn f(p: P?) -> Int {\n mut q = p\n if q != nil {\n q = nil\n return q.n\n }\n return 0\n}", "puede ser nil"),
+            // un `mut` asignado dentro de un bucle anidado no se estrecha
+            ("fn f(p: P?) -> Int {\n mut q = p\n if q != nil {\n while true { show(q.n)\n q = nil }\n }\n return 0\n}", "puede ser nil"),
+            // las globales `mut` no se estrechan (una función podría cambiarlas)
+            ("mut g: P? = nil\nfn f() -> Int {\n if g != nil { return g.n }\n return 0\n}", "puede ser nil"),
+            // `||` y `&&` solo estrechan al lado derecho
+            ("fn f(p: P?) -> Bool = p != nil || p.n > 1", "puede ser nil"),
+            ("fn f(p: P?) -> Bool = p == nil && p.n > 1", "puede ser nil"),
+            // los campos no se estrechan
+            ("thing Q(fix p: P?) { fn f() -> Int {\n if p != nil { return p.n }\n return 0\n} }", "puede ser nil"),
+            // una variable distinta con el mismo nombre en un bloque interior no hereda el estrechamiento
+            ("fn f(p: P?) -> Int {\n if p != nil {\n fix p: P? = nil\n return p.n\n }\n return 0\n}", "puede ser nil"),
+        ];
+        for (tail, expected) in cases {
+            let message = err_con_fallo(&format!("{pre}{tail}"));
+            assert!(
+                message.contains(expected),
+                "{tail}: se esperaba «{expected}», pero fue «{message}»"
+            );
+        }
+    }
+
+    #[test]
+    fn el_estrechamiento_de_globales_fix_funciona_en_el_nivel_superior() {
+        for src in [
+            "thing P(fix n: Int)\nfix p: P? = P(1)\nif p != nil { show(p.n) }",
+            "thing P(fix n: Int)\nfix p: P? = P(1)\nif p == nil { fail Fallo(\"x\") }\nshow(p.n)",
+            "thing P(fix n: Int)\nfix p: P? = P(1)\nfn f() -> Int {\n if p != nil { return p.n }\n return 0\n}",
+        ] {
+            assert_eq!(check_con_fallo(src), Ok(()), "{src}");
+        }
+        // pero el estrechamiento del nivel superior no se filtra a las funciones
+        let message = err_con_fallo(
+            "thing P(fix n: Int)\nfix p: P? = P(1)\nif p == nil { fail Fallo(\"x\") }\nfn f() -> Int = p.n",
+        );
+        assert!(message.contains("puede ser nil"), "{message}");
+    }
+
+    #[test]
+    fn errores_de_excepciones() {
+        let cases = [
+            (
+                "fail 1",
+                "solo se pueden lanzar objetos de clases que hereden de `Fallo`, pero esto es Int",
+            ),
+            ("thing X()\nfail X()", "que hereden de `Fallo`"),
+            (
+                "kind K { }\nthing X() : K\nfail X()",
+                "que hereden de `Fallo`",
+            ),
+            (
+                "thing X()\nattempt { }\nrescue e: X { }",
+                "solo se pueden rescatar clases que hereden de `Fallo`",
+            ),
+            (
+                "attempt { }\nrescue e: Int { }",
+                "necesita una clase que herede de `Fallo`",
+            ),
+            (
+                "attempt { }\nrescue e: Nada { }",
+                "el tipo `Nada` no existe",
+            ),
+            (
+                "attempt { show(zz) }\nrescue e: Fallo { }",
+                "la variable `zz` no está definida",
+            ),
+            (
+                "attempt { }\nrescue e: Fallo { show(zz) }",
+                "la variable `zz` no está definida",
+            ),
+            (
+                "attempt { }\nrescue e: Fallo { show(e.otro) }",
+                "no tiene el campo `otro`",
+            ),
+            ("thing Fallo()", "ya está en uso"),
+            (
+                "fn f() -> Int {\n attempt { return 1 }\n rescue e: Fallo { show(1) }\n}",
+                "puede terminar sin devolver",
+            ),
+            (
+                "fn f() -> Int {\n attempt { show(1) }\n rescue e: Fallo { return 1 }\n}",
+                "puede terminar sin devolver",
+            ),
+        ];
+        for (src, expected) in cases {
+            let message = err_con_fallo(src);
+            assert!(
+                message.contains(expected),
+                "{src}: se esperaba «{expected}», pero fue «{message}»"
+            );
+        }
+    }
+
+    #[test]
+    fn el_tipo_de_la_variable_del_rescue_es_el_de_la_clausula() {
+        assert_eq!(
+            check_con_fallo(
+                "thing E(fix c: Int) : Fallo(\"x\")\nattempt { }\nrescue e: E { show(e.c + 1) }"
+            ),
+            Ok(())
+        );
+        let message = err_con_fallo(
+            "thing E(fix c: Int) : Fallo(\"x\")\nattempt { }\nrescue e: Fallo { show(e.c) }",
+        );
+        assert!(message.contains("no tiene el campo `c`"), "{message}");
     }
 }

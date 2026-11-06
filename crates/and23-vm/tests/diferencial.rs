@@ -40,7 +40,10 @@ fn vm(src: &str, echo: bool) -> Outcome {
 
 /// Los programas que el verificador de tipos rechaza ya no llegan a ejecutarse.
 fn well_typed(src: &str) -> bool {
-    parse(src).is_ok_and(|p| and23_types::Checker::new().check(&p).is_ok())
+    let mut checker = and23_types::Checker::new();
+    let prelude = parse(and23_syntax::PRELUDE).expect("preludio válido");
+    checker.check(&prelude).expect("preludio válido");
+    parse(src).is_ok_and(|p| checker.check(&p).is_ok())
 }
 
 fn same(src: &str) {

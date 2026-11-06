@@ -77,7 +77,7 @@ Workspace de Rust en `crates/`:
 | M3 | Strings, arrays y GC mark-sweep | 10M de asignaciones sin agotar memoria; pasa en modo stress |
 | M4 | Clases, campos, métodos, constructores | Programa OO de ~200 líneas (`examples/clases.jb`, 222 líneas) |
 | M5 | Herencia, interfaces, vtables, `instanceof` | Ejemplo polimórfico (`examples/polimorfismo.jb`) |
-| M6 | Excepciones y null-safety | `attempt`/`rescue`; el compilador rechaza deref de `T?` |
+| M6 | Excepciones y null-safety | `attempt`/`rescue`; el compilador rechaza deref de `T?` (`examples/excepciones.jb`) |
 | M7 | Genéricos con erasure | `List<T>` y `Map<K,V>` propios |
 | M8 | Closures y lambdas | `lista.map { ... }` |
 | M9 | Módulos y paquetes | Proyecto de 3+ archivos |
@@ -98,6 +98,7 @@ Workspace de Rust en `crates/`:
 - **M3** (hecho): cadenas UTF-8, interpolación, arreglos y GC mark-sweep propio; ver "Cadenas, arreglos y GC (M3)".
 - **M4** (hecho): clases, campos, métodos y constructores; ver "Clases (M4)".
 - **M5** (hecho): herencia, interfaces, despacho virtual, `is`/`as`/`super`; ver "Herencia e interfaces (M5)".
+- **M6** (hecho): excepciones (`attempt`/`rescue`/`fail`) y opcionales (`T?`, `nil`, `?.`, `?:`, estrechamiento); ver "Excepciones y opcionales (M6)".
 
 ### Diseño de la VM (M1b)
 
@@ -123,7 +124,7 @@ Workspace de Rust en `crates/`:
 - Las anotaciones de tipo (`n: Int`, `-> Int`) son obligatorias en los parámetros y desde M2 se verifican.
 - Recursión limitada a 10 000 llamadas anidadas: más allá es un error con posición, no un cierre del proceso.
 - Desde M1b esos errores de nombres y aridad se informan al compilar, no al ejecutar.
-- Palabras clave: `fix mut fn if else while return break continue true false show` (desde M4 `thing this` y desde M5 `kind super is as`).
+- Palabras clave: `fix mut fn if else while return break continue true false show` (desde M4 `thing this`, desde M5 `kind super is as` y desde M6 `nil attempt rescue fail`).
 
 ### Tipos (M2)
 
@@ -249,6 +250,56 @@ fix p = a as Perro                                      // comprobado al ejecuta
   rendimiento). `super` no existe fuera de métodos de una clase con padre.
 - **Límites conocidos de M5:** una sola clase padre (sin herencia múltiple de clases), interfaces sin herencia ni métodos por
   defecto, sin clases abstractas, sin visibilidad (todo público), sin `==` entre objetos, sin covarianza en sobrescrituras.
+
+### Excepciones y opcionales (M6)
+
+```
+thing MiError(fix codigo: Int) : Fallo("falló con ${codigo}")   // hereda de Fallo (trae `msg`)
+attempt { fail MiError(3) }
+rescue e: MiError { show(e.msg) }
+
+fix p: Perro? = nil
+show(p?.nombre ?: "nadie")
+if p != nil { show(p.nombre) }
+```
+
+**Excepciones**
+
+- **`Fallo`:** el preludio (`and23_syntax::PRELUDE`, `thing Fallo(fix msg: Str)`) lo ejecuta toda `Session` antes del programa; es una clase
+  normal, así que `msg` es el primer campo de todo error (la VM lo usa para el mensaje de una excepción sin capturar) y los errores
+  propios son subclases con sus campos. `fail` solo acepta objetos que hereden de `Fallo`; `rescue` solo clases que lo hagan.
+- **Sintaxis:** `attempt { ... }` seguido de uno o más `rescue nombre: Tipo { ... }`, que pueden ir en la línea siguiente. Sin
+  `finally`. `fail` y `attempt` valen en cualquier sitio; `fail` cuenta como salida para el chequeo de "devuelve en todos los
+  caminos", y un `attempt` cuenta si su cuerpo y todos sus `rescue` devuelven.
+- **VM:** `Try(destino)` apila un manejador con el número de marcos, la altura de la pila, la función y la base; `EndTry` lo quita;
+  `Fail` saca el objeto y desenrolla: descarta los marcos nuevos, recorta la pila a su altura y salta al destino con el objeto en la
+  cima. Ahí el compilador emite, por cada `rescue`: `Dup`, `IsInstance(tipo)`, salto si no coincide, el objeto pasa a ser el local
+  de la cláusula y el cuerpo corre; si ninguna coincide, un `Fail` más la relanza hacia fuera. Sin manejador es un error de ejecución
+  (`excepción sin capturar `Tipo`: mensaje`) con la posición del `fail`.
+- **Manejadores que no deben quedar colgados:** `Return` descarta los manejadores de su función; `break`/`continue` emiten un
+  `EndTry` por cada `attempt` que cierran (el compilador lleva la cuenta por bucle); al relanzar el manejador ya se quitó.
+- **GC:** los manejadores no guardan valores; el objeto lanzado viaja en la pila, que ya es raíz.
+- **Límites:** los errores propios de la VM (división entre cero, índice fuera de rango, desbordamiento de entero, `as` inválido, pila
+  agotada) no son excepciones y no se capturan; sin `finally`; en el REPL el `rescue` debe ir en la misma línea que el `attempt`.
+
+**Opcionales**
+
+- **Tipos:** `T?` es `Type::Nullable`; `nil` tiene el tipo interno `Nil`, que solo existe mientras se verifica (no se puede inferir
+  una variable, arreglo o campo de `nil`: hay que anotar). `T??` y `Unit?` no existen. En ejecución `nil` es un valor más
+  (`Value::Nil`), así que también hay `Int?`, `[Int?]` y `Str?`. Un `T` se acepta donde se pide `T?`, no al revés.
+- **Operadores:** `a?.campo` y `a?.metodo(args)` (`Op::JumpIfNil`: si `a` es nil el resultado es nil y no se evalúan los argumentos;
+  el resultado se vuelve opcional, y una llamada que devuelve `Unit` sigue siendo `Unit`), `a ?: b` (`Op::JumpIfNotNil`, solo
+  evalúa `b` si hace falta; es el operador de menor precedencia y asocia a la izquierda). `x == nil` y `x != nil` solo se aceptan
+  sobre un opcional; comparar un valor que nunca es nil con `nil` es un error. `==` entre dos opcionales no existe.
+- **Estrechamiento** (solo en el verificador; no genera código): `facts(cond)` extrae qué variables prueba la condición cuando es
+  verdadera y cuando es falsa (`!=`/`==` con `nil`, `&&`, `||`, `!`). Se aplica al bloque `then`/`else`, al cuerpo de un `while`,
+  al lado derecho de `&&`/`||` y, si un bloque sale (`return`, `fail`, `break`, `continue`), al resto del bloque que lo contiene.
+  Se implementa con una entrada que tapa a la variable en un ámbito propio y recuerda su tipo declarado.
+- **Qué se estrecha:** locales y parámetros, y globales `fix` (en el nivel superior se guardan aparte, para no filtrar el estrechamiento a
+  las funciones, que se verifican después). No se estrechan los campos ni las globales `mut`: otro código podría cambiarlos entre la
+  comprobación y el uso. Un `mut` local se estrecha, pero una asignación que pueda dar `nil` lo vuelve a ensanchar, y si se asigna
+  dentro de un bucle anidado en el bloque no se estrecha (el bucle repetiría un uso anterior a la asignación).
+- **Límites:** sin `!!` (desreferencia forzada), sin asignación segura (`a?.x = 1`), sin `?:` con `fail`/`return` a la derecha.
 
 ## Fuentes de referencia
 

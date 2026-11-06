@@ -14,11 +14,17 @@ pub struct Session<W: Write> {
 
 impl<W: Write> Session<W> {
     pub fn new(out: W) -> Self {
-        Session {
+        let mut session = Session {
             checker: Checker::new(),
             compiler: Compiler::new(),
             vm: Vm::new(out),
-        }
+        };
+        // El preludio define `Fallo`, la clase base de las excepciones.
+        let prelude = and23_syntax::parse(and23_syntax::PRELUDE).expect("el preludio es válido");
+        session
+            .run(&prelude, false)
+            .expect("el preludio se ejecuta sin errores");
+        session
     }
 
     pub fn with_max_depth(mut self, max_depth: usize) -> Self {

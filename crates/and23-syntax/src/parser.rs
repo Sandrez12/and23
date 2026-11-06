@@ -1,6 +1,6 @@
 use crate::ast::{
     BinOp, Block, CtorParam, Expr, FieldDecl, FnDecl, InterpPart, KindDecl, KindMethod, Param,
-    Program, Stmt, SuperRef, ThingDecl, TypeRef, UnOp,
+    Program, Rescue, Stmt, SuperRef, ThingDecl, TypeRef, UnOp,
 };
 use crate::error::Diagnostic;
 use crate::lexer::{StrPart, Token, TokenKind};
@@ -176,6 +176,20 @@ impl Parser {
     }
 
     fn type_ref(&mut self) -> Result<TypeRef, Diagnostic> {
+        let mut ty = self.base_type_ref()?;
+        // `T?`; con varios (`T??`) el verificador explica que no tiene sentido.
+        while self.peek().kind == TokenKind::Question {
+            let q = self.bump().span;
+            ty = TypeRef {
+                name: "Nullable".to_string(),
+                span: ty.span.to(q),
+                args: vec![ty],
+            };
+        }
+        Ok(ty)
+    }
+
+    fn base_type_ref(&mut self) -> Result<TypeRef, Diagnostic> {
         if self.peek().kind == TokenKind::LBracket {
             let open = self.bump().span;
             let elem = self.type_ref()?;
@@ -204,6 +218,16 @@ impl Parser {
             TokenKind::Break | TokenKind::Continue => self.jump_stmt(),
             TokenKind::Fn => Err(self.error_here(
                 "las funciones solo se pueden declarar al nivel superior del archivo".into(),
+            )),
+            TokenKind::Attempt => self.attempt_stmt(),
+            TokenKind::Fail => {
+                let start = self.bump().span;
+                let value = self.expr(0)?;
+                let span = start.to(value.span());
+                Ok(Stmt::Fail(value, span))
+            }
+            TokenKind::Rescue => Err(self.error_here(
+                "`rescue` solo puede ir después de un bloque `attempt { ... }`".into(),
             )),
             TokenKind::Thing => Err(self.error_here(
                 "las clases solo se pueden declarar al nivel superior del archivo".into(),
@@ -494,6 +518,46 @@ impl Parser {
         Ok(params)
     }
 
+    /// `attempt { ... } rescue e: Tipo { ... } rescue ...`; los `rescue` pueden ir en la línea siguiente.
+    fn attempt_stmt(&mut self) -> Result<Stmt, Diagnostic> {
+        let start = self.bump().span;
+        let body = self.block()?;
+        let mut end = body.span;
+        let mut rescues = Vec::new();
+        loop {
+            let saved = self.pos;
+            self.skip_newlines();
+            if self.peek().kind != TokenKind::Rescue {
+                self.pos = saved;
+                break;
+            }
+            let keyword = self.bump().span;
+            let (name, name_span) = self.expect_ident("el nombre de la variable del error")?;
+            self.expect(TokenKind::Colon, "`:` y el tipo del error")?;
+            let ty = self.type_ref()?;
+            let block = self.block()?;
+            end = block.span;
+            rescues.push(Rescue {
+                name,
+                name_span,
+                ty,
+                span: keyword.to(block.span),
+                body: block,
+            });
+        }
+        if rescues.is_empty() {
+            return Err(Diagnostic::new(
+                start,
+                "un `attempt` necesita al menos un `rescue` después de su bloque",
+            ));
+        }
+        Ok(Stmt::Attempt {
+            body,
+            rescues,
+            span: start.to(end),
+        })
+    }
+
     fn let_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         let keyword = self.bump();
         let mutable = keyword.kind == TokenKind::Mut;
@@ -717,6 +781,7 @@ impl Parser {
                 inner
             }
             TokenKind::This => Expr::This(token.span),
+            TokenKind::Nil => Expr::Nil(token.span),
             TokenKind::Super => {
                 self.expect(TokenKind::Dot, "`.` después de `super`")?;
                 let (name, name_span) =
@@ -765,6 +830,30 @@ impl Parser {
                         index: Box::new(index),
                         span,
                     };
+                }
+                TokenKind::QDot => {
+                    self.bump();
+                    let (name, name_span) =
+                        self.expect_ident("el nombre de un campo o método después de `?.`")?;
+                    if self.peek().kind == TokenKind::LParen {
+                        let (args, close) = self.call_args()?;
+                        let span = lhs.span().to(close);
+                        lhs = Expr::SafeCall {
+                            target: Box::new(lhs),
+                            name,
+                            name_span,
+                            args,
+                            span,
+                        };
+                    } else {
+                        let span = lhs.span().to(name_span);
+                        lhs = Expr::SafeField {
+                            target: Box::new(lhs),
+                            name,
+                            name_span,
+                            span,
+                        };
+                    }
                 }
                 TokenKind::Dot => {
                     self.bump();
@@ -816,6 +905,21 @@ impl Parser {
                         ty,
                         span,
                     }
+                };
+                continue;
+            }
+            // `a ?: b`, el operador de menor precedencia.
+            if self.peek().kind == TokenKind::Elvis {
+                if 0 < min_bp {
+                    break;
+                }
+                self.bump();
+                let rhs = self.expr(1)?;
+                let span = lhs.span().to(rhs.span());
+                lhs = Expr::Elvis {
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                    span,
                 };
                 continue;
             }
@@ -963,6 +1067,15 @@ mod tests {
                 format!("(call {name} {})", args.join(" ")).replace(" )", ")")
             }
             Expr::This(_) => "this".to_string(),
+            Expr::Nil(_) => "nil".to_string(),
+            Expr::SafeField { target, name, .. } => format!("(?. {} {name})", sexp(target)),
+            Expr::SafeCall {
+                target, name, args, ..
+            } => {
+                let args: Vec<String> = args.iter().map(sexp).collect();
+                format!("(?. {} {name} {})", sexp(target), args.join(" ")).replace(" )", ")")
+            }
+            Expr::Elvis { lhs, rhs, .. } => format!("(?: {} {})", sexp(lhs), sexp(rhs)),
             Expr::SuperCall { name, args, .. } => {
                 let args: Vec<String> = args.iter().map(sexp).collect();
                 format!("(super {name} {})", args.join(" ")).replace(" )", ")")
@@ -1397,5 +1510,93 @@ mod tests {
         assert!(err("thing A() :").contains("una clase o interfaz"));
         assert!(err("thing A() : B(").contains("una expresión"));
         assert!(err("fix is = 1").contains("el nombre de la variable"));
+    }
+
+    // --- M6: excepciones y opcionales ---
+
+    #[test]
+    fn nil_acceso_seguro_y_elvis() {
+        assert_eq!(shape("nil"), "nil");
+        assert_eq!(shape("a?.b"), "(?. a b)");
+        assert_eq!(shape("a?.f(1)"), "(?. a f 1)");
+        assert_eq!(shape("a?.b?.c"), "(?. (?. a b) c)");
+        assert_eq!(shape("a?.b.c"), "(. (?. a b) c)");
+        assert_eq!(shape("a ?: b"), "(?: a b)");
+        assert_eq!(shape("a ?: b ?: c"), "(?: (?: a b) c)");
+        assert_eq!(shape("a ?: b + 1"), "(?: a (+ b 1))");
+        assert_eq!(shape("a ?: b || c"), "(?: a (|| b c))");
+        assert_eq!(shape("a + b ?: c"), "(?: (+ a b) c)");
+        assert_eq!(shape("x == nil"), "(== x nil)");
+        assert_eq!(shape("a?.b ?: 0"), "(?: (?. a b) 0)");
+    }
+
+    #[test]
+    fn tipos_opcionales() {
+        let ty = |src: &str| match &parse(src).unwrap().stmts[0] {
+            Stmt::Let { ty: Some(ty), .. } => ty.clone(),
+            other => panic!("{other:?}"),
+        };
+        let t = ty("fix a: Perro? = nil");
+        assert_eq!(
+            (t.name.as_str(), t.args[0].name.as_str()),
+            ("Nullable", "Perro")
+        );
+        let t = ty("fix a: [Int?] = []");
+        assert_eq!(t.name, "Array");
+        assert_eq!(t.args[0].name, "Nullable");
+        let t = ty("fix a: [Int]? = nil");
+        assert_eq!(
+            (t.name.as_str(), t.args[0].name.as_str()),
+            ("Nullable", "Array")
+        );
+        assert!(parse("fn f(a: Int?, b: Str?) -> Int? = nil").is_ok());
+        assert!(parse("thing P(fix a: P?, b: Int?) : Q(nil)").is_ok());
+    }
+
+    #[test]
+    fn attempt_rescue_y_fail() {
+        let program =
+            parse("attempt { show(1) }\nrescue e: A { show(2) }\nrescue f: B { show(3) }").unwrap();
+        let Stmt::Attempt { rescues, .. } = &program.stmts[0] else {
+            panic!("no es un attempt")
+        };
+        assert_eq!(rescues.len(), 2);
+        assert_eq!(rescues[0].name, "e");
+        assert_eq!(rescues[1].ty.name, "B");
+        // `rescue` en la misma línea
+        assert!(parse("attempt { } rescue e: A { }").is_ok());
+        // la sentencia siguiente no se confunde con un rescue
+        assert_eq!(
+            parse("attempt { }\nrescue e: A { }\n\nshow(1)")
+                .unwrap()
+                .stmts
+                .len(),
+            2
+        );
+        let program = parse("fail Error(\"x\", 1)").unwrap();
+        assert!(matches!(
+            &program.stmts[0],
+            Stmt::Fail(Expr::Call { .. }, _)
+        ));
+        // dentro de funciones y bucles
+        assert!(parse(
+            "fn f() {\n while true {\n attempt { break }\n rescue e: A { continue }\n }\n}"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn errores_de_excepciones_y_opcionales() {
+        assert!(err("attempt { }").contains("necesita al menos un `rescue`"));
+        assert!(err("attempt { }\nshow(1)").contains("necesita al menos un `rescue`"));
+        assert!(err("rescue e: A { }").contains("solo puede ir después de un bloque `attempt"));
+        assert!(err("attempt { }\nrescue { }").contains("el nombre de la variable del error"));
+        assert!(err("attempt { }\nrescue e { }").contains("`:` y el tipo del error"));
+        assert!(err("attempt { }\nrescue e: { }").contains("un nombre de tipo"));
+        assert!(err("attempt show(1)").contains("`{`"));
+        assert!(err("fail").contains("una expresión"));
+        assert!(err("a?.").contains("después de `?.`"));
+        assert!(err("a ?:").contains("una expresión"));
+        assert!(err("fix a: ? = 1").contains("un nombre de tipo"));
     }
 }
