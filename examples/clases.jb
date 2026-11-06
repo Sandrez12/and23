@@ -1,0 +1,222 @@
+// M4: clases (`thing`), campos, métodos y constructores.
+// Un pequeño sistema de biblioteca con vectores, cuentas y un inventario.
+
+// --- Un vector 2D inmutable: los métodos devuelven objetos nuevos ---
+thing Vec2(fix x: Float, fix y: Float) {
+    fn suma(o: Vec2) -> Vec2 = Vec2(x + o.x, y + o.y)
+    fn escala(k: Float) -> Vec2 = Vec2(x * k, y * k)
+    fn punto(o: Vec2) -> Float = x * o.x + y * o.y
+    fn largo2() -> Float = x * x + y * y
+    fn texto() -> Str = "(${x}, ${y})"
+}
+
+// --- Una cuenta: los parámetros con mut/fix se vuelven campos; los demás son solo del constructor ---
+thing Cuenta(fix titular: Str, saldoInicial: Int) {
+    mut saldo = saldoInicial          // campo del cuerpo, calculado con un parámetro
+    mut movimientos: [Str] = []       // un arreglo como campo
+    fix abiertaCon = saldoInicial
+
+    fn deposita(monto: Int) {
+        saldo += monto
+        push(movimientos, "+${monto}")
+    }
+
+    fn retira(monto: Int) -> Bool {
+        if monto > saldo {
+            push(movimientos, "rechazado ${monto}")
+            return false
+        }
+        saldo -= monto
+        push(movimientos, "-${monto}")
+        return true
+    }
+
+    fn historial() -> Str {
+        mut texto = ""
+        mut i = 0
+        while i < len(movimientos) {
+            if i > 0 { texto += ", " }
+            texto += movimientos[i]
+            i += 1
+        }
+        return texto
+    }
+
+    fn resumen() -> Str = "${titular}: saldo ${saldo} (abrió con ${abiertaCon})"
+}
+
+// Transferir entre dos objetos es una función normal que usa sus métodos.
+fn transfiere(de: Cuenta, a: Cuenta, monto: Int) -> Bool {
+    if de.retira(monto) {
+        a.deposita(monto)
+        return true
+    }
+    return false
+}
+
+// --- Libros y una biblioteca que los guarda en un arreglo ---
+thing Libro(fix titulo: Str, fix autor: Str, fix paginas: Int) {
+    mut prestado = false
+    mut veces = 0
+
+    fn presta() -> Bool {
+        if prestado { return false }
+        prestado = true
+        veces += 1
+        return true
+    }
+
+    fn devuelve() { prestado = false }
+
+    fn estado() -> Str {
+        if prestado { return "prestado" }
+        return "disponible"
+    }
+
+    fn ficha() -> Str = "${titulo} de ${autor} (${paginas} págs, ${estado()}, ${veces} préstamo(s))"
+}
+
+thing Biblioteca(fix nombre: Str) {
+    fix libros: [Libro] = []
+    mut prestamos = 0
+
+    fn agrega(libro: Libro) { push(libros, libro) }
+
+    fn busca(titulo: Str) -> Int {
+        mut i = 0
+        while i < len(libros) {
+            if libros[i].titulo == titulo { return i }
+            i += 1
+        }
+        return 0 - 1
+    }
+
+    fn presta(titulo: Str) -> Str {
+        fix i = busca(titulo)
+        if i < 0 { return "no existe '${titulo}'" }
+        if libros[i].presta() {
+            prestamos += 1
+            return "prestado '${titulo}'"
+        }
+        return "'${titulo}' ya estaba prestado"
+    }
+
+    fn disponibles() -> Int {
+        mut n = 0
+        mut i = 0
+        while i < len(libros) {
+            if !libros[i].prestado { n += 1 }
+            i += 1
+        }
+        return n
+    }
+
+    fn paginasTotales() -> Int {
+        mut total = 0
+        mut i = 0
+        while i < len(libros) {
+            total += libros[i].paginas
+            i += 1
+        }
+        return total
+    }
+
+    fn listado() {
+        show("== ${nombre} (${disponibles()} de ${len(libros)} disponibles) ==")
+        mut i = 0
+        while i < len(libros) {
+            show("  ${i + 1}. ${libros[i].ficha()}")
+            i += 1
+        }
+    }
+}
+
+// --- Un inventario con precios en centavos ---
+thing Producto(fix nombre: Str, fix precio: Int, mut stock: Int) {
+    fn vende(n: Int) -> Int {
+        if n > stock { return 0 }
+        stock -= n
+        return n * precio
+    }
+    fn repone(n: Int) { stock += n }
+}
+
+fn valorTotal(items: [Producto]) -> Int {
+    mut total = 0
+    mut i = 0
+    while i < len(items) {
+        total += items[i].precio * items[i].stock
+        i += 1
+    }
+    return total
+}
+
+// --- Un contador que se comparte por referencia ---
+thing Contador(fix paso: Int) {
+    mut valor = 0
+    fn avanza() -> Int {
+        valor += paso
+        return valor
+    }
+}
+
+fn avanzaVeces(c: Contador, veces: Int) {
+    mut i = 0
+    while i < veces {
+        c.avanza()
+        i += 1
+    }
+}
+
+fn main() {
+    // Vectores
+    fix a = Vec2(1.0, 2.0)
+    fix b = Vec2(3.0, 4.0)
+    fix c = a.suma(b).escala(2.0)
+    show("a + b, por 2 = ${c.texto()}")
+    show("a . b = ${a.punto(b)}, |c|^2 = ${c.largo2()}")
+    show(a)
+
+    // Cuentas
+    fix ana = Cuenta("Ana", 100)
+    fix luis = Cuenta("Luis", 20)
+    ana.deposita(50)
+    show("transferencia de 120: ${transfiere(ana, luis, 120)}")
+    show("transferencia de 500: ${transfiere(ana, luis, 500)}")
+    show(ana.resumen())
+    show(luis.resumen())
+    show("historial de Ana: ${ana.historial()}")
+    show("historial de Luis: ${luis.historial()}")
+
+    // Biblioteca
+    fix lib = Biblioteca("Central")
+    lib.agrega(Libro("Rayuela", "Cortázar", 600))
+    lib.agrega(Libro("Ficciones", "Borges", 180))
+    lib.agrega(Libro("El túnel", "Sabato", 160))
+    show(lib.presta("Ficciones"))
+    show(lib.presta("Ficciones"))
+    show(lib.presta("Dune"))
+    lib.libros[1].devuelve()
+    show(lib.presta("Ficciones"))
+    show(lib.presta("Rayuela"))
+    lib.listado()
+    show("páginas en total: ${lib.paginasTotales()}, préstamos: ${lib.prestamos}")
+
+    // Inventario
+    fix items = [Producto("lapiz", 150, 40), Producto("cuaderno", 1200, 10)]
+    show("valor inicial: ${valorTotal(items)}")
+    show("venta de 5 cuadernos: ${items[1].vende(5)}")
+    show("venta de 99 lápices: ${items[0].vende(99)}")
+    items[0].repone(10)
+    show("valor final: ${valorTotal(items)}")
+    show(items[0])
+
+    // Referencias compartidas
+    fix k = Contador(3)
+    fix otro = k
+    avanzaVeces(k, 4)
+    otro.avanza()
+    show("k = ${k.valor}, otro = ${otro.valor}")
+    k.valor = 0
+    show("tras reiniciar: ${otro.valor}")
+}

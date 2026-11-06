@@ -19,6 +19,8 @@ pub enum TokenKind {
     Fix,
     Mut,
     Fn,
+    Thing,
+    This,
     If,
     Else,
     While,
@@ -59,6 +61,7 @@ pub enum TokenKind {
     RBracket,
     Comma,
     Colon,
+    Dot,
     /// Salto de línea o `;`.
     Newline,
     Eof,
@@ -86,6 +89,8 @@ impl TokenKind {
             T::Fix => "fix",
             T::Mut => "mut",
             T::Fn => "fn",
+            T::Thing => "thing",
+            T::This => "this",
             T::If => "if",
             T::Else => "else",
             T::While => "while",
@@ -124,6 +129,7 @@ impl TokenKind {
             T::RBracket => "]",
             T::Comma => ",",
             T::Colon => ":",
+            T::Dot => ".",
             T::Int(_) | T::Float(_) | T::Ident(_) | T::Str(_) | T::Newline | T::Eof => "",
         }
     }
@@ -141,6 +147,8 @@ fn keyword(name: &str) -> Option<TokenKind> {
         "fix" => T::Fix,
         "mut" => T::Mut,
         "fn" => T::Fn,
+        "thing" => T::Thing,
+        "this" => T::This,
         "if" => T::If,
         "else" => T::Else,
         "while" => T::While,
@@ -193,6 +201,7 @@ fn operator(c: char, next: Option<char>) -> Option<(TokenKind, usize)> {
         ']' => T::RBracket,
         ',' => T::Comma,
         ':' => T::Colon,
+        '.' => T::Dot,
         _ => return None,
     };
     Some((one, 1))
@@ -578,8 +587,19 @@ mod tests {
 
     #[test]
     fn punto_sin_digito_no_es_flotante() {
-        let err = lex("1.").unwrap_err();
-        assert!(err.message.contains("inesperado"));
+        assert_eq!(
+            kinds("1."),
+            vec![TokenKind::Int(1), TokenKind::Dot, TokenKind::Eof]
+        );
+        assert_eq!(
+            kinds("a.b"),
+            vec![
+                TokenKind::Ident("a".into()),
+                TokenKind::Dot,
+                TokenKind::Ident("b".into()),
+                TokenKind::Eof
+            ]
+        );
     }
 
     #[test]

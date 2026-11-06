@@ -75,7 +75,7 @@ Workspace de Rust en `crates/`:
 | M1 | Variables, `if`/`while`, funciones, bytecode y VM de pila | fib(30) y factorial |
 | M2 | Tipos estáticos y errores con línea y columna | Un programa mal tipado se rechaza con mensaje claro |
 | M3 | Strings, arrays y GC mark-sweep | 10M de asignaciones sin agotar memoria; pasa en modo stress |
-| M4 | Clases, campos, métodos, constructores | Programa OO de ~200 líneas |
+| M4 | Clases, campos, métodos, constructores | Programa OO de ~200 líneas (`examples/clases.jb`, 222 líneas) |
 | M5 | Herencia, interfaces, vtables, `instanceof` | Ejemplo polimórfico |
 | M6 | Excepciones y null-safety | `attempt`/`rescue`; el compilador rechaza deref de `T?` |
 | M7 | Genéricos con erasure | `List<T>` y `Map<K,V>` propios |
@@ -96,6 +96,7 @@ Workspace de Rust en `crates/`:
 
 - **M2** (hecho): tipos estáticos (`Int`, `Float`, `Bool`, `Unit`) con errores de línea y columna; ver "Tipos (M2)".
 - **M3** (hecho): cadenas UTF-8, interpolación, arreglos y GC mark-sweep propio; ver "Cadenas, arreglos y GC (M3)".
+- **M4** (hecho): clases, campos, métodos y constructores; ver "Clases (M4)".
 
 ### Diseño de la VM (M1b)
 
@@ -121,7 +122,7 @@ Workspace de Rust en `crates/`:
 - Las anotaciones de tipo (`n: Int`, `-> Int`) son obligatorias en los parámetros y desde M2 se verifican.
 - Recursión limitada a 10 000 llamadas anidadas: más allá es un error con posición, no un cierre del proceso.
 - Desde M1b esos errores de nombres y aridad se informan al compilar, no al ejecutar.
-- Palabras clave: `fix mut fn if else while return break continue true false show`.
+- Palabras clave: `fix mut fn if else while return break continue true false show` (y desde M4 `thing this`).
 
 ### Tipos (M2)
 
@@ -162,7 +163,44 @@ Workspace de Rust en `crates/`:
   normal y en modo stress y exigen el mismo resultado.
 - **Criterio de éxito:** 10 millones de asignaciones de cadenas con el heap acotado (el test exige menos de 200 000 ranuras) y los tests
   en modo stress. Medido: 10 millones de iteraciones con una cadena nueva cada una tardan ~1,9 s (release).
-- **Intérprete de árbol:** queda congelado en M1a; rechaza cadenas y arreglos con un error claro.
+- **Intérprete de árbol:** queda congelado en M1a; rechaza cadenas, arreglos y clases con un error claro.
+
+### Clases (M4)
+
+```
+thing Cuenta(fix titular: Str, saldoInicial: Int) {   // cabecera = constructor
+    mut saldo = saldoInicial                           // campo del cuerpo
+    fn deposita(n: Int) { saldo += n }                 // método
+}
+fix c = Cuenta("Ana", 10)
+c.deposita(5)
+```
+
+- **Cabecera:** `fix`/`mut nombre: T` crea un campo con ese nombre; sin `fix`/`mut` el parámetro solo existe para los
+  inicializadores del cuerpo. Orden de los campos en el objeto: los de la cabecera y luego los del cuerpo.
+- **Cuerpo:** campos (`fix`/`mut nombre [: T] = expr`) y métodos (`fn`), en cualquier orden. Cada inicializador ve los
+  parámetros del constructor y los campos anteriores (también llamar funciones o crear otros objetos), pero no `this`.
+  El cuerpo puede omitirse (`thing P(fix x: Int)`).
+- **Nombres:** dentro de un método se busca primero el local o parámetro, luego el campo de `this` y al final la global.
+  `this.campo` siempre es el campo. `metodo()` sin receptor llama al método de la propia clase (antes que a una función
+  global del mismo nombre). Los campos y los métodos comparten espacio: no pueden llamarse igual.
+- **Clases y tipos:** una clase es un tipo (`fix p: Punto`, `[Punto]`, parámetros, retornos). Se pueden usar antes de su
+  declaración y referirse entre sí; el nombre no puede coincidir con una función, un tipo integrado (`Int`...) ni otra clase.
+- **Objetos:** viven en el heap como `Instance { class, fields }`, son referencias (compartirlos no los copia) y el GC
+  recorre sus campos; los ciclos (`a.hijos` que contiene a `a`) se recolectan y `show` los corta con `...`. `fix` en un campo
+  prohíbe reasignarlo (incluso desde los métodos); `fix` en una variable solo prohíbe cambiar la variable.
+  `==` entre objetos no existe todavía (la igualdad estructural llegará con los tipos de datos).
+  `show` imprime `Clase(campo=valor, ...)`; las cadenas dentro van entre comillas.
+- **Compilación:** un método es una función normal llamada `Clase.metodo` con `this` como local 0 y los parámetros después;
+  `obj.m(x)` es `Call` con el receptor como primer argumento (despacho estático; la herencia añadirá vtables en M5).
+  El constructor es una función `Clase` que evalúa los inicializadores como locales, reúne los campos en orden y ejecuta
+  `NewObj`, así un objeto nunca existe a medias. Instrucciones nuevas: `GetField(i)`, `SetField(i)`, `Dup`, `NewObj`.
+- **Qué decide el verificador:** el compilador no tiene tipos, así que `Checker::check` devuelve `Resolutions`: para cada
+  acceso (por su posición en el fuente) el índice de campo, y para cada llamada la clave `"Clase.metodo"`. Es la única
+  fuente de verdad de la resolución de nombres: el compilador no la repite.
+- **Límites conocidos de M4:** sin herencia ni interfaces (M5), sin `nil` (los campos siempre se inicializan: M6),
+  sin visibilidad (todo es público) y sin sobrecarga. El tipo de un campo sin anotar se infiere la primera vez que se
+  necesita (como el retorno de una función `= expr`); si depende de sí mismo hay que anotarlo.
 
 ## Fuentes de referencia
 

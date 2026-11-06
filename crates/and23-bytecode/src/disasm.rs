@@ -11,6 +11,7 @@ pub fn disassemble(module: &Module, function: &Function) -> String {
             }
             Op::Str(n) => format!("  ; {:?}", module.strings[*n as usize]),
             Op::Call(n) => format!("  ; {}", module.functions[*n as usize].name),
+            Op::NewObj { class, .. } => format!("  ; {}", module.classes[*class as usize].name),
             _ => String::new(),
         };
         let _ = writeln!(out, "  {i:04}  {op:?}{detail}");

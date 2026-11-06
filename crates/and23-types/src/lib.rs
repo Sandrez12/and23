@@ -2,7 +2,8 @@
 //! un programa mal tipado se rechaza con su posición antes de generar bytecode.
 
 use and23_syntax::{
-    BinOp, Block, Diagnostic, Expr, FnDecl, InterpPart, Program, Span, Stmt, TypeRef, UnOp,
+    BinOp, Block, Diagnostic, Expr, FnDecl, InterpPart, Program, Span, Stmt, ThingDecl, TypeRef,
+    UnOp,
 };
 use std::collections::HashMap;
 use std::fmt;
@@ -18,6 +19,8 @@ pub enum Type {
     Str,
     Unit,
     Array(Box<Type>),
+    /// Instancia de una clase (`thing`).
+    Obj(String),
 }
 
 impl Type {
@@ -35,6 +38,7 @@ impl fmt::Display for Type {
             Type::Str => f.write_str("Str"),
             Type::Unit => f.write_str("Unit"),
             Type::Array(elem) => write!(f, "[{elem}]"),
+            Type::Obj(name) => f.write_str(name),
         }
     }
 }
@@ -48,10 +52,37 @@ struct Sig {
 
 type Vars = HashMap<String, (Type, bool)>;
 
+#[derive(Clone)]
+struct FieldInfo {
+    name: String,
+    ty: Type,
+    mutable: bool,
+}
+
+/// Una clase: sus campos (los de la cabecera primero, luego los del cuerpo) y los tipos de su
+/// constructor. Las firmas de los métodos viven en `funcs` bajo `"Clase.metodo"`.
+#[derive(Clone, Default)]
+struct ClassInfo {
+    fields: Vec<FieldInfo>,
+    ctor: Vec<Type>,
+}
+
+/// Lo que el verificador decidió y el compilador necesita (no tiene tipos propios):
+/// a qué campo apunta cada acceso y a qué método cada llamada, indexados por su posición.
+#[derive(Debug, Default, Clone)]
+pub struct Resolutions {
+    /// Posición del acceso (`obj.campo`, nombre suelto dentro de un método o nombre del campo
+    /// en una asignación) -> índice del campo.
+    pub fields: HashMap<Span, u32>,
+    /// Posición de la llamada (`obj.metodo()` o `metodo()` dentro de un método) -> `"Clase.metodo"`.
+    pub methods: HashMap<Span, String>,
+}
+
 /// Verificador con estado: recuerda las funciones y globales de las entradas anteriores (REPL).
 #[derive(Clone, Default)]
 pub struct Checker {
     funcs: HashMap<String, Sig>,
+    classes: HashMap<String, ClassInfo>,
     globals: Vars,
 }
 
@@ -61,17 +92,22 @@ impl Checker {
     }
 
     /// Verifica el programa. Si falla, el estado del verificador no cambia.
-    pub fn check(&mut self, program: &Program) -> Result<(), Diagnostic> {
+    pub fn check(&mut self, program: &Program) -> Result<Resolutions, Diagnostic> {
         let mut pass = Pass {
             funcs: self.funcs.clone(),
+            classes: self.classes.clone(),
             globals: self.globals.clone(),
             decls: HashMap::new(),
             state: HashMap::new(),
+            things: HashMap::new(),
+            class_state: HashMap::new(),
+            res: Resolutions::default(),
         };
         pass.program(program)?;
         self.funcs = pass.funcs;
+        self.classes = pass.classes;
         self.globals = pass.globals;
-        Ok(())
+        Ok(pass.res)
     }
 
     /// Olvida globales que no llegaron a definirse (error de ejecución en el REPL).
@@ -100,17 +136,44 @@ enum Ret {
 struct Ctx {
     scopes: Vec<Vars>,
     ret: Ret,
+    /// Clase cuyo método se está verificando (`this` y sus campos están a la vista).
+    this: Option<String>,
 }
 
 struct Pass<'p> {
     funcs: HashMap<String, Sig>,
+    classes: HashMap<String, ClassInfo>,
     globals: Vars,
-    decls: HashMap<String, &'p FnDecl>,
+    /// Funciones y métodos de este programa (clave `"f"` o `"Clase.m"`) y su clase, si es método.
+    decls: HashMap<String, (&'p FnDecl, Option<String>)>,
     state: HashMap<String, State>,
+    /// Clases de este programa y si ya se infirieron los tipos de los campos de su cuerpo.
+    things: HashMap<String, &'p ThingDecl>,
+    class_state: HashMap<String, State>,
+    res: Resolutions,
 }
+
+/// Nombres que una clase no puede usar.
+const RESERVED_TYPES: [&str; 6] = ["Int", "Float", "Bool", "Str", "Unit", "Array"];
 
 impl<'p> Pass<'p> {
     fn program(&mut self, program: &'p Program) -> Result<(), Diagnostic> {
+        // Los nombres de clase primero: los tipos de campos, parámetros y firmas pueden nombrarlas.
+        for stmt in &program.stmts {
+            let Stmt::Thing(decl) = stmt else { continue };
+            if BUILTINS.contains(&decl.name.as_str())
+                || RESERVED_TYPES.contains(&decl.name.as_str())
+                || self.funcs.contains_key(&decl.name)
+                || self.classes.contains_key(&decl.name)
+            {
+                return Err(Diagnostic::new(
+                    decl.name_span,
+                    format!("el nombre `{}` ya está en uso o está reservado", decl.name),
+                ));
+            }
+            self.classes.insert(decl.name.clone(), ClassInfo::default());
+        }
+
         // Las firmas se registran antes: las funciones pueden usarse antes de su definición.
         for stmt in &program.stmts {
             let Stmt::Fn(decl) = stmt else { continue };
@@ -123,49 +186,219 @@ impl<'p> Pass<'p> {
                     ),
                 ));
             }
-            if self.funcs.contains_key(&decl.name) {
+            if self.funcs.contains_key(&decl.name) || self.classes.contains_key(&decl.name) {
                 return Err(Diagnostic::new(
                     decl.name_span,
                     format!("la función `{}` ya está definida", decl.name),
                 ));
             }
-            let params = decl
-                .params
-                .iter()
-                .map(|p| resolve_type(&p.ty))
-                .collect::<Result<Vec<_>, _>>()?;
-            let ret = match (&decl.ret, decl.expr_body) {
-                (Some(ty), _) => Some(resolve_type(ty)?),
-                (None, false) => Some(Type::Unit),
-                (None, true) => None,
-            };
-            self.funcs.insert(decl.name.clone(), Sig { params, ret });
-            self.decls.insert(decl.name.clone(), decl);
+            let sig = self.signature(decl)?;
+            self.funcs.insert(decl.name.clone(), sig);
+            self.decls.insert(decl.name.clone(), (decl, None));
             self.state.insert(decl.name.clone(), State::Unchecked);
+        }
+
+        for stmt in &program.stmts {
+            if let Stmt::Thing(decl) = stmt {
+                self.declare_class(decl)?;
+            }
+        }
+        for stmt in &program.stmts {
+            if let Stmt::Thing(decl) = stmt {
+                self.ensure_class(&decl.name)?;
+            }
         }
 
         let mut script = Ctx {
             scopes: Vec::new(),
             ret: Ret::Script,
+            this: None,
         };
         for stmt in &program.stmts {
-            if !matches!(stmt, Stmt::Fn(_)) {
+            if !matches!(stmt, Stmt::Fn(_) | Stmt::Thing(_)) {
                 self.stmt(&mut script, stmt)?;
             }
         }
         for stmt in &program.stmts {
-            if let Stmt::Fn(decl) = stmt {
-                if self.state[&decl.name] == State::Unchecked {
-                    self.check_fn(decl)?;
+            match stmt {
+                Stmt::Fn(decl) => {
+                    if self.state[&decl.name] == State::Unchecked {
+                        self.check_fn(&decl.name)?;
+                    }
                 }
+                Stmt::Thing(thing) => {
+                    for method in &thing.methods {
+                        let key = format!("{}.{}", thing.name, method.name);
+                        if self.state[&key] == State::Unchecked {
+                            self.check_fn(&key)?;
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         Ok(())
     }
 
-    fn check_fn(&mut self, decl: &'p FnDecl) -> Result<(), Diagnostic> {
-        self.state.insert(decl.name.clone(), State::InProgress);
-        let sig = self.funcs[&decl.name].clone();
+    /// Firma de una función o método: parámetros y tipo de retorno (`None` si hay que inferirlo).
+    fn signature(&self, decl: &FnDecl) -> Result<Sig, Diagnostic> {
+        let params = decl
+            .params
+            .iter()
+            .map(|p| self.resolve(&p.ty))
+            .collect::<Result<Vec<_>, _>>()?;
+        let ret = match (&decl.ret, decl.expr_body) {
+            (Some(ty), _) => Some(self.resolve(ty)?),
+            (None, false) => Some(Type::Unit),
+            (None, true) => None,
+        };
+        Ok(Sig { params, ret })
+    }
+
+    /// Registra los campos, el constructor y las firmas de los métodos de una clase.
+    /// Los campos del cuerpo sin anotación llevan `Unit` provisional hasta `ensure_class`.
+    fn declare_class(&mut self, decl: &'p ThingDecl) -> Result<(), Diagnostic> {
+        self.things.insert(decl.name.clone(), decl);
+        self.class_state.insert(decl.name.clone(), State::Unchecked);
+        let mut fields: Vec<FieldInfo> = Vec::new();
+        let mut ctor = Vec::new();
+        for param in &decl.params {
+            let ty = self.resolve(&param.ty)?;
+            if ty == Type::Unit {
+                return Err(Diagnostic::new(
+                    param.ty.span,
+                    "un parámetro no puede ser de tipo Unit",
+                ));
+            }
+            ctor.push(ty.clone());
+            if let Some(mutable) = param.mutable {
+                fields.push(FieldInfo {
+                    name: param.name.clone(),
+                    ty,
+                    mutable,
+                });
+            }
+        }
+        for field in &decl.fields {
+            if fields.iter().any(|f| f.name == field.name) {
+                return Err(Diagnostic::new(
+                    field.name_span,
+                    format!("el campo `{}` está repetido", field.name),
+                ));
+            }
+            let ty = match &field.ty {
+                Some(ty) => self.resolve(ty)?,
+                None => Type::Unit,
+            };
+            fields.push(FieldInfo {
+                name: field.name.clone(),
+                ty,
+                mutable: field.mutable,
+            });
+        }
+        for method in &decl.methods {
+            let key = format!("{}.{}", decl.name, method.name);
+            if fields.iter().any(|f| f.name == method.name) {
+                return Err(Diagnostic::new(
+                    method.name_span,
+                    format!(
+                        "`{}` ya es un campo de `{}`; un método no puede llamarse igual",
+                        method.name, decl.name
+                    ),
+                ));
+            }
+            if self.funcs.contains_key(&key) {
+                return Err(Diagnostic::new(
+                    method.name_span,
+                    format!(
+                        "el método `{}` ya está definido en `{}`",
+                        method.name, decl.name
+                    ),
+                ));
+            }
+            let sig = self.signature(method)?;
+            self.funcs.insert(key.clone(), sig);
+            self.decls
+                .insert(key.clone(), (method, Some(decl.name.clone())));
+            self.state.insert(key, State::Unchecked);
+        }
+        let info = self.classes.get_mut(&decl.name).expect("registrada antes");
+        info.fields = fields;
+        info.ctor = ctor;
+        Ok(())
+    }
+
+    /// Infiere los tipos de los campos del cuerpo la primera vez que hacen falta (como el tipo de
+    /// retorno de una función `= expr`). Una clase de una entrada anterior del REPL ya está completa.
+    fn ensure_class(&mut self, name: &str) -> Result<(), Diagnostic> {
+        match self.class_state.get(name).copied() {
+            None | Some(State::Done) => Ok(()),
+            Some(State::InProgress) => Err(Diagnostic::new(
+                self.things[name].name_span,
+                format!(
+                    "los campos de `{name}` se usan antes de conocer su tipo; anota el tipo del campo"
+                ),
+            )),
+            Some(State::Unchecked) => {
+                self.class_state
+                    .insert(name.to_string(), State::InProgress);
+                let decl: &'p ThingDecl = self.things[name];
+                self.class_initializers(decl)?;
+                self.class_state.insert(name.to_string(), State::Done);
+                Ok(())
+            }
+        }
+    }
+
+    /// Verifica los valores iniciales de los campos del cuerpo. Ven los parámetros del
+    /// constructor y los campos anteriores, pero no `this`.
+    fn class_initializers(&mut self, decl: &'p ThingDecl) -> Result<(), Diagnostic> {
+        let mut scope = Vars::new();
+        for (param, ty) in decl
+            .params
+            .iter()
+            .zip(self.classes[&decl.name].ctor.clone())
+        {
+            scope.insert(param.name.clone(), (ty, false));
+        }
+        let mut ctx = Ctx {
+            scopes: vec![scope],
+            ret: Ret::Script,
+            this: None,
+        };
+        let first = decl.params.iter().filter(|p| p.mutable.is_some()).count();
+        for (i, field) in decl.fields.iter().enumerate() {
+            let ty = match &field.ty {
+                Some(ty) => {
+                    let expected = self.resolve(ty)?;
+                    self.expr_as(&mut ctx, &field.init, &expected)?;
+                    expected
+                }
+                None => self.expr(&mut ctx, &field.init)?,
+            };
+            if ty == Type::Unit {
+                return Err(Diagnostic::new(
+                    field.init.span(),
+                    format!(
+                        "el campo `{}` no puede guardar un valor de tipo Unit",
+                        field.name
+                    ),
+                ));
+            }
+            let info = self.classes.get_mut(&decl.name).expect("registrada antes");
+            info.fields[first + i].ty = ty.clone();
+            self.declare(&mut ctx, &field.name, (ty, false), field.name_span)?;
+        }
+        Ok(())
+    }
+
+    fn check_fn(&mut self, key: &str) -> Result<(), Diagnostic> {
+        let (decl, class) = self.decls[key].clone();
+        if let Some(class) = &class {
+            self.ensure_class(class)?;
+        }
+        self.state.insert(key.to_string(), State::InProgress);
+        let sig = self.funcs[key].clone();
         let mut scope = Vars::new();
         for (param, ty) in decl.params.iter().zip(&sig.params) {
             scope.insert(param.name.clone(), (ty.clone(), false));
@@ -176,12 +409,13 @@ impl<'p> Pass<'p> {
                 Some(ty) => Ret::Declared(ty),
                 None => Ret::Infer(None),
             },
+            this: class,
         };
         self.block(&mut ctx, &decl.body)?;
         match ctx.ret {
             Ret::Infer(found) => {
                 let ty = found.unwrap_or(Type::Unit);
-                if let Some(sig) = self.funcs.get_mut(&decl.name) {
+                if let Some(sig) = self.funcs.get_mut(key) {
                     sig.ret = Some(ty);
                 }
             }
@@ -196,7 +430,7 @@ impl<'p> Pass<'p> {
             }
             _ => {}
         }
-        self.state.insert(decl.name.clone(), State::Done);
+        self.state.insert(key.to_string(), State::Done);
         Ok(())
     }
 
@@ -207,13 +441,52 @@ impl<'p> Pass<'p> {
         result
     }
 
-    fn lookup(&self, ctx: &Ctx, name: &str) -> Option<(Type, bool)> {
-        ctx.scopes
-            .iter()
-            .rev()
-            .find_map(|scope| scope.get(name))
-            .or_else(|| self.globals.get(name))
-            .cloned()
+    /// Busca una variable: ámbitos locales, campos de `this` y globales, en ese orden.
+    /// Devuelve tipo, si es mutable y, si es un campo, su índice.
+    fn lookup(&self, ctx: &Ctx, name: &str) -> Option<(Type, bool, Option<u32>)> {
+        if let Some((ty, mutable)) = ctx.scopes.iter().rev().find_map(|scope| scope.get(name)) {
+            return Some((ty.clone(), *mutable, None));
+        }
+        if let Some(info) = ctx.this.as_ref().and_then(|class| self.classes.get(class)) {
+            if let Some(i) = info.fields.iter().position(|f| f.name == name) {
+                let f = &info.fields[i];
+                return Some((f.ty.clone(), f.mutable, Some(i as u32)));
+            }
+        }
+        self.globals
+            .get(name)
+            .map(|(ty, mutable)| (ty.clone(), *mutable, None))
+    }
+
+    fn ensure_class_of(&mut self, ty: &Type) -> Result<(), Diagnostic> {
+        match ty {
+            Type::Obj(class) => self.ensure_class(class),
+            _ => Ok(()),
+        }
+    }
+
+    /// Campo `name` de un valor de tipo `ty`: índice, tipo y mutabilidad.
+    fn field_of(
+        &self,
+        ty: &Type,
+        name: &str,
+        name_span: Span,
+        target_span: Span,
+    ) -> Result<(u32, Type, bool), Diagnostic> {
+        let Type::Obj(class) = ty else {
+            return Err(Diagnostic::new(
+                target_span,
+                format!("solo los objetos tienen campos, pero esto es {ty}"),
+            ));
+        };
+        let info = &self.classes[class];
+        match info.fields.iter().position(|f| f.name == name) {
+            Some(i) => Ok((i as u32, info.fields[i].ty.clone(), info.fields[i].mutable)),
+            None => Err(Diagnostic::new(
+                name_span,
+                format!("la clase `{class}` no tiene el campo `{name}`"),
+            )),
+        }
     }
 
     fn declare(
@@ -263,7 +536,7 @@ impl<'p> Pass<'p> {
             } => {
                 let declared = match ty {
                     Some(ty) => {
-                        let expected = resolve_type(ty)?;
+                        let expected = self.resolve(ty)?;
                         self.expr_as(ctx, init, &expected)?;
                         expected
                     }
@@ -284,7 +557,7 @@ impl<'p> Pass<'p> {
                 value,
                 span,
             } => {
-                let Some((ty, mutable)) = self.lookup(ctx, name) else {
+                let Some((ty, mutable, field)) = self.lookup(ctx, name) else {
                     return Err(undefined_variable(name, *name_span));
                 };
                 if !mutable {
@@ -293,6 +566,30 @@ impl<'p> Pass<'p> {
                         format!("no se puede asignar a `{name}` porque es inmutable; decláralo con `mut`"),
                     ));
                 }
+                if let Some(i) = field {
+                    self.res.fields.insert(*name_span, i);
+                }
+                self.assigned(ctx, &ty, *op, value, *span)?;
+            }
+            Stmt::FieldAssign {
+                target,
+                name,
+                name_span,
+                op,
+                value,
+                span,
+            } => {
+                let target_ty = self.expr(ctx, target)?;
+                self.ensure_class_of(&target_ty)?;
+                let (i, ty, mutable) =
+                    self.field_of(&target_ty, name, *name_span, target.span())?;
+                if !mutable {
+                    return Err(Diagnostic::new(
+                        *name_span,
+                        format!("no se puede asignar al campo `{name}` porque es inmutable; decláralo con `mut`"),
+                    ));
+                }
+                self.res.fields.insert(*name_span, i);
                 self.assigned(ctx, &ty, *op, value, *span)?;
             }
             Stmt::IndexAssign {
@@ -354,7 +651,7 @@ impl<'p> Pass<'p> {
                     }
                 }
             }
-            Stmt::Break(_) | Stmt::Continue(_) | Stmt::Fn(_) => {}
+            Stmt::Break(_) | Stmt::Continue(_) | Stmt::Fn(_) | Stmt::Thing(_) => {}
         }
         Ok(())
     }
@@ -418,10 +715,58 @@ impl<'p> Pass<'p> {
             Expr::Float(..) => Ok(Type::Float),
             Expr::Bool(..) => Ok(Type::Bool),
             Expr::Str(..) => Ok(Type::Str),
-            Expr::Var(name, span) => self
-                .lookup(ctx, name)
-                .map(|(ty, _)| ty)
-                .ok_or_else(|| undefined_variable(name, *span)),
+            Expr::Var(name, span) => {
+                let Some((ty, _, field)) = self.lookup(ctx, name) else {
+                    return Err(undefined_variable(name, *span));
+                };
+                if let Some(i) = field {
+                    self.res.fields.insert(*span, i);
+                }
+                Ok(ty)
+            }
+            Expr::This(span) => match &ctx.this {
+                Some(class) => Ok(Type::Obj(class.clone())),
+                None => Err(Diagnostic::new(
+                    *span,
+                    "`this` solo se puede usar dentro de un método",
+                )),
+            },
+            Expr::Field {
+                target,
+                name,
+                name_span,
+                span,
+            } => {
+                let target_ty = self.expr(ctx, target)?;
+                self.ensure_class_of(&target_ty)?;
+                let (i, ty, _) = self.field_of(&target_ty, name, *name_span, target.span())?;
+                self.res.fields.insert(*span, i);
+                Ok(ty)
+            }
+            Expr::MethodCall {
+                target,
+                name,
+                name_span,
+                args,
+                span,
+            } => {
+                let target_ty = self.expr(ctx, target)?;
+                let Type::Obj(class) = &target_ty else {
+                    return Err(Diagnostic::new(
+                        target.span(),
+                        format!("solo los objetos tienen métodos, pero esto es {target_ty}"),
+                    ));
+                };
+                let key = format!("{class}.{name}");
+                if !self.funcs.contains_key(&key) {
+                    return Err(Diagnostic::new(
+                        *name_span,
+                        format!("la clase `{class}` no tiene el método `{name}`"),
+                    ));
+                }
+                self.res.methods.insert(*span, key.clone());
+                self.call_sig(ctx, &key, name, "el método", args, *span)
+            }
             Expr::Interp { parts, .. } => {
                 for part in parts {
                     if let InterpPart::Expr(inner) = part {
@@ -522,6 +867,7 @@ impl<'p> Pass<'p> {
         Ok(Type::Unit)
     }
 
+    /// Llamada `nombre(args)`: constructor de una clase, método de `this` o función.
     fn call(
         &mut self,
         ctx: &mut Ctx,
@@ -529,17 +875,54 @@ impl<'p> Pass<'p> {
         args: &[Expr],
         span: Span,
     ) -> Result<Type, Diagnostic> {
-        let Some(sig) = self.funcs.get(name) else {
+        if let Some(info) = self.classes.get(name) {
+            let params = info.ctor.clone();
+            if params.len() != args.len() {
+                return Err(Diagnostic::new(
+                    span,
+                    format!(
+                        "la clase `{name}` espera {} argumento(s), pero recibió {}",
+                        params.len(),
+                        args.len()
+                    ),
+                ));
+            }
+            for (arg, expected) in args.iter().zip(&params) {
+                self.expr_as(ctx, arg, expected)?;
+            }
+            return Ok(Type::Obj(name.to_string()));
+        }
+        if let Some(class) = ctx.this.clone() {
+            let key = format!("{class}.{name}");
+            if self.funcs.contains_key(&key) {
+                self.res.methods.insert(span, key.clone());
+                return self.call_sig(ctx, &key, name, "el método", args, span);
+            }
+        }
+        self.call_sig(ctx, name, name, "la función", args, span)
+    }
+
+    /// Llamada a la función o método de clave `key`; `shown` y `what` son para los mensajes.
+    fn call_sig(
+        &mut self,
+        ctx: &mut Ctx,
+        key: &str,
+        shown: &str,
+        what: &str,
+        args: &[Expr],
+        span: Span,
+    ) -> Result<Type, Diagnostic> {
+        let Some(sig) = self.funcs.get(key) else {
             return Err(Diagnostic::new(
                 span,
-                format!("la función `{name}` no está definida"),
+                format!("la función `{shown}` no está definida"),
             ));
         };
         if sig.params.len() != args.len() {
             return Err(Diagnostic::new(
                 span,
                 format!(
-                    "la función `{name}` espera {} argumento(s), pero recibió {}",
+                    "{what} `{shown}` espera {} argumento(s), pero recibió {}",
                     sig.params.len(),
                     args.len()
                 ),
@@ -550,54 +933,55 @@ impl<'p> Pass<'p> {
             self.expr_as(ctx, arg, expected)?;
         }
         // Si el tipo de retorno aún no se infirió, se verifica ahora el cuerpo de esa función.
-        if self.funcs[name].ret.is_none() {
-            match self.state.get(name) {
+        if self.funcs[key].ret.is_none() {
+            match self.state.get(key) {
                 Some(State::InProgress) => {
                     return Err(Diagnostic::new(
                         span,
                         format!(
-                            "`{name}` se llama a sí misma antes de conocer su tipo; añade `-> Tipo` a su declaración"
+                            "`{shown}` se llama a sí misma antes de conocer su tipo; añade `-> Tipo` a su declaración"
                         ),
                     ));
                 }
                 _ => {
-                    if let Some(decl) = self.decls.get(name).copied() {
-                        self.check_fn(decl)?;
+                    if self.decls.contains_key(key) {
+                        self.check_fn(key)?;
                     }
                 }
             }
         }
-        Ok(self.funcs[name].ret.clone().unwrap_or(Type::Unit))
+        Ok(self.funcs[key].ret.clone().unwrap_or(Type::Unit))
     }
-}
 
-fn resolve_type(ty: &TypeRef) -> Result<Type, Diagnostic> {
-    let unknown = || {
-        Diagnostic::new(
-            ty.span,
-            format!(
-                "el tipo `{}` no existe (hay Int, Float, Bool, Str, Unit y [T])",
-                ty.name
-            ),
-        )
-    };
-    match (ty.name.as_str(), ty.args.as_slice()) {
-        ("Int", []) => Ok(Type::Int),
-        ("Float", []) => Ok(Type::Float),
-        ("Bool", []) => Ok(Type::Bool),
-        ("Str", []) => Ok(Type::Str),
-        ("Unit", []) => Ok(Type::Unit),
-        ("Array", [elem]) => {
-            let elem = resolve_type(elem)?;
-            if elem == Type::Unit {
-                return Err(Diagnostic::new(
-                    ty.span,
-                    "un arreglo no puede contener valores de tipo Unit",
-                ));
+    fn resolve(&self, ty: &TypeRef) -> Result<Type, Diagnostic> {
+        let unknown = || {
+            Diagnostic::new(
+                ty.span,
+                format!(
+                    "el tipo `{}` no existe (hay Int, Float, Bool, Str, Unit, [T] y las clases declaradas)",
+                    ty.name
+                ),
+            )
+        };
+        match (ty.name.as_str(), ty.args.as_slice()) {
+            ("Int", []) => Ok(Type::Int),
+            ("Float", []) => Ok(Type::Float),
+            ("Bool", []) => Ok(Type::Bool),
+            ("Str", []) => Ok(Type::Str),
+            ("Unit", []) => Ok(Type::Unit),
+            ("Array", [elem]) => {
+                let elem = self.resolve(elem)?;
+                if elem == Type::Unit {
+                    return Err(Diagnostic::new(
+                        ty.span,
+                        "un arreglo no puede contener valores de tipo Unit",
+                    ));
+                }
+                Ok(Type::Array(Box::new(elem)))
             }
-            Ok(Type::Array(Box::new(elem)))
+            (name, []) if self.classes.contains_key(name) => Ok(Type::Obj(name.to_string())),
+            _ => Err(unknown()),
         }
-        _ => Err(unknown()),
     }
 }
 
@@ -640,7 +1024,7 @@ fn binary_type(op: BinOp, a: &Type, b: &Type, span: Span) -> Result<Type, Diagno
             _ => Err(invalid("")),
         },
         BinOp::Eq | BinOp::Ne => {
-            let comparable = !matches!(a, Type::Array(_));
+            let comparable = !matches!(a, Type::Array(_) | Type::Obj(_));
             if (a == b && comparable) || (a.is_numeric() && b.is_numeric()) {
                 Ok(Type::Bool)
             } else {
@@ -688,6 +1072,7 @@ mod tests {
     fn check(src: &str) -> Result<(), String> {
         Checker::new()
             .check(&parse(src).map_err(|d| d.message)?)
+            .map(|_| ())
             .map_err(|d| d.message)
     }
 
@@ -818,7 +1203,11 @@ mod tests {
     #[test]
     fn el_verificador_conserva_estado_entre_entradas() {
         let mut c = Checker::new();
-        let run = |c: &mut Checker, src: &str| c.check(&parse(src).unwrap()).map_err(|d| d.message);
+        let run = |c: &mut Checker, src: &str| {
+            c.check(&parse(src).unwrap())
+                .map(|_| ())
+                .map_err(|d| d.message)
+        };
         assert_eq!(
             run(&mut c, "mut total = 1\nfn doble(x: Int) = x * 2"),
             Ok(())
@@ -882,5 +1271,151 @@ mod tests {
     #[test]
     fn tipos_de_arreglos_en_texto() {
         assert!(err("fix a: [[Int]] = [1]").contains("se esperaba [[Int]], pero es [Int]"));
+    }
+
+    // --- M4: clases ---
+
+    #[test]
+    fn clases_bien_tipadas() {
+        for src in [
+            "thing P(fix x: Int, mut y: Int) { fn suma() -> Int = x + y }\nshow(P(1, 2).suma())",
+            "show(P(1).x)\nthing P(fix x: Int)",
+            "thing A(fix b: B)\nthing B(fix a: Int)\nshow(A(B(1)).b.a)",
+            "thing C() { fn f(x: Int) -> Int = x + 1\n fn g() -> Int = f(2) + this.f(3) }\nshow(C().g())",
+            "thing C(n: Int) { fix d = n * 2\n fix e = d + n }\nshow(C(1).e)",
+            "thing C(mut v: Int) { fn dup() -> C = C(v) }\nfix xs: [C] = [C(1).dup()]\nshow(xs[0].v)",
+            "thing C() { mut items: [Int] = [] }\nC().items[0] = 1",
+        ] {
+            assert_eq!(check(src), Ok(()), "{src}");
+        }
+    }
+
+    #[test]
+    fn errores_de_clases() {
+        let pre = "thing P(fix x: Int, mut y: Int) { fn m() -> Int = x }\nfix p = P(1, 2)\n";
+        let cases = [
+            (
+                "p.x = 5",
+                "no se puede asignar al campo `x` porque es inmutable",
+            ),
+            ("p.z", "la clase `P` no tiene el campo `z`"),
+            ("p.zz()", "la clase `P` no tiene el método `zz`"),
+            (
+                "p.m(1)",
+                "el método `m` espera 0 argumento(s), pero recibió 1",
+            ),
+            ("P(1)", "la clase `P` espera 2 argumento(s), pero recibió 1"),
+            ("P(1, true)", "se esperaba Int, pero es Bool"),
+            ("p.y = \"a\"", "se esperaba Int, pero es Str"),
+            (
+                "show(this)",
+                "`this` solo se puede usar dentro de un método",
+            ),
+            ("show(p == p)", "no admite P y P"),
+            (
+                "show(len(p))",
+                "`len` admite Str o un arreglo, pero recibió P",
+            ),
+            (
+                "fix n = 1\nshow(n.x)",
+                "solo los objetos tienen campos, pero esto es Int",
+            ),
+            (
+                "fix n = 1\nn.f()",
+                "solo los objetos tienen métodos, pero esto es Int",
+            ),
+            ("fix q: Cosa = p", "el tipo `Cosa` no existe"),
+            ("fix q: P = 1", "se esperaba P, pero es Int"),
+        ];
+        for (tail, expected) in cases {
+            let message = err(&format!("{pre}{tail}"));
+            assert!(
+                message.contains(expected),
+                "{tail}: se esperaba «{expected}», pero fue «{message}»"
+            );
+        }
+    }
+
+    #[test]
+    fn errores_de_declaracion_de_clases() {
+        assert!(err("thing A()\nthing A()").contains("ya está en uso"));
+        assert!(err("fn A() { }\nthing A()").contains("ya está definida"));
+        assert!(err("thing A()\nfn A() { }").contains("ya está definida"));
+        assert!(err("thing Int()").contains("ya está en uso o está reservado"));
+        assert!(err("thing len()").contains("ya está en uso"));
+        assert!(err("thing A(fix x: Int) { fix x = 1 }").contains("el campo `x` está repetido"));
+        assert!(err("thing A(fix x: Int) { fn x() { } }").contains("ya es un campo"));
+        assert!(err("thing A() { fn f() { }\n fn f() { } }").contains("ya está definido"));
+        assert!(err("thing A(n: Int) { fix n = 1 }").contains("ya está declarada"));
+        assert!(err("thing A(x: Unit)").contains("Unit"));
+        assert!(err("thing A() { fix x = this }").contains("`this` solo se puede usar"));
+    }
+
+    #[test]
+    fn asignar_a_un_campo_fix_por_su_nombre_se_rechaza() {
+        let message = err("thing A(fix x: Int) { fn f() { x = 2 } }");
+        assert!(
+            message.contains("no se puede asignar a `x` porque es inmutable"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn un_local_tapa_al_campo() {
+        // `x` es el parámetro (Str), no el campo Int.
+        assert_eq!(
+            check("thing A(fix x: Int) { fn f(x: Str) -> Str = x }"),
+            Ok(())
+        );
+        let message = err("thing A(fix x: Int) { fn f(x: Str) -> Int = x }");
+        assert!(
+            message.contains("se esperaba Int, pero es Str"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn las_resoluciones_se_indexan_por_posicion() {
+        let src = "thing A(fix x: Int, mut y: Int) { fn f() { y += x } }\nfix a = A(1, 2)\nshow(a.y)\na.y = 3\na.f()";
+        let program = parse(src).unwrap();
+        let res = Checker::new().check(&program).unwrap();
+        // `y` y `x` dentro de `f` (campos 1 y 0), `a.y` (1) y el nombre `y` de `a.y = 3` (1).
+        let mut fields: Vec<u32> = res.fields.values().copied().collect();
+        fields.sort();
+        assert_eq!(fields, vec![0, 1, 1, 1]);
+        assert_eq!(res.methods.len(), 1);
+        assert_eq!(res.methods.values().next().unwrap(), "A.f");
+    }
+
+    #[test]
+    fn el_verificador_recuerda_las_clases_entre_entradas() {
+        let mut c = Checker::new();
+        let run = |c: &mut Checker, src: &str| {
+            c.check(&parse(src).unwrap())
+                .map(|_| ())
+                .map_err(|d| d.message)
+        };
+        assert_eq!(run(&mut c, "thing P(fix x: Int)"), Ok(()));
+        assert_eq!(run(&mut c, "fix p = P(1)"), Ok(()));
+        assert_eq!(run(&mut c, "show(p.x)"), Ok(()));
+        assert!(run(&mut c, "thing P()").is_err());
+        // Una entrada fallida no registra su clase.
+        assert!(run(&mut c, "thing Q(fix a: Int)\nshow(Q(1).zz)").is_err());
+        assert_eq!(run(&mut c, "thing Q(fix a: Str)"), Ok(()));
+    }
+
+    #[test]
+    fn los_campos_sin_anotar_se_infieren_bajo_demanda() {
+        // `Uno` necesita el campo `x` de `Dos`, declarada después y sin anotar.
+        assert_eq!(
+            check("fn f() = Dos().x\nthing Uno() { fix a = f() }\nthing Dos() { fix x = 5 }\nshow(Uno().a + 1)"),
+            Ok(())
+        );
+        // Un campo que depende de sí mismo no se puede inferir.
+        let message = err("fn f() = Uno().a\nthing Uno() { fix a = f() }");
+        assert!(
+            message.contains("se usan antes de conocer su tipo"),
+            "{message}"
+        );
     }
 }

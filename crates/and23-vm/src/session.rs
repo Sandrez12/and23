@@ -45,8 +45,8 @@ impl<W: Write> Session<W> {
     pub fn run(&mut self, program: &Program, echo: bool) -> Result<(), Diagnostic> {
         let first_new_global = self.compiler.module().globals.len();
         let saved_checker = self.checker.clone();
-        self.checker.check(program)?;
-        let script = match self.compiler.compile(program, echo) {
+        let res = self.checker.check(program)?;
+        let script = match self.compiler.compile(program, &res, echo) {
             Ok(script) => script,
             Err(e) => {
                 self.checker = saved_checker;

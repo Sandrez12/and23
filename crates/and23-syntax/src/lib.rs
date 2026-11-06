@@ -6,7 +6,10 @@ pub mod lexer;
 pub mod parser;
 pub mod span;
 
-pub use ast::{BinOp, Block, Expr, FnDecl, InterpPart, Param, Program, Stmt, TypeRef, UnOp};
+pub use ast::{
+    BinOp, Block, CtorParam, Expr, FieldDecl, FnDecl, InterpPart, Param, Program, Stmt, ThingDecl,
+    TypeRef, UnOp,
+};
 pub use error::Diagnostic;
 pub use span::Span;
 

@@ -7,3 +7,4 @@ description = "Conjunto de instrucciones, compilador a bytecode y desensamblador
 
 [dependencies]
 and23-syntax = { path = "../and23-syntax" }
+and23-types = { path = "../and23-types" }

@@ -83,6 +83,23 @@ pub enum Expr {
         args: Vec<Expr>,
         span: Span,
     },
+    /// `this`: el objeto sobre el que corre un método.
+    This(Span),
+    /// `obj.campo`
+    Field {
+        target: Box<Expr>,
+        name: String,
+        name_span: Span,
+        span: Span,
+    },
+    /// `obj.metodo(args)`
+    MethodCall {
+        target: Box<Expr>,
+        name: String,
+        name_span: Span,
+        args: Vec<Expr>,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -98,13 +115,16 @@ impl Expr {
             | Expr::Float(_, span)
             | Expr::Bool(_, span)
             | Expr::Str(_, span)
-            | Expr::Var(_, span) => *span,
+            | Expr::Var(_, span)
+            | Expr::This(span) => *span,
             Expr::Interp { span, .. }
             | Expr::Array { span, .. }
             | Expr::Index { span, .. }
             | Expr::Unary { span, .. }
             | Expr::Binary { span, .. }
-            | Expr::Call { span, .. } => *span,
+            | Expr::Call { span, .. }
+            | Expr::Field { span, .. }
+            | Expr::MethodCall { span, .. } => *span,
         }
     }
 }
@@ -143,6 +163,38 @@ pub struct FnDecl {
     pub span: Span,
 }
 
+/// Parámetro de la cabecera de una clase. Con `fix`/`mut` (`mutable` es `Some`) además crea un campo.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CtorParam {
+    pub name: String,
+    pub name_span: Span,
+    pub ty: TypeRef,
+    pub mutable: Option<bool>,
+    pub span: Span,
+}
+
+/// Campo declarado en el cuerpo: `mut edad = 0`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FieldDecl {
+    pub name: String,
+    pub name_span: Span,
+    pub mutable: bool,
+    pub ty: Option<TypeRef>,
+    pub init: Expr,
+    pub span: Span,
+}
+
+/// `thing Nombre(params) { campos y métodos }`
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThingDecl {
+    pub name: String,
+    pub name_span: Span,
+    pub params: Vec<CtorParam>,
+    pub fields: Vec<FieldDecl>,
+    pub methods: Vec<FnDecl>,
+    pub span: Span,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
     /// `show(expr)`: imprime el valor.
@@ -174,6 +226,15 @@ pub enum Stmt {
         value: Expr,
         span: Span,
     },
+    /// `obj.campo = v` o, con `op`, `obj.campo += v`.
+    FieldAssign {
+        target: Expr,
+        name: String,
+        name_span: Span,
+        op: Option<BinOp>,
+        value: Expr,
+        span: Span,
+    },
     If {
         cond: Expr,
         then: Block,
@@ -190,6 +251,8 @@ pub enum Stmt {
     Continue(Span),
     /// Solo al nivel superior del archivo.
     Fn(Box<FnDecl>),
+    /// Clase; solo al nivel superior del archivo.
+    Thing(Box<ThingDecl>),
 }
 
 impl Stmt {
@@ -203,9 +266,11 @@ impl Stmt {
             Stmt::Let { span, .. }
             | Stmt::Assign { span, .. }
             | Stmt::IndexAssign { span, .. }
+            | Stmt::FieldAssign { span, .. }
             | Stmt::If { span, .. }
             | Stmt::While { span, .. } => *span,
             Stmt::Fn(decl) => decl.span,
+            Stmt::Thing(decl) => decl.span,
         }
     }
 }

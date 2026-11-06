@@ -1,4 +1,4 @@
-//! Heap de objetos (cadenas y arreglos) con recolector mark-sweep.
+//! Heap de objetos (cadenas, arreglos e instancias de clases) con recolector mark-sweep.
 //!
 //! Los objetos viven en un `Vec` de ranuras y se referencian por índice (`ObjRef`). El heap
 //! nunca recolecta por su cuenta: la VM llama a `collect` en puntos seguros (antes de las
@@ -16,6 +16,17 @@ pub struct ObjRef(u32);
 pub enum Object {
     Str(Box<str>),
     Array(Vec<Value>),
+    /// Instancia de la clase número `class` del módulo, con sus campos en orden de declaración.
+    Instance {
+        class: u32,
+        fields: Vec<Value>,
+    },
+}
+
+/// Lo que el heap sabe de una clase: solo para imprimir sus instancias.
+struct ClassMeta {
+    name: String,
+    fields: Vec<String>,
 }
 
 impl Object {
@@ -25,6 +36,7 @@ impl Object {
             + match self {
                 Object::Str(s) => s.len(),
                 Object::Array(v) => v.capacity() * std::mem::size_of::<Value>(),
+                Object::Instance { fields, .. } => fields.len() * std::mem::size_of::<Value>(),
             }
     }
 }
@@ -64,6 +76,7 @@ pub struct Heap {
     allocated: u64,
     freed: u64,
     collections: u64,
+    classes: Vec<ClassMeta>,
 }
 
 impl Default for Heap {
@@ -78,6 +91,7 @@ impl Default for Heap {
             allocated: 0,
             freed: 0,
             collections: 0,
+            classes: Vec::new(),
         }
     }
 }
@@ -111,6 +125,34 @@ impl Heap {
         self.alloc(Object::Array(items))
     }
 
+    pub fn alloc_instance(&mut self, class: u32, fields: Vec<Value>) -> Value {
+        self.alloc(Object::Instance { class, fields })
+    }
+
+    /// Registra las clases del módulo que el heap aún no conoce (el REPL las va añadiendo).
+    pub fn sync_classes(&mut self, defs: &[(&str, &[String])]) {
+        for (name, fields) in defs.iter().skip(self.classes.len()) {
+            self.classes.push(ClassMeta {
+                name: name.to_string(),
+                fields: fields.to_vec(),
+            });
+        }
+    }
+
+    pub fn field(&self, r: ObjRef, index: u32) -> Value {
+        match self.get(r) {
+            Object::Instance { fields, .. } => fields[index as usize],
+            _ => unreachable!("el verificador de tipos garantiza un objeto"),
+        }
+    }
+
+    pub fn set_field(&mut self, r: ObjRef, index: u32, value: Value) {
+        match self.slots[r.0 as usize].object.as_mut() {
+            Some(Object::Instance { fields, .. }) => fields[index as usize] = value,
+            _ => unreachable!("el verificador de tipos garantiza un objeto"),
+        }
+    }
+
     fn alloc(&mut self, object: Object) -> Value {
         self.bytes += object.size();
         self.live += 1;
@@ -142,7 +184,7 @@ impl Heap {
     pub fn str(&self, r: ObjRef) -> &str {
         match self.get(r) {
             Object::Str(s) => s,
-            Object::Array(_) => unreachable!("el verificador de tipos garantiza una cadena"),
+            _ => unreachable!("el verificador de tipos garantiza una cadena"),
         }
     }
 
@@ -181,6 +223,7 @@ impl Heap {
             loop {
                 let child = match self.slots[index as usize].object.as_ref() {
                     Some(Object::Array(items)) => items.get(i).copied(),
+                    Some(Object::Instance { fields, .. }) => fields.get(i).copied(),
                     _ => None,
                 };
                 let Some(child) = child else { break };
@@ -221,7 +264,13 @@ impl Heap {
 
     /// Agrega el texto de `value` a `out`. Dentro de un arreglo las cadenas van entre comillas.
     pub fn render_into(&self, value: Value, quoted: bool, out: &mut String) {
+        self.render_rec(value, quoted, out, &mut Vec::new());
+    }
+
+    /// `open` son los objetos que se están imprimiendo: un ciclo (`a.sig = a`) se corta con `...`.
+    fn render_rec(&self, value: Value, quoted: bool, out: &mut String, open: &mut Vec<ObjRef>) {
         match value {
+            Value::Obj(r) if open.contains(&r) => out.push_str("..."),
             Value::Obj(r) => match self.get(r) {
                 Object::Str(s) if quoted => {
                     out.push('"');
@@ -238,14 +287,32 @@ impl Heap {
                 }
                 Object::Str(s) => out.push_str(s),
                 Object::Array(items) => {
+                    open.push(r);
                     out.push('[');
                     for (i, item) in items.iter().enumerate() {
                         if i > 0 {
                             out.push_str(", ");
                         }
-                        self.render_into(*item, true, out);
+                        self.render_rec(*item, true, out, open);
                     }
                     out.push(']');
+                    open.pop();
+                }
+                Object::Instance { class, fields } => {
+                    let meta = &self.classes[*class as usize];
+                    open.push(r);
+                    out.push_str(&meta.name);
+                    out.push('(');
+                    for (i, item) in fields.iter().enumerate() {
+                        if i > 0 {
+                            out.push_str(", ");
+                        }
+                        out.push_str(&meta.fields[i]);
+                        out.push('=');
+                        self.render_rec(*item, true, out, open);
+                    }
+                    out.push(')');
+                    open.pop();
                 }
             },
             other => {

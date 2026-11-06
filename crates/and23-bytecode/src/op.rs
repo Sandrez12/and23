@@ -50,6 +50,17 @@ pub enum Op {
     Index,
     /// Saca valor, índice y arreglo; guarda el valor en esa posición.
     SetIndex,
+    /// Saca un objeto y deja su campo `n`.
+    GetField(u32),
+    /// Saca valor y objeto; guarda el valor en el campo `n` del objeto.
+    SetField(u32),
+    /// Duplica la cima (`obj.campo += v` evalúa `obj` una sola vez).
+    Dup,
+    /// Saca `n` valores (los campos, en orden) y crea una instancia de la clase `class`.
+    NewObj {
+        class: u32,
+        n: u32,
+    },
     /// Duplica los dos valores de la cima (`a[i] += v` evalúa `a` e `i` una sola vez).
     Dup2,
     /// Saca una cadena o un arreglo y deja su largo (`len`).
@@ -76,9 +87,17 @@ pub struct Function {
     pub spans: Vec<Span>,
 }
 
+/// Forma de una clase en tiempo de ejecución: su nombre y los nombres de sus campos.
+#[derive(Debug, Clone)]
+pub struct ClassDef {
+    pub name: String,
+    pub fields: Vec<String>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Module {
     pub functions: Vec<Function>,
+    pub classes: Vec<ClassDef>,
     /// Nombres de las variables globales, por número de ranura.
     pub globals: Vec<String>,
     /// Cadenas constantes del programa.

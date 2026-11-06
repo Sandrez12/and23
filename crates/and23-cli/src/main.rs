@@ -6,7 +6,7 @@ use std::io::{self, BufRead, IsTerminal, Write};
 use std::process::ExitCode;
 
 const USAGE: &str = "\
-And23 (M3)
+And23 (M4)
 
 Uso:
   and23 <archivo.jb>   ejecuta un programa (y llama a main() si existe)
@@ -122,12 +122,12 @@ fn disasm_file(path: &str) -> u8 {
     let result = and23_syntax::parse(&src)
         .map_err(|d| d.render(path, &src))
         .and_then(|program| {
-            Checker::new()
+            let res = Checker::new()
                 .check(&program)
                 .map_err(|d| d.render(path, &src))?;
             let mut compiler = Compiler::new();
             compiler
-                .compile(&program, false)
+                .compile(&program, &res, false)
                 .map_err(|d| d.render(path, &src))?;
             let module = compiler.module();
             for function in &module.functions {

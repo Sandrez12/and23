@@ -1,4 +1,7 @@
-use crate::ast::{BinOp, Block, Expr, FnDecl, InterpPart, Param, Program, Stmt, TypeRef, UnOp};
+use crate::ast::{
+    BinOp, Block, CtorParam, Expr, FieldDecl, FnDecl, InterpPart, Param, Program, Stmt, ThingDecl,
+    TypeRef, UnOp,
+};
 use crate::error::Diagnostic;
 use crate::lexer::{StrPart, Token, TokenKind};
 use crate::span::Span;
@@ -135,6 +138,8 @@ impl Parser {
             }
             let stmt = if self.peek().kind == TokenKind::Fn {
                 Stmt::Fn(Box::new(self.fn_decl()?))
+            } else if self.peek().kind == TokenKind::Thing {
+                Stmt::Thing(Box::new(self.thing_decl()?))
             } else {
                 self.stmt()?
             };
@@ -198,6 +203,9 @@ impl Parser {
             TokenKind::Fn => Err(self.error_here(
                 "las funciones solo se pueden declarar al nivel superior del archivo".into(),
             )),
+            TokenKind::Thing => Err(self.error_here(
+                "las clases solo se pueden declarar al nivel superior del archivo".into(),
+            )),
             TokenKind::Else => {
                 Err(self.error_here("`else` debe ir en la misma línea que la `}` del `if`".into()))
             }
@@ -225,9 +233,135 @@ impl Parser {
                         span,
                     });
                 }
+                // `obj.campo = v` y `obj.campo += v`
+                if let (Expr::Field { .. }, Some(op)) = (&expr, assign_op(&self.peek().kind)) {
+                    self.bump();
+                    let value = self.expr(0)?;
+                    let Expr::Field {
+                        target,
+                        name,
+                        name_span,
+                        span,
+                    } = expr
+                    else {
+                        unreachable!("verificado arriba")
+                    };
+                    let span = span.to(value.span());
+                    return Ok(Stmt::FieldAssign {
+                        target: *target,
+                        name,
+                        name_span,
+                        op,
+                        value,
+                        span,
+                    });
+                }
                 Ok(Stmt::Expr(expr))
             }
         }
+    }
+
+    /// `thing Nombre(params) { campos y métodos }`; el cuerpo es opcional.
+    fn thing_decl(&mut self) -> Result<ThingDecl, Diagnostic> {
+        let start = self.bump().span;
+        let (name, name_span) = self.expect_ident("el nombre de la clase")?;
+        self.expect(TokenKind::LParen, "`(` con los parámetros del constructor")?;
+        let mut params: Vec<CtorParam> = Vec::new();
+        if self.peek().kind != TokenKind::RParen {
+            loop {
+                let mutable = match self.peek().kind {
+                    TokenKind::Fix => {
+                        self.bump();
+                        Some(false)
+                    }
+                    TokenKind::Mut => {
+                        self.bump();
+                        Some(true)
+                    }
+                    _ => None,
+                };
+                let (pname, pspan) = self.expect_ident("el nombre del parámetro")?;
+                if params.iter().any(|p| p.name == pname) {
+                    return Err(Diagnostic::new(
+                        pspan,
+                        format!("el parámetro `{pname}` está repetido"),
+                    ));
+                }
+                self.expect(TokenKind::Colon, "`:` y el tipo del parámetro")?;
+                let ty = self.type_ref()?;
+                let span = pspan.to(ty.span);
+                params.push(CtorParam {
+                    name: pname,
+                    name_span: pspan,
+                    ty,
+                    mutable,
+                    span,
+                });
+                if self.peek().kind == TokenKind::Comma {
+                    self.bump();
+                } else {
+                    break;
+                }
+            }
+        }
+        let mut end = self.expect(TokenKind::RParen, "`,` o `)`")?.span;
+        let mut fields = Vec::new();
+        let mut methods = Vec::new();
+        if self.peek().kind == TokenKind::LBrace {
+            let open = self.bump().span;
+            loop {
+                self.skip_newlines();
+                match self.peek().kind.clone() {
+                    TokenKind::RBrace => {
+                        end = self.bump().span;
+                        break;
+                    }
+                    TokenKind::Eof => {
+                        return Err(Diagnostic::new(open, "esta clase no se cierra: falta `}`"));
+                    }
+                    TokenKind::Fix | TokenKind::Mut => {
+                        let Stmt::Let {
+                            name,
+                            name_span,
+                            mutable,
+                            ty,
+                            init,
+                            span,
+                        } = self.let_stmt()?
+                        else {
+                            unreachable!("let_stmt devuelve Let")
+                        };
+                        fields.push(FieldDecl {
+                            name,
+                            name_span,
+                            mutable,
+                            ty,
+                            init,
+                            span,
+                        });
+                    }
+                    TokenKind::Fn => methods.push(self.fn_decl()?),
+                    other => {
+                        return Err(self.error_here(format!(
+                            "dentro de una clase se esperaba un campo (`fix`/`mut`) o un método (`fn`), pero se encontró {}",
+                            other.describe()
+                        )));
+                    }
+                }
+                if self.peek().kind == TokenKind::Eof {
+                    return Err(Diagnostic::new(open, "esta clase no se cierra: falta `}`"));
+                }
+                self.end_of_stmt(true)?;
+            }
+        }
+        Ok(ThingDecl {
+            name,
+            name_span,
+            params,
+            fields,
+            methods,
+            span: start.to(end),
+        })
     }
 
     fn let_stmt(&mut self) -> Result<Stmt, Diagnostic> {
@@ -452,6 +586,7 @@ impl Parser {
                 self.expect(TokenKind::RParen, "`)`")?;
                 inner
             }
+            TokenKind::This => Expr::This(token.span),
             TokenKind::Ident(name) => {
                 if self.peek().kind == TokenKind::LParen {
                     self.call(name, token.span)?
@@ -470,17 +605,46 @@ impl Parser {
             }
         };
 
-        // Indexación `a[i]`, la más fuerte de todas.
-        while self.peek().kind == TokenKind::LBracket {
-            self.bump();
-            let index = self.expr(0)?;
-            let close = self.expect(TokenKind::RBracket, "`]`")?;
-            let span = lhs.span().to(close.span);
-            lhs = Expr::Index {
-                target: Box::new(lhs),
-                index: Box::new(index),
-                span,
-            };
+        // Postfijos `a[i]`, `a.campo` y `a.metodo(args)`, los más fuertes de todos.
+        loop {
+            match self.peek().kind {
+                TokenKind::LBracket => {
+                    self.bump();
+                    let index = self.expr(0)?;
+                    let close = self.expect(TokenKind::RBracket, "`]`")?;
+                    let span = lhs.span().to(close.span);
+                    lhs = Expr::Index {
+                        target: Box::new(lhs),
+                        index: Box::new(index),
+                        span,
+                    };
+                }
+                TokenKind::Dot => {
+                    self.bump();
+                    let (name, name_span) =
+                        self.expect_ident("el nombre de un campo o método después de `.`")?;
+                    if self.peek().kind == TokenKind::LParen {
+                        let (args, close) = self.call_args()?;
+                        let span = lhs.span().to(close);
+                        lhs = Expr::MethodCall {
+                            target: Box::new(lhs),
+                            name,
+                            name_span,
+                            args,
+                            span,
+                        };
+                    } else {
+                        let span = lhs.span().to(name_span);
+                        lhs = Expr::Field {
+                            target: Box::new(lhs),
+                            name,
+                            name_span,
+                            span,
+                        };
+                    }
+                }
+                _ => break,
+            }
         }
 
         while let Some((op, left_bp, right_bp)) = binary_op(&self.peek().kind) {
@@ -556,6 +720,16 @@ impl Parser {
 
     /// Llamada `nombre(args)`; el nombre ya se consumió y el siguiente token es `(`.
     fn call(&mut self, name: String, name_span: Span) -> Result<Expr, Diagnostic> {
+        let (args, close) = self.call_args()?;
+        Ok(Expr::Call {
+            name,
+            args,
+            span: name_span.to(close),
+        })
+    }
+
+    /// Argumentos `(a, b)`; el siguiente token es `(`. Devuelve también la posición del `)`.
+    fn call_args(&mut self) -> Result<(Vec<Expr>, Span), Diagnostic> {
         self.bump();
         let mut args = Vec::new();
         if self.peek().kind != TokenKind::RParen {
@@ -569,11 +743,7 @@ impl Parser {
             }
         }
         let close = self.expect(TokenKind::RParen, "`,` o `)`")?;
-        Ok(Expr::Call {
-            name,
-            args,
-            span: name_span.to(close.span),
-        })
+        Ok((args, close.span))
     }
 }
 
@@ -617,6 +787,14 @@ mod tests {
             Expr::Call { name, args, .. } => {
                 let args: Vec<String> = args.iter().map(sexp).collect();
                 format!("(call {name} {})", args.join(" ")).replace(" )", ")")
+            }
+            Expr::This(_) => "this".to_string(),
+            Expr::Field { target, name, .. } => format!("(. {} {name})", sexp(target)),
+            Expr::MethodCall {
+                target, name, args, ..
+            } => {
+                let args: Vec<String> = args.iter().map(sexp).collect();
+                format!("(. {} {name} {})", sexp(target), args.join(" ")).replace(" )", ")")
             }
         }
     }
@@ -889,5 +1067,85 @@ mod tests {
         let src = "show(\"ab ${1 + } cd\")";
         let d = parse(src).unwrap_err();
         assert_eq!(&src[d.span.start..d.span.end], "}");
+    }
+
+    // --- M4: clases, campos y métodos ---
+
+    #[test]
+    fn acceso_a_campos_y_llamadas_a_metodos() {
+        assert_eq!(shape("a.b"), "(. a b)");
+        assert_eq!(shape("a.b.c"), "(. (. a b) c)");
+        assert_eq!(shape("a.f(1, 2)"), "(. a f 1 2)");
+        assert_eq!(shape("a.f().g"), "(. (. a f) g)");
+        assert_eq!(shape("a[0].x"), "(. (index a 0) x)");
+        assert_eq!(shape("this.x + 1"), "(+ (. this x) 1)");
+        assert_eq!(shape("-a.x"), "(neg (. a x))");
+        assert_eq!(shape("f(1).x"), "(. (call f 1) x)");
+    }
+
+    #[test]
+    fn asignacion_a_campos() {
+        let program = parse("a.b.c += 2").unwrap();
+        assert!(matches!(
+            &program.stmts[0],
+            Stmt::FieldAssign {
+                op: Some(BinOp::Add),
+                ..
+            }
+        ));
+        let program = parse("this.x = 1").unwrap();
+        assert!(matches!(
+            &program.stmts[0],
+            Stmt::FieldAssign { op: None, .. }
+        ));
+    }
+
+    #[test]
+    fn declaracion_de_clase() {
+        let program = parse(
+            "thing P(fix x: Int, mut y: Int, z: Str) {\n  mut n = 0\n  fix t: Str = \"a\"\n  fn f() -> Int = x\n  fn g(a: Int) { n += a }\n}",
+        )
+        .unwrap();
+        let Stmt::Thing(t) = &program.stmts[0] else {
+            panic!("no es una clase")
+        };
+        assert_eq!(t.name, "P");
+        let kinds: Vec<Option<bool>> = t.params.iter().map(|p| p.mutable).collect();
+        assert_eq!(kinds, vec![Some(false), Some(true), None]);
+        assert_eq!(t.fields.len(), 2);
+        assert!(t.fields[0].mutable && !t.fields[1].mutable);
+        assert!(t.fields[1].ty.is_some());
+        assert_eq!(t.methods.len(), 2);
+        assert!(t.methods[0].expr_body);
+    }
+
+    #[test]
+    fn clase_sin_cuerpo_y_con_cuerpo_vacio() {
+        assert!(matches!(
+            parse("thing A()").unwrap().stmts[0],
+            Stmt::Thing(_)
+        ));
+        assert!(matches!(
+            parse("thing A() { }").unwrap().stmts[0],
+            Stmt::Thing(_)
+        ));
+        assert_eq!(parse("thing A()\nthing B()").unwrap().stmts.len(), 2);
+    }
+
+    #[test]
+    fn errores_de_clases() {
+        assert!(err("thing").contains("el nombre de la clase"));
+        assert!(err("thing A").contains("`(`"));
+        assert!(err("thing A(x)").contains("`:` y el tipo"));
+        assert!(err("thing A(x: Int, x: Int)").contains("repetido"));
+        assert!(err("thing A() {\n show(1)\n}").contains("se esperaba un campo"));
+        assert!(err("thing A() {\n fix x = 1").contains("no se cierra"));
+        assert!(
+            err("fn f() {\n thing A()\n}").contains("solo se pueden declarar al nivel superior")
+        );
+        assert!(err("a.").contains("después de `.`"));
+        assert!(err("a.1").contains("después de `.`"));
+        assert!(err("thing A() { fix x }").contains("`=`"));
+        assert!(err("thing A() { fix x = 1 fix y = 2 }").contains("fin de la sentencia"));
     }
 }

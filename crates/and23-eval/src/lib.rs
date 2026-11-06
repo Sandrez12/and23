@@ -286,7 +286,10 @@ impl<W: Write> Interpreter<W> {
             }
             Stmt::Break(_) => return Ok(Flow::Break),
             Stmt::Continue(_) => return Ok(Flow::Continue),
-            Stmt::IndexAssign { span, .. } => return Err(unsupported(*span)),
+            Stmt::IndexAssign { span, .. } | Stmt::FieldAssign { span, .. } => {
+                return Err(unsupported(*span))
+            }
+            Stmt::Thing(decl) => return Err(unsupported(decl.span)),
             // El parser solo admite funciones al nivel superior; `run` ya las registró.
             Stmt::Fn(_) => {}
         }
@@ -315,7 +318,10 @@ impl<W: Write> Interpreter<W> {
             Expr::Str(_, span)
             | Expr::Interp { span, .. }
             | Expr::Array { span, .. }
-            | Expr::Index { span, .. } => Err(unsupported(*span)),
+            | Expr::Index { span, .. }
+            | Expr::Field { span, .. }
+            | Expr::MethodCall { span, .. }
+            | Expr::This(span) => Err(unsupported(*span)),
             Expr::Unary { op, expr, span } => {
                 let value = self.eval(env, expr)?;
                 match (op, value) {
@@ -448,7 +454,7 @@ impl<W: Write> Interpreter<W> {
 fn unsupported(span: Span) -> Diagnostic {
     Diagnostic::new(
         span,
-        "el intérprete de árbol no soporta cadenas ni arreglos; usa la VM",
+        "el intérprete de árbol no soporta cadenas, arreglos ni clases; usa la VM",
     )
 }
 

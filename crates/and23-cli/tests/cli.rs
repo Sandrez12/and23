@@ -241,3 +241,52 @@ fn repl_con_cadenas() {
     let out = repl("fix n = \"Ana\"\n\"hola ${n}\"\nn + \"!\"\n");
     assert_eq!(stdout(&out), "hola Ana\nAna!\n");
 }
+
+#[test]
+fn ejemplo_de_clases() {
+    let out = run_example("clases.jb");
+    assert!(out.contains("Vec2(x=1.0, y=2.0)\n"), "{out}");
+    assert!(out.contains("Ana: saldo 30 (abrió con 100)\n"), "{out}");
+    assert!(
+        out.contains("páginas en total: 940, préstamos: 3\n"),
+        "{out}"
+    );
+    assert!(out.ends_with("tras reiniciar: 0\n"), "{out}");
+}
+
+#[test]
+fn un_error_de_clase_se_informa_con_posicion() {
+    let out = run_source(
+        "clase_err",
+        "thing P(fix x: Int)\nfix p = P(1)\np.x = 2\nshow(1)\n",
+    );
+    assert!(!out.status.success());
+    assert!(stdout(&out).is_empty(), "no debe ejecutar nada");
+    let err = stderr(&out);
+    assert!(err.contains(":3:3"), "{err}");
+    assert!(err.contains("es inmutable"), "{err}");
+}
+
+#[test]
+fn disasm_de_una_clase_muestra_constructor_y_metodos() {
+    let path =
+        std::env::temp_dir().join(format!("and23_cli_disasm_clase_{}.jb", std::process::id()));
+    std::fs::write(
+        &path,
+        "thing C(mut n: Int) { fn inc() { n += 1 } }\nshow(C(1).n)\n",
+    )
+    .unwrap();
+    let out = and23().arg("--disasm").arg(&path).output().unwrap();
+    std::fs::remove_file(&path).ok();
+    let text = stdout(&out);
+    assert!(text.contains("fn C/1"), "{text}");
+    assert!(text.contains("fn C.inc/1"), "{text}");
+    assert!(text.contains("NewObj"), "{text}");
+    assert!(text.contains("GetField"), "{text}");
+}
+
+#[test]
+fn repl_con_clases() {
+    let out = repl("thing P(fix x: Int)\nfix p = P(4)\np.x\np\n");
+    assert!(stdout(&out).contains("4\nP(x=4)\n"), "{}", stdout(&out));
+}

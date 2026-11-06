@@ -61,6 +61,12 @@ impl<W: Write> Vm<W> {
         if self.globals.len() < module.globals.len() {
             self.globals.resize(module.globals.len(), None);
         }
+        let defs: Vec<(&str, &[String])> = module
+            .classes
+            .iter()
+            .map(|c| (c.name.as_str(), c.fields.as_slice()))
+            .collect();
+        self.heap.sync_classes(&defs);
         if self.consts.len() < module.strings.len() {
             self.consts.resize(module.strings.len(), None);
         }
@@ -236,6 +242,30 @@ impl<W: Write> Vm<W> {
                     }
                     items[i as usize] = value;
                 }
+                Op::Dup => {
+                    let top = stack[stack.len() - 1];
+                    stack.push(top);
+                }
+                Op::GetField(n) => {
+                    let Value::Obj(r) = pop!() else {
+                        fail!("no se puede leer un campo de este valor");
+                    };
+                    stack.push(heap.field(r, n));
+                }
+                Op::SetField(n) => {
+                    let value = pop!();
+                    let Value::Obj(r) = pop!() else {
+                        fail!("no se puede escribir un campo de este valor");
+                    };
+                    heap.set_field(r, n, value);
+                }
+                Op::NewObj { class, n } => {
+                    gc_point!();
+                    let start = stack.len() - n as usize;
+                    let fields = stack.split_off(start);
+                    let v = heap.alloc_instance(class, fields);
+                    stack.push(v);
+                }
                 Op::Dup2 => {
                     let n = stack.len();
                     stack.push(stack[n - 2]);
@@ -248,6 +278,7 @@ impl<W: Write> Vm<W> {
                     let len = match heap.get(r) {
                         Object::Str(s) => s.chars().count(),
                         Object::Array(items) => items.len(),
+                        Object::Instance { .. } => fail!("`len` necesita una cadena o un arreglo"),
                     };
                     stack.push(Value::Int(len as i64));
                 }
