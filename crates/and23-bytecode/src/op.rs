@@ -56,11 +56,21 @@ pub enum Op {
     SetField(u32),
     /// Duplica la cima (`obj.campo += v` evalúa `obj` una sola vez).
     Dup,
-    /// Saca `n` valores (los campos, en orden) y crea una instancia de la clase `class`.
-    NewObj {
+    /// Crea una instancia de la clase `class` con `n` campos en `()`; el constructor los rellena.
+    Alloc {
         class: u32,
         n: u32,
     },
+    /// Llamada virtual: el receptor está bajo los `argc` argumentos; la VM busca el método `method`
+    /// en la tabla de la clase real del objeto.
+    CallMethod {
+        method: u32,
+        argc: u32,
+    },
+    /// Saca un objeto y deja si es instancia del tipo `n` (clase, subclase o interfaz).
+    IsInstance(u32),
+    /// Exige que la cima sea instancia del tipo `n`; si no, es un error de ejecución.
+    Cast(u32),
     /// Duplica los dos valores de la cima (`a[i] += v` evalúa `a` e `i` una sola vez).
     Dup2,
     /// Saca una cadena o un arreglo y deja su largo (`len`).
@@ -91,13 +101,21 @@ pub struct Function {
 #[derive(Debug, Clone)]
 pub struct ClassDef {
     pub name: String,
+    /// Todos los campos, los heredados primero.
     pub fields: Vec<String>,
+    /// Índices (en `Module::classes`) de este tipo, de sus ancestros y de las interfaces que cumple.
+    pub supers: Vec<u32>,
+    /// Tabla de métodos: id de método -> índice de la función que lo implementa (heredados incluidos).
+    pub vtable: std::collections::HashMap<u32, u32>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct Module {
     pub functions: Vec<Function>,
+    /// Clases e interfaces (estas con campos y tabla vacíos).
     pub classes: Vec<ClassDef>,
+    /// Nombres de método con id: índice en este vector.
+    pub methods: Vec<String>,
     /// Nombres de las variables globales, por número de ranura.
     pub globals: Vec<String>,
     /// Cadenas constantes del programa.

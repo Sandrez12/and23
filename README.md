@@ -4,11 +4,11 @@ And23 es un lenguaje de programación estático y orientado a objetos, de nivel 
 
 Los archivos de código usan la extensión `.jb`. Los identificadores admiten Unicode (`dueño`, `ñandú`).
 
-> **Estado: M4.** Hoy verifica tipos y compila a bytecode programas con variables, `if`/`while`, funciones recursivas, cadenas con interpolación, arreglos y clases, y los ejecuta en una VM de pila con recolector de basura (`fib(30)` en ~0,17 s, unas 9 veces más rápido que el intérprete de árbol anterior). Un programa mal tipado se rechaza con su línea y columna antes de ejecutar nada. La herencia, las interfaces y el resto llegan en los siguientes hitos (ver [`DESIGN.md`](DESIGN.md)).
+> **Estado: M5.** Hoy verifica tipos y compila a bytecode programas con variables, `if`/`while`, funciones recursivas, cadenas con interpolación, arreglos, clases, herencia e interfaces, y los ejecuta en una VM de pila con recolector de basura (`fib(30)` en ~0,17 s, unas 9 veces más rápido que el intérprete de árbol anterior). Un programa mal tipado se rechaza con su línea y columna antes de ejecutar nada. Las excepciones, `nil` y el resto llegan en los siguientes hitos (ver [`DESIGN.md`](DESIGN.md)).
 
 ## Cómo se ve
 
-Una clase con el constructor en la cabecera (esto ya funciona desde M4):
+Clases con el constructor en la cabecera, herencia e interfaces (funciona desde M5):
 
 ```
 thing Animal(fix nombre: Str) {
@@ -23,7 +23,26 @@ fn main() {
 }
 ```
 
-Herencia (`thing Perro(...) : Animal(...)`), interfaces (`kind`), `nil`/`T?` y `attempt`/`rescue` llegan en M5 y M6.
+El borrador completo, con herencia e interfaces:
+
+```
+kind Habla {                                   // interfaz: solo firmas
+    fn sonido() -> Str
+}
+
+thing Perro(nombre: Str) : Animal(nombre), Habla {   // padre con argumentos, e interfaces
+    fn sonido() -> Str = "guau"
+}
+
+fn main() {
+    fix animales: [Animal] = [Perro("Rex"), Animal("Bicho")]
+    fix h: Habla = Perro("Toby")
+    show(h.sonido())                           // guau: se elige por la clase real
+    show(animales[0] is Perro)                 // true
+}
+```
+
+`nil`/`T?` y `attempt`/`rescue` llegan en M6.
 
 ## Lo que funciona hoy
 
@@ -58,12 +77,13 @@ show(suma)            // 30
 - Cadenas UTF-8 con escapes (`\n \t \" \\ \$ \u{1F600}`), `+` para unirlas, comparación (`==`, `<`...) e interpolación `"hola ${nombre}, ${a + b}"`.
 - Arreglos `[1, 2, 3]` con `a[i]`, `a[i] = v`, `a[i] += v`, `len(x)` (cadenas y arreglos) y `push(a, v)`. Son referencias: `fix b = a` comparte el mismo arreglo. Uno vacío necesita tipo: `fix a: [Int] = []`.
 - Clases con `thing`: el constructor va en la cabecera y los parámetros con `fix`/`mut` se vuelven campos (los demás solo existen en el constructor). El cuerpo declara más campos (`mut edad = 0`, que ven los parámetros y los campos anteriores) y métodos (`fn`). Dentro de un método los campos se usan por su nombre (`edad += 1`) y `this` los desambigua (`this.edad`, o `this` solo, que es el propio objeto). Fuera: `p.nombre`, `p.edad = 5`, `p.cumple()`. Los objetos son referencias, como los arreglos; `fix` en un campo impide reasignarlo, y no se pueden comparar con `==` todavía. `show(p)` imprime `Animal(nombre="Rex", edad=1)`.
+- Herencia e interfaces: `thing Perro(nombre: Str) : Animal(nombre), Habla` hereda de una clase (con los argumentos de su constructor) e implementa interfaces `kind` (solo firmas). Un hijo puede usarse donde se pide el padre o la interfaz (`fix a: Animal = Perro("Rex")`, `[Animal]`, parámetros y retornos). Un método con el mismo nombre y la misma firma que uno heredado lo sobrescribe, y las llamadas son virtuales: se elige según la clase real del objeto, también las hechas con `this`. `super.metodo()` llama a la versión del padre. `x is T` pregunta por la clase real, un ancestro o una interfaz; `x as T` convierte y falla al ejecutar si no corresponde. Una clase solo hereda de una; implementa las interfaces que quiera.
 - Recolector de basura mark-sweep propio: 10 millones de asignaciones corren con el heap acotado. `--gc-stress` recolecta en cada punto seguro para probarlo.
 - Los enteros se verifican: el desbordamiento y la división entre cero son errores con su posición. La recursión
   infinita da un error en vez de cerrar el proceso.
 - El REPL recuerda variables y funciones entre líneas y acepta bloques en varias líneas.
 
-Más ejemplos en [`examples/`](examples/): `aritmetica.jb`, `funciones.jb`, `control.jb`, `cadenas.jb` y `clases.jb` (un programa orientado a objetos de ~220 líneas).
+Más ejemplos en [`examples/`](examples/): `aritmetica.jb`, `funciones.jb`, `control.jb`, `cadenas.jb`, `clases.jb` (un programa orientado a objetos de ~220 líneas) y `polimorfismo.jb` (herencia, interfaces, `is`/`as`/`super`).
 
 ```
 error: se esperaba Int, pero es Bool
@@ -92,6 +112,7 @@ cargo run -p and23-cli -- --disasm examples/funciones.jb   # muestra el bytecode
 cargo run -p and23-cli -- --tree examples/funciones.jb     # intérprete de árbol (referencia, sin cadenas ni clases)
 cargo run -p and23-cli -- --gc-stress examples/cadenas.jb  # GC en cada punto seguro
 cargo run -p and23-cli -- examples/clases.jb               # programa orientado a objetos
+cargo run -p and23-cli -- examples/polimorfismo.jb         # herencia e interfaces
 cargo test --workspace                             # tests
 ```
 
@@ -108,7 +129,7 @@ cargo test --workspace                             # tests
 
 ## Hoja de ruta
 
-M0 expresiones, M1 variables y funciones con bytecode y VM, M2 tipos estáticos, M3 strings y GC, M4 clases (hecho), M5 herencia e interfaces, M6 excepciones y null-safety, M7 genéricos, y más adelante closures, módulos, stdlib, concurrencia y auto-compilación. El detalle y los criterios de éxito están en [`DESIGN.md`](DESIGN.md).
+M0 expresiones, M1 variables y funciones con bytecode y VM, M2 tipos estáticos, M3 strings y GC, M4 clases, M5 herencia e interfaces (hecho), M6 excepciones y null-safety, M7 genéricos, y más adelante closures, módulos, stdlib, concurrencia y auto-compilación. El detalle y los criterios de éxito están en [`DESIGN.md`](DESIGN.md).
 
 ## Licencia
 

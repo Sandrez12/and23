@@ -1,0 +1,135 @@
+// M5: herencia, interfaces (`kind`), despacho virtual, `is`, `as` y `super`.
+// Un zoológico con animales que hablan y figuras con área.
+
+// --- Una interfaz: solo firmas; las clases las implementan ---
+kind Habla {
+    fn sonido() -> Str
+}
+
+// --- Clase base. Los hijos la heredan con `: Animal(args)` ---
+thing Animal(fix nombre: Str, fix patas: Int) {
+    mut edad = 0
+
+    fn cumple() { edad += 1 }
+
+    fn descripcion() -> Str = "${nombre} (${patas} patas, ${edad} años)"
+
+    // Los métodos se sobrescriben con la misma firma; `this.sonido()` llega al del hijo.
+    fn presentacion() -> Str = "${descripcion()}: ${this.etiqueta()}"
+    fn etiqueta() -> Str = "animal"
+}
+
+thing Perro(nombre: Str) : Animal(nombre, 4), Habla {
+    mut truco = "sentarse"
+
+    fn sonido() -> Str = "guau"
+    fn etiqueta() -> Str = "perro que sabe ${truco}"
+}
+
+thing Gato(nombre: Str, fix vidas: Int) : Animal(nombre, 4), Habla {
+    fn sonido() -> Str = "miau"
+    fn etiqueta() -> Str = "gato de ${vidas} vidas"
+    // `super` llama a la implementación del padre, sin despacho virtual.
+    fn descripcion() -> Str = "[gato] " + super.descripcion()
+}
+
+// Una clase puede heredar de un hijo: la cadena Animal -> Perro -> Cachorro.
+thing Cachorro(nombre: Str) : Perro(nombre) {
+    fn sonido() -> Str = "guau (agudito)"
+    fn cumple() {
+        super.cumple()
+        truco = "dar la pata"
+    }
+}
+
+// Un pájaro con otras patas; habla pero no es de la familia de los perros.
+thing Loro(nombre: Str, fix frase: Str) : Animal(nombre, 2), Habla {
+    fn sonido() -> Str = frase
+}
+
+// --- Funciones que reciben el tipo base o la interfaz ---
+fn saluda(h: Habla) -> Str = h.sonido() + "!"
+
+fn totalPatas(zoo: [Animal]) -> Int {
+    mut total = 0
+    mut i = 0
+    while i < len(zoo) {
+        total += zoo[i].patas
+        i += 1
+    }
+    return total
+}
+
+// --- Figuras: una interfaz con dos implementaciones y una base con trabajo compartido ---
+kind Figura {
+    fn area() -> Float
+    fn nombre() -> Str
+}
+
+thing Rectangulo(fix ancho: Float, fix alto: Float) : Figura {
+    fn area() -> Float = ancho * alto
+    fn nombre() -> Str = "rectángulo"
+}
+
+thing Circulo(fix radio: Float) : Figura {
+    fn area() -> Float = 3.14 * radio * radio
+    fn nombre() -> Str = "círculo"
+}
+
+fn mayor(figuras: [Figura]) -> Figura {
+    mut mejor = figuras[0]
+    mut i = 1
+    while i < len(figuras) {
+        if figuras[i].area() > mejor.area() { mejor = figuras[i] }
+        i += 1
+    }
+    return mejor
+}
+
+fn main() {
+    fix rex = Perro("Rex")
+    fix mishi = Gato("Mishi", 9)
+    fix toby = Cachorro("Toby")
+    fix lora = Loro("Lora", "hola, hola")
+
+    // Una lista de la clase base con hijos distintos
+    fix zoo: [Animal] = [rex, mishi, toby, lora]
+    show("patas en total: ${totalPatas(zoo)}")
+
+    toby.cumple()
+    toby.cumple()
+    mishi.cumple()
+
+    mut i = 0
+    while i < len(zoo) {
+        show(zoo[i].presentacion())
+        i += 1
+    }
+
+    // Una interfaz como tipo: cada uno responde a su manera
+    fix coro: [Habla] = [rex, mishi, toby, lora]
+    mut j = 0
+    while j < len(coro) {
+        show(saluda(coro[j]))
+        j += 1
+    }
+
+    // `is` pregunta por la clase real; `as` convierte (y falla si no corresponde)
+    mut perros = 0
+    mut k = 0
+    while k < len(zoo) {
+        if zoo[k] is Perro { perros += 1 }
+        k += 1
+    }
+    show("perros (incluye cachorros): ${perros}")
+    show("¿toby es Cachorro? ${zoo[2] is Cachorro}, ¿rex es Cachorro? ${zoo[0] is Cachorro}")
+    show("¿mishi habla? ${zoo[1] is Habla}")
+    fix p = zoo[2] as Perro
+    show("truco de toby: ${p.truco}")
+
+    // Figuras
+    fix figuras: [Figura] = [Rectangulo(3.0, 4.0), Circulo(2.0), Rectangulo(1.0, 1.0)]
+    fix grande = mayor(figuras)
+    show("la figura mayor es un ${grande.nombre()} de área ${grande.area()}")
+    show(grande is Circulo)
+}

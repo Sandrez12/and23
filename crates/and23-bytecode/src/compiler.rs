@@ -4,6 +4,7 @@ use and23_syntax::{
 };
 use and23_types::Resolutions;
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 /// Nombres conocidos entre compilaciones (el REPL compila entrada tras entrada).
 #[derive(Clone, Default)]
@@ -14,8 +15,20 @@ struct Tables {
     funcs: HashMap<String, (u32, usize)>,
     /// cadena constante -> índice en `Module::strings`
     strings: HashMap<String, u32>,
-    /// clase -> (índice de la clase, índice de su función constructora, aridad)
-    classes: HashMap<String, (u32, u32, usize)>,
+    /// clase -> sus funciones constructora e inicializadora
+    classes: HashMap<String, ClassEntry>,
+    /// clase o interfaz -> índice en `Module::classes`
+    types: HashMap<String, u32>,
+    /// nombre de método -> id (índice en `Module::methods`)
+    method_ids: HashMap<String, u32>,
+}
+
+#[derive(Clone)]
+struct ClassEntry {
+    /// `Clase(params)`: crea el objeto y llama a `init`.
+    ctor: u32,
+    /// `Clase.<init>(this, params)`: llama al `init` del padre y rellena los campos.
+    init: u32,
 }
 
 /// Compilador con estado: cada llamada a `compile` añade funciones y globales al módulo.
@@ -67,6 +80,7 @@ impl Compiler {
     ) -> Result<usize, Diagnostic> {
         let saved_tables = self.tables.clone();
         let saved_classes = self.module.classes.len();
+        let saved_methods = self.module.methods.len();
         let saved_functions = self.module.functions.len();
         let saved_globals = self.module.globals.len();
         let saved_strings = self.module.strings.len();
@@ -74,6 +88,7 @@ impl Compiler {
         if result.is_err() {
             self.tables = saved_tables;
             self.module.classes.truncate(saved_classes);
+            self.module.methods.truncate(saved_methods);
             self.module.functions.truncate(saved_functions);
             self.module.globals.truncate(saved_globals);
             self.module.strings.truncate(saved_strings);
@@ -106,6 +121,102 @@ impl Compiler {
         Ok(index)
     }
 
+    /// Id del método `name` (se crea la primera vez).
+    fn method_id(&mut self, name: &str) -> u32 {
+        if let Some(&id) = self.tables.method_ids.get(name) {
+            return id;
+        }
+        let id = self.module.methods.len() as u32;
+        self.module.methods.push(name.to_string());
+        self.tables.method_ids.insert(name.to_string(), id);
+        id
+    }
+
+    /// Reserva el índice de una clase o interfaz (los datos se completan en `finalize_class`).
+    fn declare_type(&mut self, name: &str, span: Span) -> Result<(), Diagnostic> {
+        if self.tables.types.contains_key(name) {
+            return Err(Diagnostic::new(
+                span,
+                format!("el tipo `{name}` ya está definido"),
+            ));
+        }
+        let index = self.module.classes.len() as u32;
+        self.module.classes.push(ClassDef {
+            name: name.to_string(),
+            fields: Vec::new(),
+            supers: vec![index],
+            vtable: HashMap::new(),
+        });
+        self.tables.types.insert(name.to_string(), index);
+        Ok(())
+    }
+
+    fn finalize_class(
+        &mut self,
+        decl: &ThingDecl,
+        all: &HashMap<&str, &ThingDecl>,
+        done: &mut HashSet<String>,
+    ) -> Result<(), Diagnostic> {
+        if !done.insert(decl.name.clone()) {
+            return Ok(());
+        }
+        let unknown = |name: &str, span: Span| {
+            Diagnostic::new(
+                span,
+                format!("el tipo `{name}` no existe (¿faltó verificar tipos?)"),
+            )
+        };
+        let (mut fields, mut supers, mut vtable) =
+            match decl.supers.iter().find(|s| s.args.is_some()) {
+                Some(parent) => {
+                    if let Some(parent_decl) = all.get(parent.name.as_str()) {
+                        self.finalize_class(parent_decl, all, done)?;
+                    }
+                    let index = *self
+                        .tables
+                        .types
+                        .get(&parent.name)
+                        .ok_or_else(|| unknown(&parent.name, parent.name_span))?;
+                    let class = &self.module.classes[index as usize];
+                    (
+                        class.fields.clone(),
+                        class.supers.clone(),
+                        class.vtable.clone(),
+                    )
+                }
+                None => (Vec::new(), Vec::new(), HashMap::new()),
+            };
+        let index = self.tables.types[&decl.name];
+        fields.extend(
+            decl.params
+                .iter()
+                .filter(|p| p.mutable.is_some())
+                .map(|p| p.name.clone()),
+        );
+        fields.extend(decl.fields.iter().map(|f| f.name.clone()));
+        supers.push(index);
+        for kind in decl.supers.iter().filter(|s| s.args.is_none()) {
+            let id = *self
+                .tables
+                .types
+                .get(&kind.name)
+                .ok_or_else(|| unknown(&kind.name, kind.name_span))?;
+            supers.push(id);
+        }
+        for method in &decl.methods {
+            let id = self.method_id(&method.name);
+            let func = self.tables.funcs[&format!("{}.{}", decl.name, method.name)].0;
+            vtable.insert(id, func);
+        }
+        self.module.classes[index as usize] = ClassDef {
+            name: decl.name.clone(),
+            fields,
+            supers,
+            vtable,
+        };
+        Ok(())
+    }
+
     fn compile_program(
         &mut self,
         program: &Program,
@@ -113,28 +224,18 @@ impl Compiler {
         echo: bool,
     ) -> Result<usize, Diagnostic> {
         // Las clases y funciones se registran antes de compilar: pueden usarse antes de su definición.
-        let mut things: Vec<(usize, &ThingDecl)> = Vec::new();
+        for name in res.virtuals.values() {
+            self.method_id(name);
+        }
+        for stmt in &program.stmts {
+            let Stmt::Kind(decl) = stmt else { continue };
+            self.declare_type(&decl.name, decl.name_span)?;
+        }
+        let mut things: Vec<(usize, usize, &ThingDecl)> = Vec::new();
         let mut methods: Vec<(usize, &ThingDecl, &FnDecl)> = Vec::new();
         for stmt in &program.stmts {
             let Stmt::Thing(decl) = stmt else { continue };
-            if self.tables.classes.contains_key(&decl.name) {
-                return Err(Diagnostic::new(
-                    decl.name_span,
-                    format!("la clase `{}` ya está definida", decl.name),
-                ));
-            }
-            let class = self.module.classes.len() as u32;
-            let fields = decl
-                .params
-                .iter()
-                .filter(|p| p.mutable.is_some())
-                .map(|p| p.name.clone())
-                .chain(decl.fields.iter().map(|f| f.name.clone()))
-                .collect();
-            self.module.classes.push(ClassDef {
-                name: decl.name.clone(),
-                fields,
-            });
+            self.declare_type(&decl.name, decl.name_span)?;
             let ctor = self.module.functions.len();
             self.module.functions.push(Function {
                 name: decl.name.clone(),
@@ -143,10 +244,19 @@ impl Compiler {
                 code: Vec::new(),
                 spans: Vec::new(),
             });
-            self.tables
-                .classes
-                .insert(decl.name.clone(), (class, ctor as u32, decl.params.len()));
-            things.push((ctor, decl));
+            let init = self.declare_function(
+                format!("{}.<init>", decl.name),
+                decl.name_span,
+                decl.params.len() + 1,
+            )?;
+            self.tables.classes.insert(
+                decl.name.clone(),
+                ClassEntry {
+                    ctor: ctor as u32,
+                    init: init as u32,
+                },
+            );
+            things.push((ctor, init, decl));
             for method in &decl.methods {
                 let key = format!("{}.{}", decl.name, method.name);
                 let index =
@@ -154,10 +264,19 @@ impl Compiler {
                 methods.push((index, decl, method));
             }
         }
+        // Campos, ancestros y tabla de métodos de cada clase, el padre antes que el hijo.
+        let by_name: HashMap<&str, &ThingDecl> = things
+            .iter()
+            .map(|(_, _, t)| (t.name.as_str(), *t))
+            .collect();
+        let mut done = HashSet::new();
+        for (_, _, thing) in &things {
+            self.finalize_class(thing, &by_name, &mut done)?;
+        }
         let mut decls: Vec<(usize, &FnDecl)> = Vec::new();
         for stmt in &program.stmts {
             if let Stmt::Fn(decl) = stmt {
-                if self.tables.classes.contains_key(&decl.name) {
+                if self.tables.types.contains_key(&decl.name) {
                     return Err(Diagnostic::new(
                         decl.name_span,
                         format!("la función `{}` ya está definida", decl.name),
@@ -198,8 +317,20 @@ impl Compiler {
             .function(decl)?;
             self.module.functions[index] = function;
         }
-        for (index, thing) in things {
-            let class = self.tables.classes[&thing.name].0;
+        for (ctor, init, thing) in things {
+            let class = self.tables.types[&thing.name];
+            let total = self.module.classes[class as usize].fields.len() as u32;
+            let parent = thing.supers.iter().find(|s| s.args.is_some());
+            let (offset, parent_init) = match parent {
+                Some(p) => {
+                    let parent_class = self.tables.types[&p.name];
+                    (
+                        self.module.classes[parent_class as usize].fields.len() as u32,
+                        Some(self.tables.classes[&p.name].init),
+                    )
+                }
+                None => (0, None),
+            };
             let function = FnCompiler::new(
                 &mut self.tables,
                 &mut self.module.strings,
@@ -207,8 +338,17 @@ impl Compiler {
                 thing.name.clone(),
                 thing.name_span,
             )
-            .constructor(thing, class)?;
-            self.module.functions[index] = function;
+            .constructor(thing, class, total, init as u32)?;
+            self.module.functions[ctor] = function;
+            let function = FnCompiler::new(
+                &mut self.tables,
+                &mut self.module.strings,
+                res,
+                format!("{}.<init>", thing.name),
+                thing.name_span,
+            )
+            .init(thing, offset, parent_init)?;
+            self.module.functions[init] = function;
         }
         for (index, thing, method) in methods {
             let function = FnCompiler::new(
@@ -340,38 +480,24 @@ impl<'a> FnCompiler<'a> {
         Ok(self.finish(decl.span))
     }
 
-    /// Constructor: los parámetros y luego los campos del cuerpo son locales; al final se
-    /// reúnen los campos en orden y `NewObj` crea el objeto ya completo.
-    fn constructor(mut self, decl: &ThingDecl, class: u32) -> Result<Function, Diagnostic> {
+    /// Constructor `Clase(params)`: reserva el objeto (campos en `()`), llama a `Clase.<init>` con
+    /// él y los parámetros, y lo devuelve.
+    fn constructor(
+        mut self,
+        decl: &ThingDecl,
+        class: u32,
+        total: u32,
+        init: u32,
+    ) -> Result<Function, Diagnostic> {
         self.arity = decl.params.len();
-        for param in &decl.params {
-            self.locals.push(Local {
-                name: param.name.clone(),
-                mutable: false,
-                depth: 0,
-            });
-        }
-        for field in &decl.fields {
-            self.expr(&field.init)?;
-            self.locals.push(Local {
-                name: field.name.clone(),
-                mutable: false,
-                depth: 0,
-            });
-        }
         let span = decl.span;
-        let mut count = 0;
-        for (i, param) in decl.params.iter().enumerate() {
-            if param.mutable.is_some() {
-                self.emit(Op::GetLocal(i as u32), span);
-                count += 1;
-            }
+        self.emit(Op::Alloc { class, n: total }, span);
+        self.emit(Op::Dup, span);
+        for i in 0..decl.params.len() {
+            self.emit(Op::GetLocal(i as u32), span);
         }
-        for j in 0..decl.fields.len() {
-            self.emit(Op::GetLocal((decl.params.len() + j) as u32), span);
-            count += 1;
-        }
-        self.emit(Op::NewObj { class, n: count }, span);
+        self.emit(Op::Call(init), span);
+        self.emit(Op::Pop, span);
         self.emit(Op::Return, span);
         Ok(Function {
             name: self.name,
@@ -382,10 +508,68 @@ impl<'a> FnCompiler<'a> {
         })
     }
 
+    /// `Clase.<init>(this, params)`: llama al `init` del padre con los argumentos de `: Padre(...)`,
+    /// guarda los parámetros que son campos y evalúa los campos del cuerpo (que ven los parámetros
+    /// y los campos anteriores como locales). `offset` es la cantidad de campos heredados.
+    fn init(
+        mut self,
+        decl: &ThingDecl,
+        offset: u32,
+        parent_init: Option<u32>,
+    ) -> Result<Function, Diagnostic> {
+        self.arity = decl.params.len() + 1;
+        self.locals.push(Local {
+            name: "this".to_string(),
+            mutable: false,
+            depth: 0,
+        });
+        for param in &decl.params {
+            self.locals.push(Local {
+                name: param.name.clone(),
+                mutable: false,
+                depth: 0,
+            });
+        }
+        let span = decl.span;
+        if let (Some(parent_init), Some(sup)) =
+            (parent_init, decl.supers.iter().find(|s| s.args.is_some()))
+        {
+            self.emit(Op::GetLocal(0), sup.span);
+            for arg in sup.args.as_deref().unwrap_or(&[]) {
+                self.expr(arg)?;
+            }
+            self.emit(Op::Call(parent_init), sup.span);
+            self.emit(Op::Pop, sup.span);
+        }
+        let mut next = offset;
+        for (i, param) in decl.params.iter().enumerate() {
+            if param.mutable.is_some() {
+                self.emit(Op::GetLocal(0), param.span);
+                self.emit(Op::GetLocal(i as u32 + 1), param.span);
+                self.emit(Op::SetField(next), param.span);
+                next += 1;
+            }
+        }
+        for field in &decl.fields {
+            self.expr(&field.init)?;
+            self.locals.push(Local {
+                name: field.name.clone(),
+                mutable: false,
+                depth: 0,
+            });
+            let slot = (self.locals.len() - 1) as u32;
+            self.emit(Op::GetLocal(0), field.span);
+            self.emit(Op::GetLocal(slot), field.span);
+            self.emit(Op::SetField(next), field.span);
+            next += 1;
+        }
+        Ok(self.finish(span))
+    }
+
     fn top_level(&mut self, program: &Program) -> Result<(), Diagnostic> {
         for stmt in &program.stmts {
             match stmt {
-                Stmt::Fn(_) | Stmt::Thing(_) => {}
+                Stmt::Fn(_) | Stmt::Thing(_) | Stmt::Kind(_) => {}
                 Stmt::Expr(expr) => {
                     self.expr(expr)?;
                     self.emit(if self.echo { Op::Echo } else { Op::Pop }, expr.span());
@@ -641,7 +825,7 @@ impl<'a> FnCompiler<'a> {
                 }
             }
             // Las registró `compile_program`.
-            Stmt::Fn(_) | Stmt::Thing(_) => {}
+            Stmt::Fn(_) | Stmt::Thing(_) | Stmt::Kind(_) => {}
         }
         Ok(())
     }
@@ -703,12 +887,36 @@ impl<'a> FnCompiler<'a> {
             Expr::MethodCall {
                 target, args, span, ..
             } => {
-                let index = self.method_index(*span)?;
+                let method = self.virtual_id(*span)?;
                 self.expr(target)?;
                 for arg in args {
                     self.expr(arg)?;
                 }
+                self.emit(
+                    Op::CallMethod {
+                        method,
+                        argc: args.len() as u32,
+                    },
+                    *span,
+                );
+            }
+            Expr::SuperCall { args, span, .. } => {
+                let index = self.method_index(*span)?;
+                self.emit(Op::GetLocal(0), *span);
+                for arg in args {
+                    self.expr(arg)?;
+                }
                 self.emit(Op::Call(index), *span);
+            }
+            Expr::Is { expr, ty, span } => {
+                let id = self.type_index(&ty.name, ty.span)?;
+                self.expr(expr)?;
+                self.emit(Op::IsInstance(id), *span);
+            }
+            Expr::Cast { expr, ty, span } => {
+                let id = self.type_index(&ty.name, ty.span)?;
+                self.expr(expr)?;
+                self.emit(Op::Cast(id), *span);
             }
             Expr::Str(text, span) => {
                 let index = self.string(text);
@@ -779,17 +987,23 @@ impl<'a> FnCompiler<'a> {
                 }
                 self.emit(if name == "len" { Op::Len } else { Op::Push }, *span);
             }
-            Expr::Call { args, span, .. } if self.res.methods.contains_key(span) => {
+            Expr::Call { args, span, .. } if self.res.virtuals.contains_key(span) => {
                 // Método de la propia clase llamado por su nombre: `this` va primero.
-                let index = self.method_index(*span)?;
+                let method = self.virtual_id(*span)?;
                 self.emit(Op::GetLocal(0), *span);
                 for arg in args {
                     self.expr(arg)?;
                 }
-                self.emit(Op::Call(index), *span);
+                self.emit(
+                    Op::CallMethod {
+                        method,
+                        argc: args.len() as u32,
+                    },
+                    *span,
+                );
             }
             Expr::Call { name, args, span } if self.tables.classes.contains_key(name) => {
-                let ctor = self.tables.classes[name].1;
+                let ctor = self.tables.classes[name].ctor;
                 for arg in args {
                     self.expr(arg)?;
                 }
@@ -822,6 +1036,30 @@ impl<'a> FnCompiler<'a> {
 }
 
 impl FnCompiler<'_> {
+    /// Id del método virtual que el verificador resolvió para esta llamada.
+    fn virtual_id(&self, span: Span) -> Result<u32, Diagnostic> {
+        self.res
+            .virtuals
+            .get(&span)
+            .and_then(|name| self.tables.method_ids.get(name))
+            .copied()
+            .ok_or_else(|| {
+                Diagnostic::new(
+                    span,
+                    "error interno: método sin resolver (¿faltó verificar tipos?)",
+                )
+            })
+    }
+
+    /// Índice de clase o interfaz por nombre.
+    fn type_index(&self, name: &str, span: Span) -> Result<u32, Diagnostic> {
+        self.tables
+            .types
+            .get(name)
+            .copied()
+            .ok_or_else(|| Diagnostic::new(span, format!("el tipo `{name}` no existe")))
+    }
+
     /// Índice de función del método que el verificador resolvió para esta llamada.
     fn method_index(&self, span: Span) -> Result<u32, Diagnostic> {
         self.res

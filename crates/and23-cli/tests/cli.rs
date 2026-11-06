@@ -281,7 +281,7 @@ fn disasm_de_una_clase_muestra_constructor_y_metodos() {
     let text = stdout(&out);
     assert!(text.contains("fn C/1"), "{text}");
     assert!(text.contains("fn C.inc/1"), "{text}");
-    assert!(text.contains("NewObj"), "{text}");
+    assert!(text.contains("Alloc"), "{text}");
     assert!(text.contains("GetField"), "{text}");
 }
 
@@ -289,4 +289,73 @@ fn disasm_de_una_clase_muestra_constructor_y_metodos() {
 fn repl_con_clases() {
     let out = repl("thing P(fix x: Int)\nfix p = P(4)\np.x\np\n");
     assert!(stdout(&out).contains("4\nP(x=4)\n"), "{}", stdout(&out));
+}
+
+#[test]
+fn ejemplo_polimorfico() {
+    let out = run_example("polimorfismo.jb");
+    assert!(out.starts_with("patas en total: 14\n"), "{out}");
+    assert!(
+        out.contains("¿toby es Cachorro? true, ¿rex es Cachorro? false\n"),
+        "{out}"
+    );
+    assert!(out.contains("truco de toby: dar la pata\n"), "{out}");
+    assert!(
+        out.ends_with("la figura mayor es un círculo de área 12.56\ntrue\n"),
+        "{out}"
+    );
+}
+
+#[test]
+fn gc_stress_con_herencia_da_la_misma_salida() {
+    let normal = and23().arg(example("polimorfismo.jb")).output().unwrap();
+    let stress = and23()
+        .arg("--gc-stress")
+        .arg(example("polimorfismo.jb"))
+        .output()
+        .unwrap();
+    assert!(stress.status.success(), "{}", stderr(&stress));
+    assert_eq!(stdout(&normal), stdout(&stress));
+}
+
+#[test]
+fn un_error_de_interfaz_se_informa_con_posicion() {
+    let out = run_source(
+        "kind_err",
+        "kind K { fn f() -> Int }\nthing A() : K\nshow(1)\n",
+    );
+    assert!(!out.status.success());
+    assert!(stdout(&out).is_empty(), "no debe ejecutar nada");
+    let err = stderr(&out);
+    assert!(err.contains(":2:7"), "{err}");
+    assert!(err.contains("no implementa el método `f`"), "{err}");
+}
+
+#[test]
+fn un_as_invalido_es_un_error_de_ejecucion_con_posicion() {
+    let out = run_source(
+        "as_err",
+        "thing A()\nthing B() : A()\nthing C() : A()\nfix a: A = C()\nshow(a as B)\n",
+    );
+    assert!(!out.status.success());
+    let err = stderr(&out);
+    assert!(err.contains("no se puede convertir un `C` a `B`"), "{err}");
+    assert!(err.contains(":5:6"), "{err}");
+}
+
+#[test]
+fn disasm_muestra_llamadas_virtuales_e_is() {
+    let path =
+        std::env::temp_dir().join(format!("and23_cli_disasm_virt_{}.jb", std::process::id()));
+    std::fs::write(
+        &path,
+        "kind K { fn f() -> Int }\nthing A() : K { fn f() -> Int = 1 }\nfix k: K = A()\nshow(k.f())\nshow(k is A)\n",
+    )
+    .unwrap();
+    let out = and23().arg("--disasm").arg(&path).output().unwrap();
+    std::fs::remove_file(&path).ok();
+    let text = stdout(&out);
+    assert!(text.contains("CallMethod"), "{text}");
+    assert!(text.contains("IsInstance"), "{text}");
+    assert!(text.contains("fn A.<init>/1"), "{text}");
 }

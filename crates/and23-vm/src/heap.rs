@@ -139,6 +139,14 @@ impl Heap {
         }
     }
 
+    /// Clase de una instancia.
+    pub fn class_of(&self, r: ObjRef) -> Option<u32> {
+        match self.get(r) {
+            Object::Instance { class, .. } => Some(*class),
+            _ => None,
+        }
+    }
+
     pub fn field(&self, r: ObjRef, index: u32) -> Value {
         match self.get(r) {
             Object::Instance { fields, .. } => fields[index as usize],

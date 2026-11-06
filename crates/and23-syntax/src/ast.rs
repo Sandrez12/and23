@@ -85,6 +85,25 @@ pub enum Expr {
     },
     /// `this`: el objeto sobre el que corre un método.
     This(Span),
+    /// `super.metodo(args)`: el método de la clase padre, sin despacho virtual.
+    SuperCall {
+        name: String,
+        name_span: Span,
+        args: Vec<Expr>,
+        span: Span,
+    },
+    /// `expr is Tipo`
+    Is {
+        expr: Box<Expr>,
+        ty: TypeRef,
+        span: Span,
+    },
+    /// `expr as Tipo`: conversión comprobada al ejecutar.
+    Cast {
+        expr: Box<Expr>,
+        ty: TypeRef,
+        span: Span,
+    },
     /// `obj.campo`
     Field {
         target: Box<Expr>,
@@ -124,6 +143,9 @@ impl Expr {
             | Expr::Binary { span, .. }
             | Expr::Call { span, .. }
             | Expr::Field { span, .. }
+            | Expr::SuperCall { span, .. }
+            | Expr::Is { span, .. }
+            | Expr::Cast { span, .. }
             | Expr::MethodCall { span, .. } => *span,
         }
     }
@@ -184,12 +206,41 @@ pub struct FieldDecl {
     pub span: Span,
 }
 
-/// `thing Nombre(params) { campos y métodos }`
+/// Elemento tras `:` en la cabecera de una clase: `Padre(args)` (clase) o `Interfaz` (sin paréntesis).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SuperRef {
+    pub name: String,
+    pub name_span: Span,
+    pub args: Option<Vec<Expr>>,
+    pub span: Span,
+}
+
+/// Método sin cuerpo de una interfaz.
+#[derive(Debug, Clone, PartialEq)]
+pub struct KindMethod {
+    pub name: String,
+    pub name_span: Span,
+    pub params: Vec<Param>,
+    pub ret: Option<TypeRef>,
+    pub span: Span,
+}
+
+/// `kind Nombre { fn m(params) -> T ... }`
+#[derive(Debug, Clone, PartialEq)]
+pub struct KindDecl {
+    pub name: String,
+    pub name_span: Span,
+    pub methods: Vec<KindMethod>,
+    pub span: Span,
+}
+
+/// `thing Nombre(params) : Padre(args), Interfaz { campos y métodos }`
 #[derive(Debug, Clone, PartialEq)]
 pub struct ThingDecl {
     pub name: String,
     pub name_span: Span,
     pub params: Vec<CtorParam>,
+    pub supers: Vec<SuperRef>,
     pub fields: Vec<FieldDecl>,
     pub methods: Vec<FnDecl>,
     pub span: Span,
@@ -253,6 +304,8 @@ pub enum Stmt {
     Fn(Box<FnDecl>),
     /// Clase; solo al nivel superior del archivo.
     Thing(Box<ThingDecl>),
+    /// Interfaz; solo al nivel superior del archivo.
+    Kind(Box<KindDecl>),
 }
 
 impl Stmt {
@@ -271,6 +324,7 @@ impl Stmt {
             | Stmt::While { span, .. } => *span,
             Stmt::Fn(decl) => decl.span,
             Stmt::Thing(decl) => decl.span,
+            Stmt::Kind(decl) => decl.span,
         }
     }
 }

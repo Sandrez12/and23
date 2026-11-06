@@ -259,12 +259,58 @@ impl<W: Write> Vm<W> {
                     };
                     heap.set_field(r, n, value);
                 }
-                Op::NewObj { class, n } => {
+                Op::Alloc { class, n } => {
                     gc_point!();
-                    let start = stack.len() - n as usize;
-                    let fields = stack.split_off(start);
-                    let v = heap.alloc_instance(class, fields);
+                    let v = heap.alloc_instance(class, vec![Value::Unit; n as usize]);
                     stack.push(v);
+                }
+                Op::CallMethod { method, argc } => {
+                    if frames.len() >= *max_depth {
+                        fail!(
+                            "desbordamiento de pila: más de {} llamadas anidadas",
+                            max_depth
+                        );
+                    }
+                    let Value::Obj(receiver) = stack[stack.len() - argc as usize - 1] else {
+                        fail!("no se puede llamar a un método sobre este valor");
+                    };
+                    let Some(class) = heap.class_of(receiver) else {
+                        fail!("no se puede llamar a un método sobre este valor");
+                    };
+                    let Some(&target) = module.classes[class as usize].vtable.get(&method) else {
+                        fail!(
+                            "la clase `{}` no tiene el método `{}`",
+                            module.classes[class as usize].name,
+                            module.methods[method as usize]
+                        );
+                    };
+                    let callee = &module.functions[target as usize];
+                    frames.push(Frame { function, ip, base });
+                    base = stack.len() - callee.arity;
+                    function = callee;
+                    ip = 0;
+                }
+                Op::IsInstance(ty) => {
+                    let Value::Obj(r) = pop!() else {
+                        fail!("`is` necesita un objeto");
+                    };
+                    let is = heap
+                        .class_of(r)
+                        .is_some_and(|c| module.classes[c as usize].supers.contains(&ty));
+                    stack.push(Value::Bool(is));
+                }
+                Op::Cast(ty) => {
+                    let Value::Obj(r) = *top!() else {
+                        fail!("`as` necesita un objeto");
+                    };
+                    let class = heap.class_of(r);
+                    if !class.is_some_and(|c| module.classes[c as usize].supers.contains(&ty)) {
+                        fail!(
+                            "no se puede convertir un `{}` a `{}`",
+                            class.map_or("?", |c| module.classes[c as usize].name.as_str()),
+                            module.classes[ty as usize].name
+                        );
+                    }
                 }
                 Op::Dup2 => {
                     let n = stack.len();

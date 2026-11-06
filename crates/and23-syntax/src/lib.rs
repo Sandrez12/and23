@@ -7,8 +7,8 @@ pub mod parser;
 pub mod span;
 
 pub use ast::{
-    BinOp, Block, CtorParam, Expr, FieldDecl, FnDecl, InterpPart, Param, Program, Stmt, ThingDecl,
-    TypeRef, UnOp,
+    BinOp, Block, CtorParam, Expr, FieldDecl, FnDecl, InterpPart, KindDecl, KindMethod, Param,
+    Program, Stmt, SuperRef, ThingDecl, TypeRef, UnOp,
 };
 pub use error::Diagnostic;
 pub use span::Span;

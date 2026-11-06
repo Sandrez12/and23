@@ -76,7 +76,7 @@ Workspace de Rust en `crates/`:
 | M2 | Tipos estáticos y errores con línea y columna | Un programa mal tipado se rechaza con mensaje claro |
 | M3 | Strings, arrays y GC mark-sweep | 10M de asignaciones sin agotar memoria; pasa en modo stress |
 | M4 | Clases, campos, métodos, constructores | Programa OO de ~200 líneas (`examples/clases.jb`, 222 líneas) |
-| M5 | Herencia, interfaces, vtables, `instanceof` | Ejemplo polimórfico |
+| M5 | Herencia, interfaces, vtables, `instanceof` | Ejemplo polimórfico (`examples/polimorfismo.jb`) |
 | M6 | Excepciones y null-safety | `attempt`/`rescue`; el compilador rechaza deref de `T?` |
 | M7 | Genéricos con erasure | `List<T>` y `Map<K,V>` propios |
 | M8 | Closures y lambdas | `lista.map { ... }` |
@@ -97,6 +97,7 @@ Workspace de Rust en `crates/`:
 - **M2** (hecho): tipos estáticos (`Int`, `Float`, `Bool`, `Unit`) con errores de línea y columna; ver "Tipos (M2)".
 - **M3** (hecho): cadenas UTF-8, interpolación, arreglos y GC mark-sweep propio; ver "Cadenas, arreglos y GC (M3)".
 - **M4** (hecho): clases, campos, métodos y constructores; ver "Clases (M4)".
+- **M5** (hecho): herencia, interfaces, despacho virtual, `is`/`as`/`super`; ver "Herencia e interfaces (M5)".
 
 ### Diseño de la VM (M1b)
 
@@ -122,7 +123,7 @@ Workspace de Rust en `crates/`:
 - Las anotaciones de tipo (`n: Int`, `-> Int`) son obligatorias en los parámetros y desde M2 se verifican.
 - Recursión limitada a 10 000 llamadas anidadas: más allá es un error con posición, no un cierre del proceso.
 - Desde M1b esos errores de nombres y aridad se informan al compilar, no al ejecutar.
-- Palabras clave: `fix mut fn if else while return break continue true false show` (y desde M4 `thing this`).
+- Palabras clave: `fix mut fn if else while return break continue true false show` (desde M4 `thing this` y desde M5 `kind super is as`).
 
 ### Tipos (M2)
 
@@ -192,15 +193,62 @@ c.deposita(5)
   `==` entre objetos no existe todavía (la igualdad estructural llegará con los tipos de datos).
   `show` imprime `Clase(campo=valor, ...)`; las cadenas dentro van entre comillas.
 - **Compilación:** un método es una función normal llamada `Clase.metodo` con `this` como local 0 y los parámetros después;
-  `obj.m(x)` es `Call` con el receptor como primer argumento (despacho estático; la herencia añadirá vtables en M5).
-  El constructor es una función `Clase` que evalúa los inicializadores como locales, reúne los campos en orden y ejecuta
-  `NewObj`, así un objeto nunca existe a medias. Instrucciones nuevas: `GetField(i)`, `SetField(i)`, `Dup`, `NewObj`.
+  `obj.m(x)` lleva el receptor como primer argumento (en M4 era una llamada estática; desde M5 es virtual, ver abajo).
+  Desde M5 el constructor es una función `Clase` que reserva el objeto (`Alloc`, campos en `()`) y llama a `Clase.<init>`,
+  que evalúa los inicializadores como locales y guarda los campos con `SetField`. Instrucciones: `GetField(i)`, `SetField(i)`, `Dup`, `Alloc`.
 - **Qué decide el verificador:** el compilador no tiene tipos, así que `Checker::check` devuelve `Resolutions`: para cada
   acceso (por su posición en el fuente) el índice de campo, y para cada llamada la clave `"Clase.metodo"`. Es la única
   fuente de verdad de la resolución de nombres: el compilador no la repite.
-- **Límites conocidos de M4:** sin herencia ni interfaces (M5), sin `nil` (los campos siempre se inicializan: M6),
+- **Límites conocidos de M4:** sin herencia ni interfaces (hechas en M5), sin `nil` (los campos siempre se inicializan: M6),
   sin visibilidad (todo es público) y sin sobrecarga. El tipo de un campo sin anotar se infiere la primera vez que se
   necesita (como el retorno de una función `= expr`); si depende de sí mismo hay que anotarlo.
+
+### Herencia e interfaces (M5)
+
+```
+kind Habla { fn sonido() -> Str }                       // interfaz: solo firmas
+
+thing Animal(fix nombre: Str) {
+    fn presenta() -> Str = "${nombre} dice ${this.sonido()}"
+    fn sonido() -> Str = "..."
+}
+thing Perro(nombre: Str) : Animal(nombre), Habla {      // : Padre(args), Interfaz, ...
+    fn sonido() -> Str = "guau"                         // sobrescribe: misma firma
+}
+fix a: Animal = Perro("Rex")
+show(a.presenta())                                      // Rex dice guau
+show(a is Perro)                                        // true
+fix p = a as Perro                                      // comprobado al ejecutar
+```
+
+- **Sintaxis:** tras `:` va a lo sumo un padre con paréntesis (`Animal(nombre)`) y cualquier cantidad de interfaces sin
+  ellos. `kind` solo declara firmas (sin cuerpo); no hereda de otras interfaces ni trae métodos por defecto. No hay
+  `override`: sobrescribir es definir un método con el mismo nombre, y el verificador exige la misma firma exacta
+  (parámetros y retorno; sin covarianza). Las clases son heredables siempre (no hay `final`/`open`).
+- **Campos:** los del padre van primero (prefijo común), después los de la cabecera y del cuerpo del hijo. Un campo del hijo no
+  puede repetir uno heredado, ni un método llamarse como un campo. Se ven por su nombre en los métodos del hijo. Los
+  inicializadores no tienen `this`, así que no ven los campos heredados, solo los parámetros del constructor.
+- **Construcción:** `Hijo.<init>` llama primero a `Padre.<init>` con los argumentos de `: Padre(...)` (expresiones sobre los
+  parámetros del hijo) y después rellena sus propios campos: el orden es padre, cabecera, cuerpo; probado con trazas.
+- **Subtipos:** un tipo clase o interfaz acepta cualquier subclase o implementación donde se espera (asignación, argumentos,
+  retorno, `push`, y los elementos de un literal `[...]` si el arreglo anotado es de objetos). Los arreglos son invariantes:
+  un `[Perro]` no es un `[Animal]`. `==` entre objetos sigue sin existir.
+- **Despacho virtual:** `obj.m()`, `this.m()` y `m()` sin receptor compilan a `CallMethod { método, argc }`. Cada clase del módulo
+  (`ClassDef`) lleva una tabla `vtable: id de método -> función` ya aplanada (heredados incluidos, los sobrescritos reemplazan),
+  que el compilador arma con el padre antes que el hijo. Los ids de método son por nombre (`Module::methods`); no hay
+  sobrecarga, así que el nombre basta. `super.m()` es una `Call` estática a la implementación del padre, que el verificador
+  resuelve por su posición como `Resolutions::methods`; las llamadas virtuales van en `Resolutions::virtuals`.
+- **Interfaces en la VM:** son entradas de `Module::classes` sin campos ni tabla. `ClassDef::supers` lista el propio índice, el de
+  los ancestros y el de las interfaces que cumple, así `IsInstance(t)` y `Cast(t)` son una búsqueda en ese vector. Un valor
+  tipado como interfaz se llama con el mismo `CallMethod`: la tabla de la clase real decide.
+- **Comprobaciones al declarar:** herencia circular, padre inexistente, heredar de una interfaz o implementar una clase (con el
+  mensaje que dice cómo escribirlo), dos padres, interfaz repetida, argumentos del padre (cantidad y tipos), firma de cada
+  sobrescritura y que la clase implemente todos los métodos de sus interfaces con la firma exacta (propios o heredados).
+  `x is T` / `x as T` exigen objetos y rechazan dos clases sin parentesco (con interfaces de por medio sí pueden coincidir).
+- **Costo:** la búsqueda en la tabla es un `HashMap` por llamada; basta por ahora (un caché en línea quedaría para un hito de
+  rendimiento). `super` no existe fuera de métodos de una clase con padre.
+- **Límites conocidos de M5:** una sola clase padre (sin herencia múltiple de clases), interfaces sin herencia ni métodos por
+  defecto, sin clases abstractas, sin visibilidad (todo público), sin `==` entre objetos, sin covarianza en sobrescrituras.
 
 ## Fuentes de referencia
 

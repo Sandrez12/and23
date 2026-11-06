@@ -290,6 +290,7 @@ impl<W: Write> Interpreter<W> {
                 return Err(unsupported(*span))
             }
             Stmt::Thing(decl) => return Err(unsupported(decl.span)),
+            Stmt::Kind(decl) => return Err(unsupported(decl.span)),
             // El parser solo admite funciones al nivel superior; `run` ya las registró.
             Stmt::Fn(_) => {}
         }
@@ -321,6 +322,9 @@ impl<W: Write> Interpreter<W> {
             | Expr::Index { span, .. }
             | Expr::Field { span, .. }
             | Expr::MethodCall { span, .. }
+            | Expr::SuperCall { span, .. }
+            | Expr::Is { span, .. }
+            | Expr::Cast { span, .. }
             | Expr::This(span) => Err(unsupported(*span)),
             Expr::Unary { op, expr, span } => {
                 let value = self.eval(env, expr)?;

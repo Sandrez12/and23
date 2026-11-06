@@ -1,6 +1,6 @@
 use crate::ast::{
-    BinOp, Block, CtorParam, Expr, FieldDecl, FnDecl, InterpPart, Param, Program, Stmt, ThingDecl,
-    TypeRef, UnOp,
+    BinOp, Block, CtorParam, Expr, FieldDecl, FnDecl, InterpPart, KindDecl, KindMethod, Param,
+    Program, Stmt, SuperRef, ThingDecl, TypeRef, UnOp,
 };
 use crate::error::Diagnostic;
 use crate::lexer::{StrPart, Token, TokenKind};
@@ -140,6 +140,8 @@ impl Parser {
                 Stmt::Fn(Box::new(self.fn_decl()?))
             } else if self.peek().kind == TokenKind::Thing {
                 Stmt::Thing(Box::new(self.thing_decl()?))
+            } else if self.peek().kind == TokenKind::Kind {
+                Stmt::Kind(Box::new(self.kind_decl()?))
             } else {
                 self.stmt()?
             };
@@ -205,6 +207,9 @@ impl Parser {
             )),
             TokenKind::Thing => Err(self.error_here(
                 "las clases solo se pueden declarar al nivel superior del archivo".into(),
+            )),
+            TokenKind::Kind => Err(self.error_here(
+                "las interfaces solo se pueden declarar al nivel superior del archivo".into(),
             )),
             TokenKind::Else => {
                 Err(self.error_here("`else` debe ir en la misma línea que la `}` del `if`".into()))
@@ -305,6 +310,31 @@ impl Parser {
             }
         }
         let mut end = self.expect(TokenKind::RParen, "`,` o `)`")?.span;
+        let mut supers = Vec::new();
+        if self.peek().kind == TokenKind::Colon {
+            self.bump();
+            loop {
+                let (sname, sspan) = self.expect_ident("el nombre de una clase o interfaz")?;
+                let (args, span) = if self.peek().kind == TokenKind::LParen {
+                    let (args, close) = self.call_args()?;
+                    (Some(args), sspan.to(close))
+                } else {
+                    (None, sspan)
+                };
+                end = span;
+                supers.push(SuperRef {
+                    name: sname,
+                    name_span: sspan,
+                    args,
+                    span,
+                });
+                if self.peek().kind == TokenKind::Comma {
+                    self.bump();
+                } else {
+                    break;
+                }
+            }
+        }
         let mut fields = Vec::new();
         let mut methods = Vec::new();
         if self.peek().kind == TokenKind::LBrace {
@@ -358,10 +388,110 @@ impl Parser {
             name,
             name_span,
             params,
+            supers,
             fields,
             methods,
             span: start.to(end),
         })
+    }
+
+    /// `kind Nombre { fn m(params) -> T ... }`: solo firmas.
+    fn kind_decl(&mut self) -> Result<KindDecl, Diagnostic> {
+        let start = self.bump().span;
+        let (name, name_span) = self.expect_ident("el nombre de la interfaz")?;
+        let open = self.expect(TokenKind::LBrace, "`{`")?.span;
+        let mut methods = Vec::new();
+        let end;
+        loop {
+            self.skip_newlines();
+            match self.peek().kind.clone() {
+                TokenKind::RBrace => {
+                    end = self.bump().span;
+                    break;
+                }
+                TokenKind::Eof => {
+                    return Err(Diagnostic::new(
+                        open,
+                        "esta interfaz no se cierra: falta `}`",
+                    ));
+                }
+                TokenKind::Fn => {
+                    let fstart = self.bump().span;
+                    let (mname, mspan) = self.expect_ident("el nombre del método")?;
+                    let params = self.params()?;
+                    let ret = if self.peek().kind == TokenKind::Arrow {
+                        self.bump();
+                        Some(self.type_ref()?)
+                    } else {
+                        None
+                    };
+                    if matches!(self.peek().kind, TokenKind::LBrace | TokenKind::Assign) {
+                        return Err(self.error_here(
+                            "los métodos de una interfaz no llevan cuerpo; lo implementan las clases".into(),
+                        ));
+                    }
+                    let span = fstart.to(ret.as_ref().map_or(mspan, |t| t.span));
+                    methods.push(KindMethod {
+                        name: mname,
+                        name_span: mspan,
+                        params,
+                        ret,
+                        span,
+                    });
+                }
+                other => {
+                    return Err(self.error_here(format!(
+                        "dentro de una interfaz se esperaba un método (`fn`), pero se encontró {}",
+                        other.describe()
+                    )));
+                }
+            }
+            if self.peek().kind == TokenKind::Eof {
+                return Err(Diagnostic::new(
+                    open,
+                    "esta interfaz no se cierra: falta `}`",
+                ));
+            }
+            self.end_of_stmt(true)?;
+        }
+        Ok(KindDecl {
+            name,
+            name_span,
+            methods,
+            span: start.to(end),
+        })
+    }
+
+    /// Lista de parámetros `(a: T, b: U)`; el siguiente token es `(`.
+    fn params(&mut self) -> Result<Vec<Param>, Diagnostic> {
+        self.expect(TokenKind::LParen, "`(`")?;
+        let mut params: Vec<Param> = Vec::new();
+        if self.peek().kind != TokenKind::RParen {
+            loop {
+                let (pname, pspan) = self.expect_ident("el nombre del parámetro")?;
+                if params.iter().any(|p| p.name == pname) {
+                    return Err(Diagnostic::new(
+                        pspan,
+                        format!("el parámetro `{pname}` está repetido"),
+                    ));
+                }
+                self.expect(TokenKind::Colon, "`:` y el tipo del parámetro")?;
+                let ty = self.type_ref()?;
+                let span = pspan.to(ty.span);
+                params.push(Param {
+                    name: pname,
+                    ty,
+                    span,
+                });
+                if self.peek().kind == TokenKind::Comma {
+                    self.bump();
+                } else {
+                    break;
+                }
+            }
+        }
+        self.expect(TokenKind::RParen, "`,` o `)`")?;
+        Ok(params)
     }
 
     fn let_stmt(&mut self) -> Result<Stmt, Diagnostic> {
@@ -587,6 +717,23 @@ impl Parser {
                 inner
             }
             TokenKind::This => Expr::This(token.span),
+            TokenKind::Super => {
+                self.expect(TokenKind::Dot, "`.` después de `super`")?;
+                let (name, name_span) =
+                    self.expect_ident("el nombre de un método de la clase padre")?;
+                if self.peek().kind != TokenKind::LParen {
+                    return Err(self.error_here(
+                        "`super` solo se usa para llamar métodos: `super.metodo(...)`".into(),
+                    ));
+                }
+                let (args, close) = self.call_args()?;
+                Expr::SuperCall {
+                    name,
+                    name_span,
+                    args,
+                    span: token.span.to(close),
+                }
+            }
             TokenKind::Ident(name) => {
                 if self.peek().kind == TokenKind::LParen {
                     self.call(name, token.span)?
@@ -647,7 +794,34 @@ impl Parser {
             }
         }
 
-        while let Some((op, left_bp, right_bp)) = binary_op(&self.peek().kind) {
+        loop {
+            // `x is T` (al nivel de las comparaciones) y `x as T` (más fuerte que la aritmética).
+            if matches!(self.peek().kind, TokenKind::Is | TokenKind::As) {
+                let is = self.peek().kind == TokenKind::Is;
+                if (if is { 7 } else { 14 }) < min_bp {
+                    break;
+                }
+                self.bump();
+                let ty = self.type_ref()?;
+                let span = lhs.span().to(ty.span);
+                lhs = if is {
+                    Expr::Is {
+                        expr: Box::new(lhs),
+                        ty,
+                        span,
+                    }
+                } else {
+                    Expr::Cast {
+                        expr: Box::new(lhs),
+                        ty,
+                        span,
+                    }
+                };
+                continue;
+            }
+            let Some((op, left_bp, right_bp)) = binary_op(&self.peek().kind) else {
+                break;
+            };
             if left_bp < min_bp {
                 break;
             }
@@ -789,6 +963,12 @@ mod tests {
                 format!("(call {name} {})", args.join(" ")).replace(" )", ")")
             }
             Expr::This(_) => "this".to_string(),
+            Expr::SuperCall { name, args, .. } => {
+                let args: Vec<String> = args.iter().map(sexp).collect();
+                format!("(super {name} {})", args.join(" ")).replace(" )", ")")
+            }
+            Expr::Is { expr, ty, .. } => format!("(is {} {})", sexp(expr), ty.name),
+            Expr::Cast { expr, ty, .. } => format!("(as {} {})", sexp(expr), ty.name),
             Expr::Field { target, name, .. } => format!("(. {} {name})", sexp(target)),
             Expr::MethodCall {
                 target, name, args, ..
@@ -1147,5 +1327,75 @@ mod tests {
         assert!(err("a.1").contains("después de `.`"));
         assert!(err("thing A() { fix x }").contains("`=`"));
         assert!(err("thing A() { fix x = 1 fix y = 2 }").contains("fin de la sentencia"));
+    }
+
+    // --- M5: kind, herencia, is/as/super ---
+
+    #[test]
+    fn is_y_as_con_su_precedencia() {
+        assert_eq!(shape("a is B"), "(is a B)");
+        assert_eq!(shape("a as B"), "(as a B)");
+        assert_eq!(shape("a is B && c"), "(&& (is a B) c)");
+        assert_eq!(shape("a.b is B"), "(is (. a b) B)");
+        assert_eq!(shape("(a as B).x"), "(. (as a B) x)");
+        assert_eq!(shape("a as B == c"), "(== (as a B) c)");
+        assert_eq!(shape("1 + 2 is B"), "(is (+ 1 2) B)");
+        assert_eq!(shape("a is B == true"), "(== (is a B) true)");
+        assert_eq!(shape("a as [B]"), "(as a Array)");
+    }
+
+    #[test]
+    fn llamada_a_super() {
+        assert_eq!(shape("super.f(1, 2)"), "(super f 1 2)");
+        assert_eq!(shape("super.f()"), "(super f)");
+        assert_eq!(shape("super.f().g"), "(. (super f) g)");
+        assert!(err("super").contains("`.` después de `super`"));
+        assert!(err("super.x").contains("solo se usa para llamar métodos"));
+    }
+
+    #[test]
+    fn cabecera_con_padre_e_interfaces() {
+        let program = parse("thing P(n: Str) : Animal(n, 4), Habla, Corre { }").unwrap();
+        let Stmt::Thing(t) = &program.stmts[0] else {
+            panic!("no es una clase")
+        };
+        assert_eq!(t.supers.len(), 3);
+        assert_eq!(t.supers[0].name, "Animal");
+        assert_eq!(t.supers[0].args.as_ref().map(Vec::len), Some(2));
+        assert!(t.supers[1].args.is_none() && t.supers[2].args.is_none());
+        let program = parse("thing P() : Q()").unwrap();
+        let Stmt::Thing(t) = &program.stmts[0] else {
+            panic!("no es una clase")
+        };
+        assert_eq!(t.supers.len(), 1);
+    }
+
+    #[test]
+    fn declaracion_de_interfaz() {
+        let program =
+            parse("kind Figura {\n  fn area() -> Float\n  fn mueve(dx: Int, dy: Int)\n}").unwrap();
+        let Stmt::Kind(k) = &program.stmts[0] else {
+            panic!("no es una interfaz")
+        };
+        assert_eq!(k.name, "Figura");
+        assert_eq!(k.methods.len(), 2);
+        assert!(k.methods[0].ret.is_some() && k.methods[1].ret.is_none());
+        assert_eq!(k.methods[1].params.len(), 2);
+        assert!(parse("kind K { }").is_ok());
+    }
+
+    #[test]
+    fn errores_de_interfaces_y_herencia() {
+        assert!(err("kind").contains("el nombre de la interfaz"));
+        assert!(err("kind K { fn f() { } }").contains("no llevan cuerpo"));
+        assert!(err("kind K { fn f() = 1 }").contains("no llevan cuerpo"));
+        assert!(err("kind K { fix x = 1 }").contains("se esperaba un método"));
+        assert!(err("kind K {\n fn f()").contains("no se cierra"));
+        assert!(
+            err("fn f() {\n kind K { }\n}").contains("solo se pueden declarar al nivel superior")
+        );
+        assert!(err("thing A() :").contains("una clase o interfaz"));
+        assert!(err("thing A() : B(").contains("una expresión"));
+        assert!(err("fix is = 1").contains("el nombre de la variable"));
     }
 }
