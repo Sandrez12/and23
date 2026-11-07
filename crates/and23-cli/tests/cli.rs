@@ -711,6 +711,51 @@ programa: 2
 }
 
 #[test]
+fn el_repl_estrecha_una_global_mut_salvo_que_una_funcion_la_asigne() {
+    let mut child = and23()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(
+            b"mut x: Int? = 3\nif x != nil { show(x + 1) }\nfn limpia() { x = nil }\nif x != nil { limpia()\n show(x + 1) }\n",
+        )
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(stdout(&out).contains('4'), "{}", stdout(&out));
+    assert!(stderr(&out).contains("no admite"), "{}", stderr(&out));
+}
+
+#[test]
+fn el_ejemplo_de_palabras_funciona_con_saltos_de_linea_de_windows() {
+    // Una copia del texto con CRLF (como queda tras clonar en Windows) da el mismo resultado.
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let texto = std::fs::read_to_string(root.join("examples/datos/texto.txt")).unwrap();
+    let crlf = texto.replace("\r\n", "\n").replace('\n', "\r\n");
+    let dir = std::env::temp_dir().join(format!("and23_crlf_{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("examples/datos")).unwrap();
+    std::fs::write(dir.join("examples/datos/texto.txt"), crlf).unwrap();
+    std::fs::copy(root.join("examples/palabras.jb"), dir.join("palabras.jb")).unwrap();
+    let out = and23()
+        .current_dir(&dir)
+        .arg("palabras.jb")
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(&dir).ok();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).starts_with("5 líneas, 39 palabras\n"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
 fn ejemplo_de_notas_convierte_texto_y_escribe_un_archivo() {
     let out = run_example_from_root("notas.jb", "");
     assert!(out.status.success(), "{}", stderr(&out));

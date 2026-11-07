@@ -151,6 +151,9 @@ pub struct Checker {
     globals: Vars,
     /// Funciones del preludio: un programa puede definir otra con el mismo nombre.
     overridable: HashSet<String>,
+    /// Globales `mut` que alguna función, método o lambda asigna: una llamada puede cambiarlas, así que
+    /// no se estrechan. Las demás se estrechan como una local, pero solo en el nivel superior.
+    fn_assigned: HashSet<String>,
 }
 
 impl Checker {
@@ -172,6 +175,7 @@ impl Checker {
             kinds: self.kinds.clone(),
             globals: self.globals.clone(),
             overridable: self.overridable.clone(),
+            fn_assigned: self.fn_assigned.clone(),
             decls: HashMap::new(),
             state: HashMap::new(),
             declared: HashMap::new(),
@@ -187,6 +191,7 @@ impl Checker {
         self.kinds = pass.kinds;
         self.globals = pass.globals;
         self.overridable = pass.overridable;
+        self.fn_assigned = pass.fn_assigned;
         Ok(pass.res)
     }
 
@@ -230,6 +235,7 @@ struct Pass<'p> {
     kinds: HashMap<String, KindInfo>,
     globals: Vars,
     overridable: HashSet<String>,
+    fn_assigned: HashSet<String>,
     /// Parámetros de tipo a la vista (los de la clase o función que se está declarando o verificando).
     scope_params: Vec<TParam>,
     /// Orden de declaración de las clases de este programa: el padre antes que el hijo.
@@ -250,7 +256,41 @@ struct Pass<'p> {
 const RESERVED_TYPES: [&str; 7] = ["Int", "Float", "Bool", "Str", "Unit", "Array", "Fn"];
 
 impl<'p> Pass<'p> {
+    /// Anota qué globales `mut` pueden cambiar dentro de una función, método o lambda.
+    fn find_fn_assigned(&mut self, program: &Program) {
+        let mut candidates: Vec<String> = self
+            .globals
+            .iter()
+            .filter(|(_, entry)| entry.1)
+            .map(|(name, _)| name.clone())
+            .collect();
+        for stmt in &program.stmts {
+            if let Stmt::Let {
+                name,
+                mutable: true,
+                ..
+            } = stmt
+            {
+                candidates.push(name.clone());
+            }
+        }
+        for name in candidates {
+            let hit = program.stmts.iter().any(|stmt| match stmt {
+                Stmt::Fn(d) => block_assigns_deep(&d.body, &name),
+                Stmt::Thing(t) => {
+                    t.methods.iter().any(|m| block_assigns_deep(&m.body, &name))
+                        || t.fields.iter().any(|f| expr_assigns(&f.init, &name))
+                }
+                other => stmt_assigns_with(other, &name, false),
+            });
+            if hit {
+                self.fn_assigned.insert(name);
+            }
+        }
+    }
+
     fn program(&mut self, program: &'p Program) -> Result<(), Diagnostic> {
+        self.find_fn_assigned(program);
         // Los nombres de clase primero: los tipos de campos, parámetros y firmas pueden nombrarlas.
         for stmt in &program.stmts {
             let (name, name_span) = match stmt {
@@ -1133,9 +1173,15 @@ impl<'p> Pass<'p> {
         if ctx.script_narrow.contains_key(name) {
             return None;
         }
+        // Una global `mut` que ninguna función ni lambda asigna solo cambia por el código que se ve,
+        // así que en el nivel superior se estrecha igual que una local. Dentro de una función no: en
+        // el REPL, una lambda definida después podría llegarle como argumento y asignarla.
+        let safe = matches!(ctx.ret, Ret::Script)
+            && ctx.this.is_none()
+            && !self.fn_assigned.contains(name);
         self.globals
             .get(name)
-            .map(|(ty, mutable, declared)| (ty.clone(), *mutable, declared.clone(), false))
+            .map(|(ty, mutable, declared)| (ty.clone(), *mutable, declared.clone(), safe))
     }
 
     /// Variables que `cond` prueba como no nulas cuando es verdadera y cuando es falsa.
@@ -1225,6 +1271,10 @@ impl<'p> Pass<'p> {
     /// Estrecha en el resto del ámbito actual (`if x == nil { return }`).
     fn narrow_here(&self, ctx: &mut Ctx, names: &[String]) {
         for (name, entry) in self.narrowing(ctx, names, None) {
+            // Fuera de todo bloque no hay dónde deshacerlo si luego se asigna: solo las `fix`.
+            if ctx.scopes.is_empty() && entry.1 {
+                continue;
+            }
             match ctx.scopes.last_mut() {
                 Some(scope) => {
                     scope.insert(name, entry);
@@ -3007,14 +3057,22 @@ fn assigns(block: &Block, name: &str) -> bool {
 
 /// ¿Se asigna `name` en `block`, incluso dentro de las lambdas que contiene?
 fn block_assigns_deep(block: &Block, name: &str) -> bool {
-    block.stmts.iter().any(|stmt| stmt_assigns_deep(stmt, name))
+    block_assigns_with(block, name, true)
 }
 
-fn stmt_assigns_deep(stmt: &Stmt, name: &str) -> bool {
+/// Con `direct == false` solo cuentan las asignaciones dentro de lambdas (las del propio código no).
+fn block_assigns_with(block: &Block, name: &str, direct: bool) -> bool {
+    block
+        .stmts
+        .iter()
+        .any(|stmt| stmt_assigns_with(stmt, name, direct))
+}
+
+fn stmt_assigns_with(stmt: &Stmt, name: &str, direct: bool) -> bool {
     let e = |expr: &Expr| expr_assigns(expr, name);
-    let b = |block: &Block| block_assigns_deep(block, name);
+    let b = |block: &Block| block_assigns_with(block, name, direct);
     match stmt {
-        Stmt::Assign { name: n, value, .. } => n == name || e(value),
+        Stmt::Assign { name: n, value, .. } => (direct && n == name) || e(value),
         Stmt::Show(expr, _) | Stmt::Expr(expr) | Stmt::Fail(expr, _) => e(expr),
         Stmt::Let { init, .. } => e(init),
         Stmt::IndexAssign {

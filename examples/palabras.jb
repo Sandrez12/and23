@@ -10,7 +10,8 @@ fn palabras(texto: Str) -> Lista<Str> {
         limpio = limpio.reemplaza(signos[i], " ")
         i += 1
     }
-    return limpio.reemplaza("\n", " ").parte(" ").filter { w -> !w.vacia() }
+    // "\r" por si el archivo usa saltos de línea de Windows.
+    return limpio.reemplaza("\r", " ").reemplaza("\n", " ").parte(" ").filter { w -> !w.vacia() }
 }
 
 fn main() {

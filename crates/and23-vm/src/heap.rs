@@ -57,6 +57,9 @@ const MIN_THRESHOLD: usize = 1024 * 1024;
 struct Slot {
     object: Option<Object>,
     marked: bool,
+    /// Número de orden de creación del objeto (módulo 2^32): no depende de la casilla ni del
+    /// recolector. Con 32 bits cabe en el relleno de la casilla y no la agranda.
+    serial: u32,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -215,6 +218,7 @@ impl Heap {
         let slot = Slot {
             object: Some(object),
             marked: false,
+            serial: self.allocated as u32,
         };
         let index = match self.free.pop() {
             Some(index) => {
@@ -262,9 +266,13 @@ impl Heap {
         items.pop()
     }
 
-    /// Identidad estable del objeto (no cambia mientras vive: el heap no mueve objetos).
-    pub fn id(&self, r: ObjRef) -> u32 {
-        r.0
+    /// Identidad del objeto: su número de orden de creación. No cambia mientras vive y, a diferencia
+    /// de la casilla del heap (que el recolector reutiliza), es la misma con o sin recolección, así
+    /// que `hash` y el orden de un `Mapa` con claves-objeto no dependen del recolector. Tras 2^32
+    /// asignaciones los números se repiten: dos objetos tan lejanos solo comparten hash (una colisión
+    /// inofensiva, `==` sigue comparando por referencia).
+    pub fn id(&self, r: ObjRef) -> u64 {
+        u64::from(self.slots[r.0 as usize].serial)
     }
 
     pub fn array_mut(&mut self, r: ObjRef) -> &mut Vec<Value> {
@@ -368,6 +376,45 @@ impl Heap {
                     out.push(']');
                     open.pop();
                 }
+                // `Lista` y `Mapa` del preludio se muestran como colecciones: `[1, 2]` y `{"a": 1}`.
+                Object::Instance { class, fields }
+                    if self.classes[*class as usize].name == "Lista" && fields.len() == 1 =>
+                {
+                    self.render_rec(fields[0], true, out, open);
+                }
+                Object::Instance { class, fields }
+                    if self.classes[*class as usize].name == "Mapa" && fields.len() == 2 =>
+                {
+                    open.push(r);
+                    out.push('{');
+                    let mut first = true;
+                    if let Value::Obj(buckets) = fields[0] {
+                        if let Object::Array(buckets) = self.get(buckets) {
+                            for bucket in buckets {
+                                let Value::Obj(bucket) = bucket else { continue };
+                                let Object::Array(entries) = self.get(*bucket) else {
+                                    continue;
+                                };
+                                for entry in entries {
+                                    let Value::Obj(entry) = entry else { continue };
+                                    let Object::Instance { fields: kv, .. } = self.get(*entry)
+                                    else {
+                                        continue;
+                                    };
+                                    if !first {
+                                        out.push_str(", ");
+                                    }
+                                    first = false;
+                                    self.render_rec(kv[0], true, out, open);
+                                    out.push_str(": ");
+                                    self.render_rec(kv[1], true, out, open);
+                                }
+                            }
+                        }
+                    }
+                    out.push('}');
+                    open.pop();
+                }
                 Object::Instance { class, fields } => {
                     let meta = &self.classes[*class as usize];
                     open.push(r);
@@ -397,6 +444,19 @@ impl Heap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// El número de serie y la marca caben en el relleno de la casilla: añadirlos no la agranda.
+    #[test]
+    fn la_casilla_no_crece_por_el_numero_de_serie() {
+        use std::mem::size_of;
+        assert_eq!(
+            size_of::<Slot>(),
+            size_of::<Option<Object>>() + 8,
+            "Slot = {} bytes, Option<Object> = {} bytes",
+            size_of::<Slot>(),
+            size_of::<Option<Object>>()
+        );
+    }
 
     fn obj(v: Value) -> ObjRef {
         match v {

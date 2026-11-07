@@ -672,7 +672,7 @@ fn hash_value(heap: &Heap, v: Value) -> i64 {
             crate::heap::Object::Str(s) => s
                 .bytes()
                 .fold(FNV, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3)),
-            _ => heap.id(r) as u64,
+            _ => heap.id(r),
         },
     };
     // Mezcla final para repartir bien los enteros consecutivos.

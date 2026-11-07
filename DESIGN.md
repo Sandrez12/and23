@@ -300,8 +300,9 @@ if p != nil { show(p.nombre) }
   al lado derecho de `&&`/`||` y, si un bloque sale (`return`, `fail`, `break`, `continue`), al resto del bloque que lo contiene.
   Se implementa con una entrada que tapa a la variable en un ámbito propio y recuerda su tipo declarado.
 - **Qué se estrecha:** locales y parámetros, y globales `fix` (en el nivel superior se guardan aparte, para no filtrar el estrechamiento a
-  las funciones, que se verifican después). No se estrechan los campos ni las globales `mut`: otro código podría cambiarlos entre la
-  comprobación y el uso. Un `mut` local se estrecha, pero una asignación que pueda dar `nil` lo vuelve a ensanchar, y si se asigna
+  las funciones, que se verifican después). No se estrechan los campos. Una global `mut` se estrecha solo en el código del nivel superior y solo
+  si ninguna función, método ni lambda del programa la asigna (ver "Estrechamiento de globales `mut`"); si no, otro código podría cambiarla
+  entre la comprobación y el uso. Un `mut` local se estrecha, pero una asignación que pueda dar `nil` lo vuelve a ensanchar, y si se asigna
   dentro de un bucle anidado en el bloque no se estrecha (el bucle repetiría un uso anterior a la asignación).
 - **Límites:** sin `!!` (desreferencia forzada), sin asignación segura (`a?.x = 1`), sin `?:` con `fail`/`return` a la derecha.
 
@@ -442,12 +443,32 @@ fix m = Mapa<Str, Int>()                                                // expl�
 - **El preludio es redefinible.** Al añadir funciones al preludio, un programa que ya tenía una con ese nombre dejaría de compilar. Para evitarlo,
   tras cargar el preludio el verificador y el compilador marcan sus funciones como redefinibles: la del programa gana y lo ya compilado del
   preludio sigue usando la suya (las llamadas ya van por índice). Las clases del preludio y las funciones integradas no se pueden redefinir.
-- **Idioma de lectura.** Una `mut` asignada en el cuerpo de un `while` pierde su estrechamiento, así que `while l != nil { l.largo() }` no
-  compila; el bucle de lectura se escribe `while true { fix l = leeLinea(); if l == nil { break } ... }`.
-- **Límites conocidos de M10:** `show` de una `Lista` imprime sus campos internos (`texto()` da la forma legible); sin literales con exponente
-  (`1e3`); sin formato de números (decimales), `Mapa` ni ordenar por clave en la biblioteca; sin directorios (listar, crear), sin rutas
+- **Bucle de lectura.** `mut l = leeLinea()` seguido de `while l != nil { ...; l = leeLinea() }` funciona, también en el nivel superior (ver
+  "Estrechamiento de globales `mut`"); `while true { fix l = leeLinea(); if l == nil { break } ... }` es la alternativa.
+- **Límites conocidos de M10:** sin literales con exponente (`1e3`); sin formato de números (decimales), `Mapa` ni ordenar por clave en la biblioteca; sin directorios (listar, crear), sin rutas
   (unir, nombre), sin variables de entorno ni argumentos del programa; sin Unicode avanzado (`mayus`/`minus` usan las reglas de Rust,
   `recorta` quita el espacio Unicode); `leeLinea` bloquea la VM mientras espera; el intérprete de árbol no conoce la biblioteca.
+
+### Ergonomía tras M10
+
+- **`show` de colecciones.** `Lista` se imprime como el arreglo que guarda (`[1, 2, 3]`) y `Mapa` como `{"a": 1, "b": 2}`. Lo decide la
+  impresión del heap (`render_rec`), que reconoce las clases `Lista` y `Mapa` del preludio por su nombre y forma; también vale para `"${m}"`.
+  Un `Mapa` no recuerda el orden de inserción: sus entradas salen en el orden de sus cubetas (estable entre ejecuciones, pero no
+  alfabético). Las clases del usuario siguen mostrándose como `Clase(campo=valor)`, y un ciclo se corta con `...`.
+- **Estrechamiento de globales `mut`.** Antes ninguna global `mut` se estrechaba, lo que hacía inútil `mut linea = leeLinea()` +
+  `while linea != nil` en el nivel superior. Ahora se estrecha, con la misma regla de las locales (se ensancha al asignarle algo que puede
+  ser `nil`; no se estrecha si se asigna en un bucle anidado), siempre que (1) el código esté en el nivel superior —no dentro de una
+  función, método o lambda— y (2) ninguna función, método ni lambda del programa la asigne (el verificador lo calcula por cada entrada y lo
+  recuerda entre entradas del REPL). Así una llamada entre la comprobación y el uso no puede cambiarla. La condición (1) cierra el caso del
+  REPL en que una lambda definida después, que asigna la global, le llega como argumento a una función ya verificada. Un
+  estrechamiento por `if x == nil { fail ... }` en el nivel superior no se aplica a las `mut` (no habría dónde deshacerlo al asignar).
+- **Identidad de los objetos.** `==` entre objetos (instancias y arreglos) es por referencia, y `hash` es coherente con eso: un objeto da
+  siempre el mismo hash y dos objetos distintos, aunque tengan los mismos campos, son claves distintas de un `Mapa` (`m.obtiene(P(1))` no
+  encuentra lo que se guardó con otro `P(1)`). Las cadenas sí se comparan y se hashean por contenido; para indexar por contenido se usa una
+  cadena (`"${p.nombre}"`) como clave. El hash de un objeto sale de su número de serie (orden de creación, módulo 2^32), que cada casilla del
+  heap guarda en el relleno que ya tenía: no agranda el heap (1 000 000 de objetos vivos: 89,7 MB antes y después) ni cambia la velocidad.
+  No sale de la casilla, porque el recolector las reutiliza y el orden de un `Mapa` con claves-objeto dependería de cuándo corra. Tras
+  2^32 asignaciones los números se repiten: dos objetos tan lejanos solo comparten hash.
 
 ## Fuentes de referencia
 

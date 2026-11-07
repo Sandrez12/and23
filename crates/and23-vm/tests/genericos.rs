@@ -49,7 +49,7 @@ show(l.vacia())
 "#;
     assert_eq!(
         ok(src),
-        "true\n3\n20\nLista(items=[10, 99, 30])\n[10, 99, 30]\n2\n-1\ntrue\n30\n2\nfalse\n"
+        "true\n3\n20\n[10, 99, 30]\n[10, 99, 30]\n2\n-1\ntrue\n30\n2\nfalse\n"
     );
 }
 
@@ -103,7 +103,7 @@ ops.agrega(nil)
 show(ops)
 show(ops.obtiene(1) ?: 0 - 1)
 "#;
-    assert_eq!(ok(src), "1\n-1\n1\n2\nLista(items=[1, nil])\n-1\n");
+    assert_eq!(ok(src), "1\n-1\n1\n2\n[1, nil]\n-1\n");
 }
 
 #[test]
@@ -363,10 +363,7 @@ fix f: Fuente<Int> = Cuenta(1)
 show(f.siguiente())
 show(f.siguiente())
 "#;
-    assert_eq!(
-        ok(src),
-        "Lista(items=[10, 20, 30])\nLista(items=[\"a\"])\n10\nnil\n"
-    );
+    assert_eq!(ok(src), "[10, 20, 30]\n[\"a\"]\n10\nnil\n");
 }
 
 #[test]
