@@ -855,3 +855,53 @@ fn un_interbloqueo_es_un_error_con_posicion() {
     assert!(!out.status.success());
     assert!(stderr(&out).contains("interbloqueo"), "{}", stderr(&out));
 }
+
+#[test]
+fn los_argumentos_tras_el_archivo_llegan_al_programa() {
+    let dir = std::env::temp_dir().join("and23_args");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("a.jb");
+    std::fs::write(&file, "show(argumentos())\nshow(argumentos().tam())\n").unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_and23"))
+        .arg(&file)
+        .args(["uno", "dos tres", "--max-depth", "--gc-stress"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out),
+        "[\"uno\", \"dos tres\", \"--max-depth\", \"--gc-stress\"]\n4\n"
+    );
+    // Las opciones de la VM van antes del archivo.
+    let out = Command::new(env!("CARGO_BIN_EXE_and23"))
+        .args(["--gc-stress", "--max-depth", "500"])
+        .arg(&file)
+        .arg("x")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "[\"x\"]\n1\n");
+}
+
+#[test]
+fn un_error_de_ejecucion_muestra_la_cadena_de_llamadas() {
+    let dir = std::env::temp_dir().join("and23_traza");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("t.jb");
+    std::fs::write(
+        &file,
+        "fn a(n: Int) -> Int { return 10 / n }\nfn b(n: Int) -> Int { return a(n) + 1 }\nshow(b(0))\n",
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_and23"))
+        .arg(&file)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = stderr(&out);
+    assert!(err.contains("t.jb:1:"), "{err}");
+    assert!(err.contains("llamado desde `b` ("), "{err}");
+    assert!(err.contains("t.jb:2:"), "{err}");
+    assert!(err.contains("llamado desde el nivel superior ("), "{err}");
+    assert!(err.contains("t.jb:3:"), "{err}");
+}

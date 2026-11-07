@@ -446,8 +446,7 @@ fix m = Mapa<Str, Int>()                                                // expl�
   preludio sigue usando la suya (las llamadas ya van por índice). Las clases del preludio y las funciones integradas no se pueden redefinir.
 - **Bucle de lectura.** `mut l = leeLinea()` seguido de `while l != nil { ...; l = leeLinea() }` funciona, también en el nivel superior (ver
   "Estrechamiento de globales `mut`"); `while true { fix l = leeLinea(); if l == nil { break } ... }` es la alternativa.
-- **Límites conocidos de M10:** sin literales con exponente (`1e3`); sin formato de números (decimales), `Mapa` ni ordenar por clave en la biblioteca; sin directorios (listar, crear), sin rutas
-  (unir, nombre), sin variables de entorno ni argumentos del programa; sin Unicode avanzado (`mayus`/`minus` usan las reglas de Rust,
+- **Límites conocidos de M10:** sin formato de números (decimales), `Mapa` ni ordenar por clave en la biblioteca; sin Unicode avanzado (`mayus`/`minus` usan las reglas de Rust,
   `recorta` quita el espacio Unicode); `leeLinea` bloquea la VM mientras espera; el intérprete de árbol no conoce la biblioteca.
 
 ### Ergonomía tras M10
@@ -500,9 +499,34 @@ fix m = Mapa<Str, Int>()                                                // expl�
   constantes. El límite de recursión se aplica a cada tarea por separado.
 - **Errores.** El cuerpo de cada tarea lo envuelve el preludio en un `attempt`: un `Fallo` queda guardado en la `Tarea` y lo ve quien llame a
   `espera()`. Un error de ejecución (división por cero, desbordamiento...) aborta todo el programa, como en la tarea principal.
-- **Límites previstos.** Sin expulsión por tiempo (un bucle que no cede bloquea al resto); sin `duerme` ni reloj (llegarán con la
-  biblioteca estándar 2); `leeLinea` bloquea toda la VM; un `Fallo` de una tarea que nadie espera se pierde sin aviso; el REPL descarta las
+- **Límites previstos.** Sin expulsión por tiempo (un bucle que no cede bloquea al resto); `leeLinea` bloquea toda la VM; un `Fallo` de una tarea que nadie espera se pierde sin aviso; el REPL descarta las
   tareas pendientes al terminar cada entrada; el intérprete de árbol no conoce las tareas.
+
+### Biblioteca estándar 2 y trazas de pila
+
+- **Literales con exponente.** `1e3`, `2.5E-4`, `1_0e+1` son `Float`. Tras la `e` (y un signo opcional) tiene que haber un dígito; si no,
+  el número termina antes y la `e` empieza un identificador.
+- **Argumentos y entorno.** `and23 [opciones] archivo.jb a b c`: lo que sigue al archivo son los argumentos del programa y `argumentos()`
+  los devuelve como `Lista<Str>`. Las opciones de la VM (`--gc-stress`, `--max-depth N`) van antes del archivo; después del archivo
+  todo pertenece al programa. `entorno(nombre)` da el valor de una variable de entorno o `nil`.
+- **Tiempo.** `ahora()` son milisegundos desde 1970 (UTC). `duerme(ms)` espera al menos ese tiempo: si hay otras tareas listas les cede el
+  turno (con una pausa de 1 ms por vuelta para no gastar CPU de más cuando solo hay dormilonas), y si no hay ninguna duerme de verdad.
+- **Azar.** `azar(n)` es un entero en `[0, n)` (error si `n <= 0`), `azarF()` un `Float` en `[0, 1)` y `semilla(n)` fija la secuencia:
+  la misma semilla da siempre los mismos números. Sin `semilla`, la secuencia arranca del reloj. Generador xorshift64*; no es
+  criptográfico.
+- **Rutas y carpetas.** `unirRuta(a, b)`, `nombreDe(r)`, `carpetaDe(r)` y `extension(r)` trabajan sobre texto y entienden `/` y `\`.
+  `esDir`, `listaDir(r)` (nombres en orden alfabético) y `creaDir(r)` (crea también los padres) usan el sistema de archivos; los fallos
+  lanzan `ErrorES`. Los nombres de las nativas son internos (`_ahora`, `_azar`...) y las funciones públicas son del preludio, así que un
+  programa puede reutilizar esos nombres para sus variables o funciones. Las nativas que devuelven listas devuelven arreglos (`[Str]`) y el
+  preludio los convierte en `Lista<Str>`.
+- **Trazas de pila.** Un error de ejecución añade la cadena de llamadas pendientes, de la más interna a la más externa:
+  ``llamado desde `b` (archivo:línea:columna)``. Si hay más de once se muestran las ocho más internas y las tres más externas con una
+  línea «... N llamadas más ...» (una recursión infinita no inunda la pantalla). Las funciones del preludio no aparecen: un error dentro
+  de `Lista.obtiene` se señala en la línea del usuario que la llamó (antes caía en una posición sin sentido del archivo del usuario, porque
+  las posiciones del preludio no pertenecen a ningún archivo). La traza va en `Diagnostic.trace`; la VM la calcula solo cuando falla, así
+  que no cuesta nada en la ejecución normal.
+- **Límites.** Sin formato de números (decimales fijos), sin `Mapa` ordenado, sin borrar carpetas ni copiar o renombrar archivos, sin
+  separadores propios del sistema en `unirRuta` (siempre `/`; Windows acepta ambos), sin reloj monótono ni zonas horarias ni fechas.
 
 ## Fuentes de referencia
 

@@ -4,6 +4,58 @@
 use crate::heap::Heap;
 use crate::value::Value;
 use std::io::{BufRead, Write};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Estado que las nativas conservan entre llamadas.
+pub struct NativeState {
+    /// Mensaje del último error de archivos (lo lee `_errorES`).
+    pub io_error: String,
+    /// Argumentos del programa (los que siguen al archivo en la línea de comandos).
+    pub args: Vec<String>,
+    /// Estado del generador de números aleatorios (xorshift64*; nunca 0).
+    pub rng: u64,
+}
+
+impl NativeState {
+    pub fn new() -> Self {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0x9e37_79b9_7f4a_7c15, |d| d.as_nanos() as u64);
+        NativeState {
+            io_error: String::new(),
+            args: Vec::new(),
+            rng: seed(nanos),
+        }
+    }
+
+    fn next_random(&mut self) -> u64 {
+        let mut x = self.rng;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.rng = x;
+        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+}
+
+impl Default for NativeState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Mezcla `n` para que semillas parecidas den secuencias distintas; el resultado nunca es 0.
+fn seed(n: u64) -> u64 {
+    let mut z = n.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^= z >> 31;
+    if z == 0 {
+        0x9e37_79b9_7f4a_7c15
+    } else {
+        z
+    }
+}
 
 fn text(heap: &Heap, v: Value) -> &str {
     match v {
@@ -56,12 +108,13 @@ fn to_int(x: f64) -> Result<Value, String> {
     }
 }
 
-/// Ejecuta la nativa `id` con `args`. `io_error` guarda el último error de archivos (`_errorES`).
+/// Ejecuta la nativa `id` con `args`. `state` guarda el último error de archivos (`_errorES`), los
+/// argumentos del programa y el generador de azar.
 pub fn call(
     id: u32,
     heap: &mut Heap,
     args: &[Value],
-    io_error: &mut String,
+    state: &mut NativeState,
 ) -> Result<Value, String> {
     let a = |i: usize| args[i];
     let result = match id {
@@ -123,7 +176,7 @@ pub fn call(
                     .unwrap_or(&content)
                     .to_string(),
                 Err(e) => {
-                    *io_error = format!("no se pudo leer `{path}`: {e}");
+                    state.io_error = format!("no se pudo leer `{path}`: {e}");
                     return Ok(Value::Nil);
                 }
             }
@@ -144,7 +197,7 @@ pub fn call(
             return Ok(match written {
                 Ok(()) => Value::Bool(true),
                 Err(e) => {
-                    *io_error = format!("no se pudo escribir `{path}`: {e}");
+                    state.io_error = format!("no se pudo escribir `{path}`: {e}");
                     Value::Bool(false)
                 }
             });
@@ -163,18 +216,98 @@ pub fn call(
                 }
             }
         }
-        21 => io_error.clone(),
+        21 => state.io_error.clone(),
         // _borraArchivo(ruta)
         22 => {
             let path = text(heap, a(0)).to_string();
             return Ok(match std::fs::remove_file(&path) {
                 Ok(()) => Value::Bool(true),
                 Err(e) => {
-                    *io_error = format!("no se pudo borrar `{path}`: {e}");
+                    state.io_error = format!("no se pudo borrar `{path}`: {e}");
                     Value::Bool(false)
                 }
             });
         }
+        // _args()
+        23 => {
+            let items: Vec<Value> = state
+                .args
+                .clone()
+                .into_iter()
+                .map(|a| heap.alloc_str(a))
+                .collect();
+            return Ok(heap.alloc_array(items));
+        }
+        // entorno(nombre)
+        24 => {
+            return Ok(match std::env::var(text(heap, a(0))) {
+                Ok(v) => heap.alloc_str(v),
+                Err(_) => Value::Nil,
+            })
+        }
+        // ahora(): milisegundos desde 1970-01-01
+        25 => {
+            let ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |d| d.as_millis() as i64);
+            return Ok(Value::Int(ms));
+        }
+        // _pausa(ms)
+        26 => {
+            let ms = int(a(0)).max(0) as u64;
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+            return Ok(Value::Unit);
+        }
+        // azar(n): entero en [0, n)
+        27 => {
+            let n = int(a(0));
+            if n <= 0 {
+                return Err(format!("`azar` necesita un límite positivo, no {n}"));
+            }
+            let r = state.next_random();
+            return Ok(Value::Int(((u128::from(r) * n as u128) >> 64) as i64));
+        }
+        // azarF(): decimal en [0, 1)
+        28 => {
+            let r = state.next_random() >> 11;
+            return Ok(Value::Float(r as f64 / (1u64 << 53) as f64));
+        }
+        // semilla(n)
+        29 => {
+            state.rng = seed(int(a(0)) as u64);
+            return Ok(Value::Unit);
+        }
+        // _listaDir(ruta): nombres, en orden alfabético
+        30 => {
+            let path = text(heap, a(0)).to_string();
+            return Ok(match std::fs::read_dir(&path) {
+                Ok(entries) => {
+                    let mut names: Vec<String> = entries
+                        .filter_map(Result::ok)
+                        .map(|e| e.file_name().to_string_lossy().into_owned())
+                        .collect();
+                    names.sort();
+                    let items: Vec<Value> = names.into_iter().map(|n| heap.alloc_str(n)).collect();
+                    heap.alloc_array(items)
+                }
+                Err(e) => {
+                    state.io_error = format!("no se pudo listar `{path}`: {e}");
+                    Value::Nil
+                }
+            });
+        }
+        // _creaDir(ruta): crea también los padres que falten
+        31 => {
+            let path = text(heap, a(0)).to_string();
+            return Ok(match std::fs::create_dir_all(&path) {
+                Ok(()) => Value::Bool(true),
+                Err(e) => {
+                    state.io_error = format!("no se pudo crear `{path}`: {e}");
+                    Value::Bool(false)
+                }
+            });
+        }
+        32 => return Ok(Value::Bool(std::path::Path::new(text(heap, a(0))).is_dir())),
         _ => return Err(format!("función nativa desconocida: {id}")),
     };
     Ok(heap.alloc_str(result))

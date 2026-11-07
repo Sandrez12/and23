@@ -349,6 +349,20 @@ impl Lexer<'_> {
                             j += 1;
                         }
                     }
+                    // Exponente: `1e3`, `2.5E-4`, `1e+9` (solo si tras la `e` hay dígitos).
+                    if chars.get(j).is_some_and(|&(_, c)| c == 'e' || c == 'E') {
+                        let mut k = j + 1;
+                        if chars.get(k).is_some_and(|&(_, c)| c == '+' || c == '-') {
+                            k += 1;
+                        }
+                        if self.is_digit_at(k) {
+                            is_float = true;
+                            j = k;
+                            while j < chars.len() && (self.is_digit_at(j) || chars[j].1 == '_') {
+                                j += 1;
+                            }
+                        }
+                    }
                     let span = Span::new(start, self.byte_at(j));
                     let text: String = chars[*i..j]
                         .iter()

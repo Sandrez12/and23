@@ -35,6 +35,12 @@ impl<W: Write> Session<W> {
         self
     }
 
+    /// Argumentos que el programa lee con `args()`.
+    pub fn with_args(mut self, args: Vec<String>) -> Self {
+        self.vm.set_args(args);
+        self
+    }
+
     /// Recolecta basura en cada punto seguro (modo de prueba del GC).
     pub fn with_gc_stress(mut self, stress: bool) -> Self {
         self.vm.set_gc_stress(stress);

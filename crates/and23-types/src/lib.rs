@@ -10,7 +10,7 @@ use std::fmt;
 
 /// Funciones integradas; no se pueden redefinir.
 pub mod natives;
-pub use natives::{native, NATIVES};
+pub use natives::{native, FIRST_SCHED_NATIVE, NATIVES};
 
 pub const BUILTINS: [&str; 4] = ["len", "push", "pop", "hash"];
 

@@ -14,6 +14,10 @@ pub enum NTy {
     OptStr,
     OptInt,
     OptFloat,
+    /// `[Str]`.
+    ArrStr,
+    /// `[Str]?`.
+    OptArrStr,
     Unit,
     /// `() -> Unit`, la lambda de una tarea.
     Fn0,
@@ -30,6 +34,8 @@ impl NTy {
             NTy::OptStr => opt(Type::Str),
             NTy::OptInt => opt(Type::Int),
             NTy::OptFloat => opt(Type::Float),
+            NTy::ArrStr => Type::Array(Box::new(Type::Str)),
+            NTy::OptArrStr => opt(Type::Array(Box::new(Type::Str))),
             NTy::Unit => Type::Unit,
             NTy::Fn0 => Type::Fn(vec![], Box::new(Type::Unit)),
         }
@@ -76,12 +82,27 @@ natives! {
     "leeLinea"() -> OptStr;
     "_errorES"() -> Str;
     "_borraArchivo"(Str) -> Bool;
-    // M11: las atiende el planificador de la VM (ids 23 a 26), no `natives::call`.
+    // M12: biblioteca estándar 2.
+    "_args"() -> ArrStr;
+    "_entorno"(Str) -> OptStr;
+    "_ahora"() -> Int;
+    "_pausa"(Int) -> Unit;
+    "_azar"(Int) -> Int;
+    "_azarF"() -> Float;
+    "_semilla"(Int) -> Unit;
+    "_listaDir"(Str) -> OptArrStr;
+    "_creaDir"(Str) -> Bool;
+    "_esDir"(Str) -> Bool;
+    // M11: las atiende el planificador de la VM (desde `FIRST_SCHED_NATIVE`), no `natives::call`.
     "_lanza"(Fn0) -> Unit;
     "cede"() -> Unit;
     "_bloquea"() -> Unit;
     "_avisa"() -> Unit;
+    "_hayListas"() -> Bool;
 }
+
+/// Id de la primera nativa que atiende el planificador de la VM: todas las siguientes también.
+pub const FIRST_SCHED_NATIVE: u32 = 33;
 
 /// Id y firma de la función nativa `name`.
 pub fn native(name: &str) -> Option<(u32, &'static Native)> {
@@ -94,4 +115,15 @@ pub fn native(name: &str) -> Option<(u32, &'static Native)> {
 /// ¿`name` es una función integrada (las de siempre o una nativa)?
 pub fn is_builtin(name: &str) -> bool {
     crate::BUILTINS.contains(&name) || native(name).is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn las_nativas_del_planificador_van_al_final() {
+        assert_eq!(NATIVES[FIRST_SCHED_NATIVE as usize].name, "_lanza");
+        assert_eq!(NATIVES.len() as u32 - FIRST_SCHED_NATIVE, 5);
+    }
 }

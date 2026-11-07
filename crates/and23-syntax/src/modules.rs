@@ -54,7 +54,16 @@ impl SourceMap {
         if let Some(hint) = self.hints.get(&d.span.start) {
             local.message.push_str(hint);
         }
-        local.render(&file.name, &file.src)
+        let mut text = local.render(&file.name, &file.src);
+        text.push_str(&d.trace_text(|span| match self.file_at(span.start) {
+            Some(f) => {
+                let at = Diagnostic::new(Span::new(span.start - f.base, span.start - f.base), "");
+                let (l, c) = at.line_col(&f.src);
+                format!("{}:{l}:{c}", f.name)
+            }
+            None => "?".to_string(),
+        }));
+        text
     }
 }
 
@@ -69,7 +78,7 @@ pub struct Loaded {
 pub enum Failure {
     /// No se pudo leer el archivo principal; el texto ya está listo para mostrarse.
     Io(String),
-    Diag(Diagnostic, SourceMap),
+    Diag(Box<Diagnostic>, Box<SourceMap>),
 }
 
 impl Failure {
@@ -124,7 +133,7 @@ where
             sources: loader.sources,
         }),
         Err(Fail::Io(text)) => Err(Failure::Io(text)),
-        Err(Fail::Diag(d)) => Err(Failure::Diag(d, loader.sources)),
+        Err(Fail::Diag(d)) => Err(Failure::Diag(Box::new(d), Box::new(loader.sources))),
     }
 }
 

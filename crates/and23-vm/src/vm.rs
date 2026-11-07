@@ -1,4 +1,5 @@
 use crate::heap::{Heap, HeapStats, ObjRef, Object};
+use crate::natives::NativeState;
 use crate::value::Value;
 use and23_bytecode::{Function, Module, Op};
 use and23_syntax::{Diagnostic, Span};
@@ -17,8 +18,7 @@ pub struct Vm<W: Write> {
     /// Objeto de cada cadena constante, creado la primera vez que se usa. Son raíces del GC.
     consts: Vec<Option<ObjRef>>,
     max_depth: usize,
-    /// Mensaje del último error de archivos (lo lee `_errorES`).
-    io_error: String,
+    native: NativeState,
 }
 
 /// Manejador instalado por un `attempt`: a dónde volver si se lanza una excepción.
@@ -38,8 +38,7 @@ struct Frame<'m> {
     base: usize,
 }
 
-/// Id de la primera nativa que atiende el planificador (`_lanza`, `cede`, `_bloquea`, `_avisa`).
-const FIRST_SCHED_NATIVE: u32 = 23;
+use and23_types::FIRST_SCHED_NATIVE;
 
 /// Una tarea guardada (M11): todo el estado que la VM tiene en variables locales mientras la ejecuta.
 struct Task<'m> {
@@ -61,8 +60,13 @@ impl<W: Write> Vm<W> {
             heap: Heap::new(),
             consts: Vec::new(),
             max_depth: DEFAULT_MAX_DEPTH,
-            io_error: String::new(),
+            native: NativeState::new(),
         }
+    }
+
+    /// Argumentos del programa, los que lee `args()`.
+    pub fn set_args(&mut self, args: Vec<String>) {
+        self.native.args = args;
     }
 
     pub fn with_max_depth(mut self, max_depth: usize) -> Self {
@@ -114,7 +118,7 @@ impl<W: Write> Vm<W> {
             heap,
             consts,
             max_depth,
-            io_error,
+            native,
         } = self;
         let mut frames: Vec<Frame<'m>> = Vec::new();
         let mut handlers: Vec<Handler<'m>> = Vec::new();
@@ -236,531 +240,594 @@ impl<W: Write> Vm<W> {
             }};
         }
 
-        loop {
-            let op = function.code[ip];
-            ip += 1;
-            match op {
-                Op::Int(v) => stack.push(Value::Int(v)),
-                Op::Float(v) => stack.push(Value::Float(v)),
-                Op::Bool(v) => stack.push(Value::Bool(v)),
-                Op::Unit => stack.push(Value::Unit),
-                Op::Str(n) => {
-                    let r = match consts[n as usize] {
-                        Some(r) => r,
-                        None => {
-                            gc_point!();
-                            let Value::Obj(r) = heap.alloc_str(module.strings[n as usize].clone())
-                            else {
-                                unreachable!()
-                            };
-                            consts[n as usize] = Some(r);
-                            r
-                        }
-                    };
-                    stack.push(Value::Obj(r));
-                }
-                Op::Interp(n) => {
-                    gc_point!();
-                    let start = stack.len() - n as usize;
-                    let mut text = String::new();
-                    for v in &stack[start..] {
-                        heap.render_into(*v, false, &mut text);
+        let mut body = || -> Result<(), Diagnostic> {
+            loop {
+                let op = function.code[ip];
+                ip += 1;
+                match op {
+                    Op::Int(v) => stack.push(Value::Int(v)),
+                    Op::Float(v) => stack.push(Value::Float(v)),
+                    Op::Bool(v) => stack.push(Value::Bool(v)),
+                    Op::Unit => stack.push(Value::Unit),
+                    Op::Str(n) => {
+                        let r = match consts[n as usize] {
+                            Some(r) => r,
+                            None => {
+                                gc_point!();
+                                let Value::Obj(r) =
+                                    heap.alloc_str(module.strings[n as usize].clone())
+                                else {
+                                    unreachable!()
+                                };
+                                consts[n as usize] = Some(r);
+                                r
+                            }
+                        };
+                        stack.push(Value::Obj(r));
                     }
-                    stack.truncate(start);
-                    let v = heap.alloc_str(text);
-                    stack.push(v);
-                }
-                Op::Array(n) => {
-                    gc_point!();
-                    let start = stack.len() - n as usize;
-                    let items = stack.split_off(start);
-                    let v = heap.alloc_array(items);
-                    stack.push(v);
-                }
-                Op::Index => {
-                    gc_point!();
-                    let index = pop!();
-                    let target = pop!();
-                    let (Value::Int(i), Value::Obj(r)) = (index, target) else {
-                        fail!("no se puede indexar este valor");
-                    };
-                    if let Object::Str(s) = heap.get(r) {
-                        // `s[i]`: la cadena de un carácter.
-                        let picked = usize::try_from(i).ok().and_then(|i| s.chars().nth(i));
-                        let Some(c) = picked else {
+                    Op::Interp(n) => {
+                        gc_point!();
+                        let start = stack.len() - n as usize;
+                        let mut text = String::new();
+                        for v in &stack[start..] {
+                            heap.render_into(*v, false, &mut text);
+                        }
+                        stack.truncate(start);
+                        let v = heap.alloc_str(text);
+                        stack.push(v);
+                    }
+                    Op::Array(n) => {
+                        gc_point!();
+                        let start = stack.len() - n as usize;
+                        let items = stack.split_off(start);
+                        let v = heap.alloc_array(items);
+                        stack.push(v);
+                    }
+                    Op::Index => {
+                        gc_point!();
+                        let index = pop!();
+                        let target = pop!();
+                        let (Value::Int(i), Value::Obj(r)) = (index, target) else {
+                            fail!("no se puede indexar este valor");
+                        };
+                        if let Object::Str(s) = heap.get(r) {
+                            // `s[i]`: la cadena de un carácter.
+                            let picked = usize::try_from(i).ok().and_then(|i| s.chars().nth(i));
+                            let Some(c) = picked else {
+                                fail!(
+                                    "índice fuera de rango: {i} en una cadena de {} carácter(es)",
+                                    s.chars().count()
+                                );
+                            };
+                            let v = heap.alloc_str(c.to_string());
+                            stack.push(v);
+                            continue;
+                        }
+                        let Object::Array(items) = heap.get(r) else {
+                            fail!("no se puede indexar este valor");
+                        };
+                        if i < 0 || i as usize >= items.len() {
                             fail!(
-                                "índice fuera de rango: {i} en una cadena de {} carácter(es)",
-                                s.chars().count()
+                                "índice fuera de rango: {i} en un arreglo de {} elemento(s)",
+                                items.len()
+                            );
+                        }
+                        stack.push(items[i as usize]);
+                    }
+                    Op::SetIndex => {
+                        let value = pop!();
+                        let index = pop!();
+                        let target = pop!();
+                        let (Value::Int(i), Value::Obj(r)) = (index, target) else {
+                            fail!("no se puede indexar este valor");
+                        };
+                        let items = heap.array_mut(r);
+                        if i < 0 || i as usize >= items.len() {
+                            fail!(
+                                "índice fuera de rango: {i} en un arreglo de {} elemento(s)",
+                                items.len()
+                            );
+                        }
+                        items[i as usize] = value;
+                    }
+                    Op::Dup => {
+                        let top = stack[stack.len() - 1];
+                        stack.push(top);
+                    }
+                    Op::GetField(n) => {
+                        let Value::Obj(r) = pop!() else {
+                            fail!("no se puede leer un campo de este valor");
+                        };
+                        stack.push(heap.field(r, n));
+                    }
+                    Op::SetField(n) => {
+                        let value = pop!();
+                        let Value::Obj(r) = pop!() else {
+                            fail!("no se puede escribir un campo de este valor");
+                        };
+                        heap.set_field(r, n, value);
+                    }
+                    Op::Alloc { class, n } => {
+                        gc_point!();
+                        let v = heap.alloc_instance(class, vec![Value::Unit; n as usize]);
+                        stack.push(v);
+                    }
+                    Op::CallMethod { method, argc } => {
+                        if frames.len() >= *max_depth {
+                            fail!(
+                                "desbordamiento de pila: más de {} llamadas anidadas",
+                                max_depth
+                            );
+                        }
+                        let Value::Obj(receiver) = stack[stack.len() - argc as usize - 1] else {
+                            fail!("no se puede llamar a un método sobre este valor");
+                        };
+                        let Some(class) = heap.class_of(receiver) else {
+                            fail!("no se puede llamar a un método sobre este valor");
+                        };
+                        let Some(&target) = module.classes[class as usize].vtable.get(&method)
+                        else {
+                            fail!(
+                                "la clase `{}` no tiene el método `{}`",
+                                module.classes[class as usize].name,
+                                module.methods[method as usize]
                             );
                         };
-                        let v = heap.alloc_str(c.to_string());
-                        stack.push(v);
-                        continue;
+                        let callee = &module.functions[target as usize];
+                        frames.push(Frame { function, ip, base });
+                        base = stack.len() - callee.arity;
+                        function = callee;
+                        ip = 0;
                     }
-                    let Object::Array(items) = heap.get(r) else {
-                        fail!("no se puede indexar este valor");
-                    };
-                    if i < 0 || i as usize >= items.len() {
-                        fail!(
-                            "índice fuera de rango: {i} en un arreglo de {} elemento(s)",
-                            items.len()
-                        );
+                    Op::NewCell => {
+                        gc_point!();
+                        let value = pop!();
+                        let cell = heap.alloc_cell(value);
+                        stack.push(cell);
                     }
-                    stack.push(items[i as usize]);
-                }
-                Op::SetIndex => {
-                    let value = pop!();
-                    let index = pop!();
-                    let target = pop!();
-                    let (Value::Int(i), Value::Obj(r)) = (index, target) else {
-                        fail!("no se puede indexar este valor");
-                    };
-                    let items = heap.array_mut(r);
-                    if i < 0 || i as usize >= items.len() {
-                        fail!(
-                            "índice fuera de rango: {i} en un arreglo de {} elemento(s)",
-                            items.len()
-                        );
+                    Op::CellGet => {
+                        let Value::Obj(cell) = pop!() else {
+                            unreachable!("el compilador garantiza una celda");
+                        };
+                        stack.push(heap.cell(cell));
                     }
-                    items[i as usize] = value;
-                }
-                Op::Dup => {
-                    let top = stack[stack.len() - 1];
-                    stack.push(top);
-                }
-                Op::GetField(n) => {
-                    let Value::Obj(r) = pop!() else {
-                        fail!("no se puede leer un campo de este valor");
-                    };
-                    stack.push(heap.field(r, n));
-                }
-                Op::SetField(n) => {
-                    let value = pop!();
-                    let Value::Obj(r) = pop!() else {
-                        fail!("no se puede escribir un campo de este valor");
-                    };
-                    heap.set_field(r, n, value);
-                }
-                Op::Alloc { class, n } => {
-                    gc_point!();
-                    let v = heap.alloc_instance(class, vec![Value::Unit; n as usize]);
-                    stack.push(v);
-                }
-                Op::CallMethod { method, argc } => {
-                    if frames.len() >= *max_depth {
-                        fail!(
-                            "desbordamiento de pila: más de {} llamadas anidadas",
-                            max_depth
-                        );
+                    Op::CellSet => {
+                        let Value::Obj(cell) = pop!() else {
+                            unreachable!("el compilador garantiza una celda");
+                        };
+                        let value = pop!();
+                        heap.set_cell(cell, value);
                     }
-                    let Value::Obj(receiver) = stack[stack.len() - argc as usize - 1] else {
-                        fail!("no se puede llamar a un método sobre este valor");
-                    };
-                    let Some(class) = heap.class_of(receiver) else {
-                        fail!("no se puede llamar a un método sobre este valor");
-                    };
-                    let Some(&target) = module.classes[class as usize].vtable.get(&method) else {
-                        fail!(
-                            "la clase `{}` no tiene el método `{}`",
-                            module.classes[class as usize].name,
-                            module.methods[method as usize]
-                        );
-                    };
-                    let callee = &module.functions[target as usize];
-                    frames.push(Frame { function, ip, base });
-                    base = stack.len() - callee.arity;
-                    function = callee;
-                    ip = 0;
-                }
-                Op::NewCell => {
-                    gc_point!();
-                    let value = pop!();
-                    let cell = heap.alloc_cell(value);
-                    stack.push(cell);
-                }
-                Op::CellGet => {
-                    let Value::Obj(cell) = pop!() else {
-                        unreachable!("el compilador garantiza una celda");
-                    };
-                    stack.push(heap.cell(cell));
-                }
-                Op::CellSet => {
-                    let Value::Obj(cell) = pop!() else {
-                        unreachable!("el compilador garantiza una celda");
-                    };
-                    let value = pop!();
-                    heap.set_cell(cell, value);
-                }
-                Op::GetCapture(index) => {
-                    let Value::Obj(closure) = stack[base] else {
-                        unreachable!("el local 0 de una lambda es la lambda");
-                    };
-                    stack.push(heap.capture(closure, index));
-                }
-                Op::Closure { func, n } => {
-                    gc_point!();
-                    let captures = stack.split_off(stack.len() - n as usize);
-                    let closure = heap.alloc_closure(func, captures);
-                    stack.push(closure);
-                }
-                Op::CallValue(argc) => {
-                    if frames.len() >= *max_depth {
-                        fail!(
-                            "desbordamiento de pila: más de {} llamadas anidadas",
-                            max_depth
-                        );
+                    Op::GetCapture(index) => {
+                        let Value::Obj(closure) = stack[base] else {
+                            unreachable!("el local 0 de una lambda es la lambda");
+                        };
+                        stack.push(heap.capture(closure, index));
                     }
-                    let Value::Obj(closure) = stack[stack.len() - argc as usize - 1] else {
-                        fail!("no se puede llamar a este valor: no es una función");
-                    };
-                    let Some(target) = heap.closure_function(closure) else {
-                        fail!("no se puede llamar a este valor: no es una función");
-                    };
-                    let callee = &module.functions[target as usize];
-                    frames.push(Frame { function, ip, base });
-                    base = stack.len() - callee.arity;
-                    function = callee;
-                    ip = 0;
-                }
-                Op::IsInstance(ty) => {
-                    let Value::Obj(r) = pop!() else {
-                        fail!("`is` necesita un objeto");
-                    };
-                    let is = heap
-                        .class_of(r)
-                        .is_some_and(|c| module.classes[c as usize].supers.contains(&ty));
-                    stack.push(Value::Bool(is));
-                }
-                Op::Cast(ty) => {
-                    let Value::Obj(r) = *top!() else {
-                        fail!("`as` necesita un objeto");
-                    };
-                    let class = heap.class_of(r);
-                    if !class.is_some_and(|c| module.classes[c as usize].supers.contains(&ty)) {
-                        fail!(
-                            "no se puede convertir un `{}` a `{}`",
-                            class.map_or("?", |c| module.classes[c as usize].name.as_str()),
-                            module.classes[ty as usize].name
-                        );
+                    Op::Closure { func, n } => {
+                        gc_point!();
+                        let captures = stack.split_off(stack.len() - n as usize);
+                        let closure = heap.alloc_closure(func, captures);
+                        stack.push(closure);
                     }
-                }
-                Op::Dup2 => {
-                    let n = stack.len();
-                    stack.push(stack[n - 2]);
-                    stack.push(stack[n - 1]);
-                }
-                Op::Len => {
-                    let Value::Obj(r) = pop!() else {
-                        fail!("`len` necesita una cadena o un arreglo");
-                    };
-                    let len = match heap.get(r) {
-                        Object::Str(s) => s.chars().count(),
-                        Object::Array(items) => items.len(),
-                        Object::Instance { .. } | Object::Closure { .. } | Object::Cell(_) => {
-                            fail!("`len` necesita una cadena o un arreglo")
+                    Op::CallValue(argc) => {
+                        if frames.len() >= *max_depth {
+                            fail!(
+                                "desbordamiento de pila: más de {} llamadas anidadas",
+                                max_depth
+                            );
                         }
-                    };
-                    stack.push(Value::Int(len as i64));
-                }
-                Op::Push => {
-                    let value = pop!();
-                    let Value::Obj(r) = pop!() else {
-                        fail!("`push` necesita un arreglo");
-                    };
-                    heap.push(r, value);
-                    stack.push(Value::Unit);
-                }
-                Op::ArrayPop => {
-                    let Value::Obj(r) = pop!() else {
-                        fail!("`pop` necesita un arreglo");
-                    };
-                    match heap.pop(r) {
-                        Some(v) => stack.push(v),
-                        None => fail!("`pop` sobre un arreglo vacío"),
+                        let Value::Obj(closure) = stack[stack.len() - argc as usize - 1] else {
+                            fail!("no se puede llamar a este valor: no es una función");
+                        };
+                        let Some(target) = heap.closure_function(closure) else {
+                            fail!("no se puede llamar a este valor: no es una función");
+                        };
+                        let callee = &module.functions[target as usize];
+                        frames.push(Frame { function, ip, base });
+                        base = stack.len() - callee.arity;
+                        function = callee;
+                        ip = 0;
                     }
-                }
-                Op::Native(id) if id >= FIRST_SCHED_NATIVE => {
-                    match id - FIRST_SCHED_NATIVE {
-                        // _lanza(f): la tarea nueva empieza en la función de la lambda.
-                        0 => {
-                            let Value::Obj(closure) = pop!() else {
-                                fail!("`lanza` necesita una función");
-                            };
-                            let Some(target) = heap.closure_function(closure) else {
-                                fail!("`lanza` necesita una función");
-                            };
-                            queue.push_back(Task {
-                                stack: vec![Value::Obj(closure)],
-                                frames: Vec::new(),
-                                handlers: Vec::new(),
-                                function: &module.functions[target as usize],
-                                ip: 0,
-                                base: 0,
-                                main: false,
-                            });
-                            stack.push(Value::Unit);
+                    Op::IsInstance(ty) => {
+                        let Value::Obj(r) = pop!() else {
+                            fail!("`is` necesita un objeto");
+                        };
+                        let is = heap
+                            .class_of(r)
+                            .is_some_and(|c| module.classes[c as usize].supers.contains(&ty));
+                        stack.push(Value::Bool(is));
+                    }
+                    Op::Cast(ty) => {
+                        let Value::Obj(r) = *top!() else {
+                            fail!("`as` necesita un objeto");
+                        };
+                        let class = heap.class_of(r);
+                        if !class.is_some_and(|c| module.classes[c as usize].supers.contains(&ty)) {
+                            fail!(
+                                "no se puede convertir un `{}` a `{}`",
+                                class.map_or("?", |c| module.classes[c as usize].name.as_str()),
+                                module.classes[ty as usize].name
+                            );
                         }
-                        // cede(): al final de la cola, si hay alguien más.
-                        1 => {
-                            stack.push(Value::Unit);
-                            if let Some(next) = queue.pop_front() {
-                                let current = park!();
-                                queue.push_back(current);
-                                resume!(next);
+                    }
+                    Op::Dup2 => {
+                        let n = stack.len();
+                        stack.push(stack[n - 2]);
+                        stack.push(stack[n - 1]);
+                    }
+                    Op::Len => {
+                        let Value::Obj(r) = pop!() else {
+                            fail!("`len` necesita una cadena o un arreglo");
+                        };
+                        let len = match heap.get(r) {
+                            Object::Str(s) => s.chars().count(),
+                            Object::Array(items) => items.len(),
+                            Object::Instance { .. } | Object::Closure { .. } | Object::Cell(_) => {
+                                fail!("`len` necesita una cadena o un arreglo")
                             }
+                        };
+                        stack.push(Value::Int(len as i64));
+                    }
+                    Op::Push => {
+                        let value = pop!();
+                        let Value::Obj(r) = pop!() else {
+                            fail!("`push` necesita un arreglo");
+                        };
+                        heap.push(r, value);
+                        stack.push(Value::Unit);
+                    }
+                    Op::ArrayPop => {
+                        let Value::Obj(r) = pop!() else {
+                            fail!("`pop` necesita un arreglo");
+                        };
+                        match heap.pop(r) {
+                            Some(v) => stack.push(v),
+                            None => fail!("`pop` sobre un arreglo vacío"),
                         }
-                        // _bloquea(): espera hasta el próximo `_avisa`.
-                        2 => {
-                            stack.push(Value::Unit);
-                            match queue.pop_front() {
-                                Some(next) => {
+                    }
+                    Op::Native(id) if id >= FIRST_SCHED_NATIVE => {
+                        match id - FIRST_SCHED_NATIVE {
+                            // _lanza(f): la tarea nueva empieza en la función de la lambda.
+                            0 => {
+                                let Value::Obj(closure) = pop!() else {
+                                    fail!("`lanza` necesita una función");
+                                };
+                                let Some(target) = heap.closure_function(closure) else {
+                                    fail!("`lanza` necesita una función");
+                                };
+                                queue.push_back(Task {
+                                    stack: vec![Value::Obj(closure)],
+                                    frames: Vec::new(),
+                                    handlers: Vec::new(),
+                                    function: &module.functions[target as usize],
+                                    ip: 0,
+                                    base: 0,
+                                    main: false,
+                                });
+                                stack.push(Value::Unit);
+                            }
+                            // cede(): al final de la cola, si hay alguien más.
+                            1 => {
+                                stack.push(Value::Unit);
+                                if let Some(next) = queue.pop_front() {
                                     let current = park!();
-                                    waiting.push(current);
+                                    queue.push_back(current);
                                     resume!(next);
                                 }
-                                None => fail!("interbloqueo: todas las tareas esperan"),
                             }
-                        }
-                        // _avisa(): todas las que esperan vuelven a la cola.
-                        _ => {
-                            stack.push(Value::Unit);
-                            queue.extend(waiting.drain(..));
-                        }
-                    }
-                }
-                Op::Native(id) => {
-                    gc_point!();
-                    let argc = and23_types::NATIVES[id as usize].params.len();
-                    let start = stack.len() - argc;
-                    let result = crate::natives::call(id, heap, &stack[start..], io_error);
-                    stack.truncate(start);
-                    match result {
-                        Ok(v) => stack.push(v),
-                        Err(message) => fail!("{message}"),
-                    }
-                }
-                Op::Hash => {
-                    let v = pop!();
-                    let h = hash_value(heap, v);
-                    stack.push(Value::Int(h));
-                }
-                Op::GetLocal(n) => {
-                    let v = stack[base + n as usize];
-                    stack.push(v);
-                }
-                Op::SetLocal(n) => {
-                    let v = pop!();
-                    stack[base + n as usize] = v;
-                }
-                Op::GetGlobal(n) => match globals[n as usize] {
-                    Some(v) => stack.push(v),
-                    None => fail!(
-                        "la variable `{}` no está definida",
-                        module.globals[n as usize]
-                    ),
-                },
-                Op::SetGlobal(n) => {
-                    let v = pop!();
-                    match &mut globals[n as usize] {
-                        Some(slot) => *slot = v,
-                        None => {
-                            fail!(
-                                "la variable `{}` no está definida",
-                                module.globals[n as usize]
-                            )
-                        }
-                    }
-                }
-                Op::DefGlobal(n) => {
-                    let v = pop!();
-                    globals[n as usize] = Some(v);
-                }
-                Op::Pop => {
-                    pop!();
-                }
-                Op::PopN(n) => {
-                    let len = stack.len() - n as usize;
-                    stack.truncate(len);
-                }
-                Op::Neg => {
-                    let v = top!();
-                    match *v {
-                        Value::Int(x) => match x.checked_neg() {
-                            Some(r) => *v = Value::Int(r),
-                            None => fail!("desbordamiento de entero (i64)"),
-                        },
-                        Value::Float(x) => *v = Value::Float(-x),
-                        other => fail!("el operador `-` no admite {}", other.type_name()),
-                    }
-                }
-                Op::Not => {
-                    let v = top!();
-                    match *v {
-                        Value::Bool(x) => *v = Value::Bool(!x),
-                        other => fail!("el operador `!` no admite {}", other.type_name()),
-                    }
-                }
-                Op::Add => {
-                    let n = stack.len();
-                    match (stack[n - 2], stack[n - 1]) {
-                        (Value::Int(x), Value::Int(y)) => match x.checked_add(y) {
-                            Some(r) => {
-                                stack.pop();
-                                stack[n - 2] = Value::Int(r);
+                            // _bloquea(): espera hasta el próximo `_avisa`.
+                            2 => {
+                                stack.push(Value::Unit);
+                                match queue.pop_front() {
+                                    Some(next) => {
+                                        let current = park!();
+                                        waiting.push(current);
+                                        resume!(next);
+                                    }
+                                    None => fail!("interbloqueo: todas las tareas esperan"),
+                                }
                             }
-                            None => fail!("desbordamiento de entero (i64)"),
-                        },
-                        (Value::Obj(x), Value::Obj(y)) => {
-                            // Los operandos siguen en la pila mientras el GC puede correr.
-                            gc_point!();
-                            let mut text =
-                                String::with_capacity(heap.str(x).len() + heap.str(y).len());
-                            text.push_str(heap.str(x));
-                            text.push_str(heap.str(y));
-                            stack.truncate(n - 2);
-                            let v = heap.alloc_str(text);
-                            stack.push(v);
-                        }
-                        _ => slow!(op),
-                    }
-                }
-                Op::Sub => arith!(op, checked_sub),
-                Op::Mul => arith!(op, checked_mul),
-                Op::Div | Op::Rem => slow!(op),
-                Op::Eq | Op::Ne => slow!(op),
-                Op::Lt => compare!(op, <),
-                Op::Le => compare!(op, <=),
-                Op::Gt => compare!(op, >),
-                Op::Ge => compare!(op, >=),
-                Op::Jump(target) => ip = target as usize,
-                Op::Nil => stack.push(Value::Nil),
-                Op::JumpIfNil(target) => {
-                    if *top!() == Value::Nil {
-                        ip = target as usize;
-                    }
-                }
-                Op::JumpIfNotNil(target) => {
-                    if *top!() != Value::Nil {
-                        ip = target as usize;
-                    }
-                }
-                Op::Try(target) => handlers.push(Handler {
-                    frames_len: frames.len(),
-                    stack_len: stack.len(),
-                    function,
-                    base,
-                    catch_ip: target as usize,
-                }),
-                Op::EndTry => {
-                    handlers.pop();
-                }
-                Op::Fail => {
-                    let exception = pop!();
-                    match handlers.pop() {
-                        Some(handler) => {
-                            frames.truncate(handler.frames_len);
-                            function = handler.function;
-                            base = handler.base;
-                            ip = handler.catch_ip;
-                            stack.truncate(handler.stack_len);
-                            stack.push(exception);
-                        }
-                        None => {
-                            let Value::Obj(r) = exception else {
-                                fail!("`fail` necesita un objeto");
-                            };
-                            let name = heap
-                                .class_of(r)
-                                .map_or("?", |c| module.classes[c as usize].name.as_str());
-                            // `msg` es el primer campo de toda clase que hereda de `Fallo`.
-                            let msg = heap.render(heap.field(r, 0));
-                            fail!("excepción sin capturar `{name}`: {msg}");
+                            // _avisa(): todas las que esperan vuelven a la cola.
+                            3 => {
+                                stack.push(Value::Unit);
+                                queue.extend(waiting.drain(..));
+                            }
+                            // _hayListas(): ¿hay otra tarea que pueda avanzar?
+                            _ => stack.push(Value::Bool(!queue.is_empty())),
                         }
                     }
-                }
-                Op::JumpIfFalse(target) => match pop!() {
-                    Value::Bool(true) => {}
-                    Value::Bool(false) => ip = target as usize,
-                    other => fail!("la condición debe ser Bool, pero es {}", other.type_name()),
-                },
-                Op::AndJump(target) | Op::OrJump(target) => {
-                    let is_and = matches!(op, Op::AndJump(_));
-                    match *top!() {
-                        Value::Bool(b) if b != is_and => ip = target as usize,
-                        Value::Bool(_) => {
-                            pop!();
+                    Op::Native(id) => {
+                        gc_point!();
+                        let argc = and23_types::NATIVES[id as usize].params.len();
+                        let start = stack.len() - argc;
+                        let result = crate::natives::call(id, heap, &stack[start..], native);
+                        stack.truncate(start);
+                        match result {
+                            Ok(v) => stack.push(v),
+                            Err(message) => fail!("{message}"),
                         }
-                        other => fail!(
-                            "el operador `{}` requiere Bool, pero recibió {}",
-                            if is_and { "&&" } else { "||" },
-                            other.type_name()
+                    }
+                    Op::Hash => {
+                        let v = pop!();
+                        let h = hash_value(heap, v);
+                        stack.push(Value::Int(h));
+                    }
+                    Op::GetLocal(n) => {
+                        let v = stack[base + n as usize];
+                        stack.push(v);
+                    }
+                    Op::SetLocal(n) => {
+                        let v = pop!();
+                        stack[base + n as usize] = v;
+                    }
+                    Op::GetGlobal(n) => match globals[n as usize] {
+                        Some(v) => stack.push(v),
+                        None => fail!(
+                            "la variable `{}` no está definida",
+                            module.globals[n as usize]
                         ),
+                    },
+                    Op::SetGlobal(n) => {
+                        let v = pop!();
+                        match &mut globals[n as usize] {
+                            Some(slot) => *slot = v,
+                            None => {
+                                fail!(
+                                    "la variable `{}` no está definida",
+                                    module.globals[n as usize]
+                                )
+                            }
+                        }
                     }
-                }
-                Op::CheckBool(is_and) => {
-                    if let other @ (Value::Int(_) | Value::Float(_) | Value::Unit) = *top!() {
-                        fail!(
-                            "el operador `{}` requiere Bool, pero recibió {}",
-                            if is_and { "&&" } else { "||" },
-                            other.type_name()
-                        );
+                    Op::DefGlobal(n) => {
+                        let v = pop!();
+                        globals[n as usize] = Some(v);
                     }
-                }
-                Op::Call(n) => {
-                    if frames.len() >= *max_depth {
-                        fail!(
-                            "desbordamiento de pila: más de {} llamadas anidadas",
-                            max_depth
-                        );
+                    Op::Pop => {
+                        pop!();
                     }
-                    let callee = &module.functions[n as usize];
-                    frames.push(Frame { function, ip, base });
-                    base = stack.len() - callee.arity;
-                    function = callee;
-                    ip = 0;
-                }
-                Op::Return => {
-                    let result = pop!();
-                    // Los `attempt` de esta función que no llegaron a su `EndTry` ya no valen.
-                    while handlers
-                        .last()
-                        .is_some_and(|h| h.frames_len >= frames.len())
-                    {
+                    Op::PopN(n) => {
+                        let len = stack.len() - n as usize;
+                        stack.truncate(len);
+                    }
+                    Op::Neg => {
+                        let v = top!();
+                        match *v {
+                            Value::Int(x) => match x.checked_neg() {
+                                Some(r) => *v = Value::Int(r),
+                                None => fail!("desbordamiento de entero (i64)"),
+                            },
+                            Value::Float(x) => *v = Value::Float(-x),
+                            other => fail!("el operador `-` no admite {}", other.type_name()),
+                        }
+                    }
+                    Op::Not => {
+                        let v = top!();
+                        match *v {
+                            Value::Bool(x) => *v = Value::Bool(!x),
+                            other => fail!("el operador `!` no admite {}", other.type_name()),
+                        }
+                    }
+                    Op::Add => {
+                        let n = stack.len();
+                        match (stack[n - 2], stack[n - 1]) {
+                            (Value::Int(x), Value::Int(y)) => match x.checked_add(y) {
+                                Some(r) => {
+                                    stack.pop();
+                                    stack[n - 2] = Value::Int(r);
+                                }
+                                None => fail!("desbordamiento de entero (i64)"),
+                            },
+                            (Value::Obj(x), Value::Obj(y)) => {
+                                // Los operandos siguen en la pila mientras el GC puede correr.
+                                gc_point!();
+                                let mut text =
+                                    String::with_capacity(heap.str(x).len() + heap.str(y).len());
+                                text.push_str(heap.str(x));
+                                text.push_str(heap.str(y));
+                                stack.truncate(n - 2);
+                                let v = heap.alloc_str(text);
+                                stack.push(v);
+                            }
+                            _ => slow!(op),
+                        }
+                    }
+                    Op::Sub => arith!(op, checked_sub),
+                    Op::Mul => arith!(op, checked_mul),
+                    Op::Div | Op::Rem => slow!(op),
+                    Op::Eq | Op::Ne => slow!(op),
+                    Op::Lt => compare!(op, <),
+                    Op::Le => compare!(op, <=),
+                    Op::Gt => compare!(op, >),
+                    Op::Ge => compare!(op, >=),
+                    Op::Jump(target) => ip = target as usize,
+                    Op::Nil => stack.push(Value::Nil),
+                    Op::JumpIfNil(target) => {
+                        if *top!() == Value::Nil {
+                            ip = target as usize;
+                        }
+                    }
+                    Op::JumpIfNotNil(target) => {
+                        if *top!() != Value::Nil {
+                            ip = target as usize;
+                        }
+                    }
+                    Op::Try(target) => handlers.push(Handler {
+                        frames_len: frames.len(),
+                        stack_len: stack.len(),
+                        function,
+                        base,
+                        catch_ip: target as usize,
+                    }),
+                    Op::EndTry => {
                         handlers.pop();
                     }
-                    stack.truncate(base);
-                    match frames.pop() {
-                        Some(frame) => {
-                            function = frame.function;
-                            ip = frame.ip;
-                            base = frame.base;
-                            stack.push(result);
+                    Op::Fail => {
+                        let exception = pop!();
+                        match handlers.pop() {
+                            Some(handler) => {
+                                frames.truncate(handler.frames_len);
+                                function = handler.function;
+                                base = handler.base;
+                                ip = handler.catch_ip;
+                                stack.truncate(handler.stack_len);
+                                stack.push(exception);
+                            }
+                            None => {
+                                let Value::Obj(r) = exception else {
+                                    fail!("`fail` necesita un objeto");
+                                };
+                                let name = heap
+                                    .class_of(r)
+                                    .map_or("?", |c| module.classes[c as usize].name.as_str());
+                                // `msg` es el primer campo de toda clase que hereda de `Fallo`.
+                                let msg = heap.render(heap.field(r, 0));
+                                fail!("excepción sin capturar `{name}`: {msg}");
+                            }
                         }
-                        None if is_main => return Ok(()),
-                        // Terminó una tarea: sigue la siguiente. Si no hay ninguna lista, la principal espera.
-                        None => match queue.pop_front() {
-                            Some(next) => resume!(next),
-                            None => fail!("interbloqueo: todas las tareas esperan"),
-                        },
                     }
-                }
-                Op::Show => {
-                    let v = pop!();
-                    if let Err(e) = writeln!(out, "{}", heap.render(v)) {
-                        fail!("no se pudo escribir la salida: {e}");
+                    Op::JumpIfFalse(target) => match pop!() {
+                        Value::Bool(true) => {}
+                        Value::Bool(false) => ip = target as usize,
+                        other => fail!("la condición debe ser Bool, pero es {}", other.type_name()),
+                    },
+                    Op::AndJump(target) | Op::OrJump(target) => {
+                        let is_and = matches!(op, Op::AndJump(_));
+                        match *top!() {
+                            Value::Bool(b) if b != is_and => ip = target as usize,
+                            Value::Bool(_) => {
+                                pop!();
+                            }
+                            other => fail!(
+                                "el operador `{}` requiere Bool, pero recibió {}",
+                                if is_and { "&&" } else { "||" },
+                                other.type_name()
+                            ),
+                        }
                     }
-                }
-                Op::Echo => {
-                    let v = pop!();
-                    if v != Value::Unit {
+                    Op::CheckBool(is_and) => {
+                        if let other @ (Value::Int(_) | Value::Float(_) | Value::Unit) = *top!() {
+                            fail!(
+                                "el operador `{}` requiere Bool, pero recibió {}",
+                                if is_and { "&&" } else { "||" },
+                                other.type_name()
+                            );
+                        }
+                    }
+                    Op::Call(n) => {
+                        if frames.len() >= *max_depth {
+                            fail!(
+                                "desbordamiento de pila: más de {} llamadas anidadas",
+                                max_depth
+                            );
+                        }
+                        let callee = &module.functions[n as usize];
+                        frames.push(Frame { function, ip, base });
+                        base = stack.len() - callee.arity;
+                        function = callee;
+                        ip = 0;
+                    }
+                    Op::Return => {
+                        let result = pop!();
+                        // Los `attempt` de esta función que no llegaron a su `EndTry` ya no valen.
+                        while handlers
+                            .last()
+                            .is_some_and(|h| h.frames_len >= frames.len())
+                        {
+                            handlers.pop();
+                        }
+                        stack.truncate(base);
+                        match frames.pop() {
+                            Some(frame) => {
+                                function = frame.function;
+                                ip = frame.ip;
+                                base = frame.base;
+                                stack.push(result);
+                            }
+                            None if is_main => return Ok(()),
+                            // Terminó una tarea: sigue la siguiente. Si no hay ninguna lista, la principal espera.
+                            None => match queue.pop_front() {
+                                Some(next) => resume!(next),
+                                None => fail!("interbloqueo: todas las tareas esperan"),
+                            },
+                        }
+                    }
+                    Op::Show => {
+                        let v = pop!();
                         if let Err(e) = writeln!(out, "{}", heap.render(v)) {
                             fail!("no se pudo escribir la salida: {e}");
                         }
                     }
+                    Op::Echo => {
+                        let v = pop!();
+                        if v != Value::Unit {
+                            if let Err(e) = writeln!(out, "{}", heap.render(v)) {
+                                fail!("no se pudo escribir la salida: {e}");
+                            }
+                        }
+                    }
                 }
             }
+        };
+        match body() {
+            Ok(()) => Ok(()),
+            Err(d) => Err(with_trace(module, d, function, &frames)),
         }
     }
+}
+
+/// Maximo de llamadas que muestra la traza por cada extremo.
+const TRACE_HEAD: usize = 8;
+const TRACE_TAIL: usize = 3;
+
+/// Añade al error la traza de llamadas. Las funciones del preludio no aparecen: un error dentro de
+/// ellas se atribuye al código del usuario que las llamó.
+fn with_trace<'m>(
+    module: &'m Module,
+    mut d: Diagnostic,
+    function: &'m Function,
+    frames: &[Frame<'m>],
+) -> Diagnostic {
+    let is_prelude = |f: &Function| {
+        module
+            .functions
+            .iter()
+            .position(|g| std::ptr::eq(g, f))
+            .is_some_and(|i| i < module.prelude_functions)
+    };
+    // (función, posición dentro de ella), de la más interna a la más externa.
+    let mut chain: Vec<(&Function, Span)> = vec![(function, d.span)];
+    chain.extend(
+        frames
+            .iter()
+            .rev()
+            .map(|f| (f.function, f.function.spans[f.ip - 1])),
+    );
+    chain.retain(|(f, _)| !is_prelude(f));
+    let Some(((_, at), outer)) = chain.split_first() else {
+        return d;
+    };
+    d.span = *at;
+    let line = |(f, span): &(&Function, Span)| {
+        let text = if f.name.starts_with('<') || f.name.is_empty() {
+            "llamado desde el nivel superior".to_string()
+        } else {
+            format!("llamado desde `{}`", f.name)
+        };
+        (Some(*span), text)
+    };
+    if outer.len() <= TRACE_HEAD + TRACE_TAIL {
+        d.trace = outer.iter().map(line).collect();
+    } else {
+        d.trace = outer[..TRACE_HEAD].iter().map(line).collect();
+        let skipped = outer.len() - TRACE_HEAD - TRACE_TAIL;
+        d.trace
+            .push((None, format!("... {skipped} llamadas más ...")));
+        d.trace
+            .extend(outer[outer.len() - TRACE_TAIL..].iter().map(line));
+    }
+    d
 }
 
 /// Hash de un valor: los iguales (`==`) dan lo mismo. Las cadenas, por contenido; los demás objetos,

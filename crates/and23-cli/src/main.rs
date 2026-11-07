@@ -10,7 +10,7 @@ const USAGE: &str = "\
 And23 (M11)
 
 Uso:
-  and23 <archivo.jb>   ejecuta un programa (y llama a main() si existe)
+  and23 <archivo.jb> [args...]   ejecuta un programa (y llama a main() si existe); args() los lee
   and23                abre el REPL (escribe :q o Ctrl+Z para salir)
   and23 --disasm <archivo.jb>   muestra el bytecode en vez de ejecutar
   and23 --tree <archivo.jb>     usa el intérprete de árbol (referencia de M1a; sin cadenas)
@@ -38,22 +38,16 @@ fn main() -> ExitCode {
 }
 
 fn dispatch(args: &[String]) -> u8 {
-    // `--gc-stress` recolecta basura en cada punto seguro (para probar el GC); va con cualquier modo.
-    let stress = args.iter().any(|a| a == "--gc-stress");
-    let args: Vec<String> = args
-        .iter()
-        .filter(|a| *a != "--gc-stress")
-        .cloned()
-        .collect();
-    // `--max-depth N` cambia cuántas llamadas pueden estar anidadas antes del error de pila.
-    let (depth, args) = match take_max_depth(args) {
+    // Las opciones (`--gc-stress`, `--max-depth N`) van antes del archivo; lo que sigue al archivo son
+    // los argumentos del programa (`args()`).
+    let (options, args) = match take_options(args) {
         Ok(parsed) => parsed,
         Err(message) => {
             eprintln!("error: {message}");
             return 2;
         }
     };
-    let stress = Options { stress, depth };
+    let stress = options;
     match args.as_slice() {
         [] => repl(stress),
         [flag] if flag == "--version" || flag == "-V" => {
@@ -66,7 +60,7 @@ fn dispatch(args: &[String]) -> u8 {
         }
         [flag, path] if flag == "--disasm" => disasm_file(path),
         [flag, path] if flag == "--tree" => run_file_tree(path),
-        [path] => run_file(path, stress),
+        [path, rest @ ..] if !path.starts_with("--") => run_file(path, stress.with_args(rest)),
         _ => {
             eprint!("{USAGE}");
             2
@@ -75,15 +69,24 @@ fn dispatch(args: &[String]) -> u8 {
 }
 
 /// Opciones de ejecución que valen para cualquier modo.
-#[derive(Clone, Copy)]
+#[derive(Clone, Default)]
 struct Options {
     stress: bool,
     depth: Option<usize>,
+    /// Argumentos del programa (los que siguen al archivo).
+    args: Vec<String>,
 }
 
 impl Options {
+    fn with_args(mut self, args: &[String]) -> Self {
+        self.args = args.to_vec();
+        self
+    }
+
     fn session<W: Write>(self, out: W) -> Session<W> {
-        let session = Session::new(out).with_gc_stress(self.stress);
+        let session = Session::new(out)
+            .with_gc_stress(self.stress)
+            .with_args(self.args);
         match self.depth {
             Some(depth) => session.with_max_depth(depth),
             None => session,
@@ -91,24 +94,28 @@ impl Options {
     }
 }
 
-/// Quita `--max-depth N` de los argumentos y devuelve N.
-fn take_max_depth(args: Vec<String>) -> Result<(Option<usize>, Vec<String>), String> {
-    let mut depth = None;
-    let mut rest = Vec::new();
-    let mut it = args.into_iter();
-    while let Some(arg) = it.next() {
-        if arg == "--max-depth" {
-            let value = it
-                .next()
-                .and_then(|v| v.parse::<usize>().ok())
-                .filter(|n| *n > 0)
-                .ok_or("`--max-depth` necesita un número entero positivo")?;
-            depth = Some(value);
-        } else {
-            rest.push(arg);
+/// Quita las opciones que preceden al archivo (`--gc-stress`, `--max-depth N`) y devuelve el resto.
+fn take_options(args: &[String]) -> Result<(Options, Vec<String>), String> {
+    let mut options = Options::default();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--gc-stress" => i += 1,
+            "--max-depth" => {
+                let value = args
+                    .get(i + 1)
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .filter(|n| *n > 0)
+                    .ok_or("`--max-depth` necesita un número entero positivo")?;
+                options.depth = Some(value);
+                i += 2;
+                continue;
+            }
+            _ => break,
         }
+        options.stress = true;
     }
-    Ok((depth, rest))
+    Ok((options, args[i..].to_vec()))
 }
 
 /// Carga el archivo y todo lo que importa con `use`; el error ya viene listo para mostrarse.

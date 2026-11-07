@@ -6,6 +6,9 @@ use std::fmt;
 pub struct Diagnostic {
     pub span: Span,
     pub message: String,
+    /// Llamadas pendientes cuando falló la ejecución, de la más interna a la más externa: dónde se llamó
+    /// (`None` en la línea que resume las omitidas) y el texto de la línea.
+    pub trace: Vec<(Option<Span>, String)>,
 }
 
 impl Diagnostic {
@@ -13,7 +16,26 @@ impl Diagnostic {
         Diagnostic {
             span,
             message: message.into(),
+            trace: Vec::new(),
         }
+    }
+
+    /// Las líneas de la traza, con `locate` dando «archivo:línea:columna» de cada posición.
+    pub fn trace_text(&self, locate: impl Fn(Span) -> String) -> String {
+        self.trace
+            .iter()
+            .map(|(span, text)| match span {
+                Some(span) => format!(
+                    "  {text} ({})
+",
+                    locate(*span)
+                ),
+                None => format!(
+                    "  {text}
+"
+                ),
+            })
+            .collect()
     }
 
     /// Línea (desde 1) y columna (desde 1, en caracteres) donde empieza el error.

@@ -146,6 +146,8 @@ pub struct ClassDef {
 #[derive(Debug, Clone, Default)]
 pub struct Module {
     pub functions: Vec<Function>,
+    /// Las funciones con índice menor a este vienen del preludio (los errores se atribuyen a quien las llama).
+    pub prelude_functions: usize,
     /// Clases e interfaces (estas con campos y tabla vacíos).
     pub classes: Vec<ClassDef>,
     /// Nombres de método con id: índice en este vector.

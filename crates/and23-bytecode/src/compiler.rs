@@ -49,6 +49,7 @@ impl Compiler {
     /// Marca las funciones definidas hasta ahora (el preludio) como redefinibles por el programa.
     pub fn seal_prelude(&mut self) {
         self.tables.overridable = self.tables.funcs.keys().cloned().collect();
+        self.module.prelude_functions = self.module.functions.len();
     }
 
     pub fn module(&self) -> &Module {

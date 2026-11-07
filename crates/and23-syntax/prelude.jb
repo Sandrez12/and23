@@ -504,3 +504,102 @@ thing Canal<T>(fix capacidad: Int) {
         _avisa()
     }
 }
+
+// ---------------------------------------------------------------- M12: biblioteca estándar 2
+
+fn _listaDe(xs: [Str]) -> Lista<Str> {
+    fix l = Lista<Str>()
+    mut i = 0
+    while i < len(xs) {
+        l.agrega(xs[i])
+        i += 1
+    }
+    return l
+}
+
+/// Los argumentos que siguen al archivo en la línea de comandos: `and23 programa.jb uno dos`.
+fn argumentos() -> Lista<Str> = _listaDe(_args())
+
+/// Valor de una variable de entorno, o nil si no existe.
+fn entorno(nombre: Str) -> Str? = _entorno(nombre)
+
+/// Milisegundos desde el 1 de enero de 1970 (UTC).
+fn ahora() -> Int = _ahora()
+
+/// Espera `ms` milisegundos. Mientras tanto otras tareas pueden avanzar; si no hay ninguna lista, duerme de verdad.
+fn duerme(ms: Int) {
+    fix fin = _ahora() + ms
+    while true {
+        fix resta = fin - _ahora()
+        if resta <= 0 { break }
+        if _hayListas() {
+            cede()
+            if fin - _ahora() > 1 { _pausa(1) }
+        } else {
+            _pausa(resta)
+        }
+    }
+}
+
+/// Entero al azar en [0, n). `n` debe ser positivo.
+fn azar(n: Int) -> Int = _azar(n)
+
+/// Decimal al azar en [0, 1).
+fn azarF() -> Float = _azarF()
+
+/// Fija la semilla: la misma semilla da siempre la misma secuencia.
+fn semilla(n: Int) { _semilla(n) }
+
+fn esDir(ruta: Str) -> Bool = _esDir(ruta)
+
+/// Nombres (no rutas) del contenido de una carpeta, en orden alfabético.
+fn listaDir(ruta: Str) -> Lista<Str> {
+    fix nombres = _listaDir(ruta)
+    if nombres != nil { return _listaDe(nombres) }
+    fail ErrorES(_errorES())
+}
+
+/// Crea la carpeta y las que falten por encima.
+fn creaDir(ruta: Str) {
+    if !_creaDir(ruta) { fail ErrorES(_errorES()) }
+}
+
+/// Posición del último separador (`/` o `\`) de la ruta, o -1.
+fn _ultimoSep(ruta: Str) -> Int {
+    mut i = len(ruta) - 1
+    while i >= 0 {
+        if ruta[i] == "/" || ruta[i] == "\\" { return i }
+        i -= 1
+    }
+    return -1
+}
+
+/// Une dos partes de una ruta con `/`; si la segunda es absoluta, gana.
+fn unirRuta(a: Str, b: Str) -> Str {
+    if len(a) == 0 { return b }
+    if b.empiezaCon("/") || b.empiezaCon("\\") { return b }
+    if a.terminaCon("/") || a.terminaCon("\\") { return a + b }
+    return a + "/" + b
+}
+
+/// Último componente de la ruta: `nombreDe("a/b/c.txt")` es `c.txt`.
+fn nombreDe(ruta: Str) -> Str = ruta.trozo(_ultimoSep(ruta) + 1, len(ruta))
+
+/// La ruta sin su último componente (`""` si no tiene separador).
+fn carpetaDe(ruta: Str) -> Str {
+    fix i = _ultimoSep(ruta)
+    if i < 0 { return "" }
+    if i == 0 { return ruta.trozo(0, 1) }
+    return ruta.trozo(0, i)
+}
+
+/// Extensión del último componente sin el punto (`""` si no tiene): `extension("a/c.tar.gz")` es `gz`.
+fn extension(ruta: Str) -> Str {
+    fix nombre = nombreDe(ruta)
+    mut i = len(nombre) - 1
+    while i > 0 {
+        if nombre[i] == "." { return nombre.trozo(i + 1, len(nombre)) }
+        i -= 1
+    }
+    return ""
+}
