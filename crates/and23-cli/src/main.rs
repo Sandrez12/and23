@@ -13,6 +13,8 @@ Uso:
   and23 <archivo.jb> [args...]   ejecuta un programa (y llama a main() si existe); args() los lee
   and23                abre el REPL (escribe :q o Ctrl+Z para salir)
   and23 --disasm <archivo.jb>   muestra el bytecode en vez de ejecutar
+  and23 fmt [--check] <archivos.jb...>   da formato a los archivos (con --check solo avisa de los que cambiarían)
+  and23 --prueba <archivo.jb>   ejecuta los bloques `prueba` del archivo y resume el resultado
   and23 --tree <archivo.jb>     usa el intérprete de árbol (referencia de M1a; sin cadenas)
   and23 --gc-stress ...         recolecta basura en cada punto seguro (prueba del GC)
   and23 --max-depth N ...       llamadas anidadas permitidas (por defecto 100000)
@@ -58,8 +60,10 @@ fn dispatch(args: &[String]) -> u8 {
             print!("{USAGE}");
             0
         }
+        [cmd, rest @ ..] if cmd == "fmt" => run_fmt(rest),
         [flag, path] if flag == "--disasm" => disasm_file(path),
         [flag, path] if flag == "--tree" => run_file_tree(path),
+        [flag, path] if flag == "--prueba" => run_tests(path, stress),
         [path, rest @ ..] if !path.starts_with("--") => run_file(path, stress.with_args(rest)),
         _ => {
             eprint!("{USAGE}");
@@ -154,6 +158,87 @@ fn run_file(path: &str, options: Options) -> u8 {
     // La salida normal debe quedar escrita antes del mensaje de error.
     let _ = session.out().flush();
     finish(result)
+}
+
+/// `and23 fmt [--check] archivos...`: reescribe cada archivo con el formato estándar. Con `--check` no
+/// escribe nada y termina con error si algún archivo cambiaría.
+fn run_fmt(args: &[String]) -> u8 {
+    let check = args.iter().any(|a| a == "--check");
+    let files: Vec<&String> = args.iter().filter(|a| *a != "--check").collect();
+    if files.is_empty() {
+        eprintln!("error: `fmt` necesita al menos un archivo");
+        return 2;
+    }
+    let mut status = 0;
+    for file in files {
+        let src = match std::fs::read_to_string(file) {
+            Ok(src) => src,
+            Err(e) => {
+                eprintln!("error: no se pudo leer `{file}`: {e}");
+                status = 1;
+                continue;
+            }
+        };
+        let formatted = and23_syntax::format::format(&src);
+        if formatted == src {
+            continue;
+        }
+        if check {
+            println!("{file}: sin formato");
+            status = 1;
+        } else if let Err(e) = std::fs::write(file, formatted) {
+            eprintln!("error: no se pudo escribir `{file}`: {e}");
+            status = 1;
+        } else {
+            println!("formateado: {file}");
+        }
+    }
+    status
+}
+
+/// Ejecuta las pruebas del archivo (`prueba "nombre" { ... }`). Primero corre el nivel superior del
+/// programa (definiciones y variables globales) pero no `main`; luego cada prueba, aislada de las demás
+/// en cuanto a errores: un fallo se informa y la siguiente prueba sigue.
+fn run_tests(path: &str, options: Options) -> u8 {
+    let loaded = match load_program(path) {
+        Ok(loaded) => loaded,
+        Err(text) => return finish(Err(text)),
+    };
+    let sources = loaded.sources;
+    let mut session = options.session(io::stdout());
+    if let Err(d) = session.run(&loaded.program, false) {
+        let _ = session.out().flush();
+        return finish(Err(sources.render(&d)));
+    }
+    let tests = &loaded.program.tests;
+    if tests.is_empty() {
+        println!("no hay pruebas en {path} (se escriben `prueba \"nombre\" {{ ... }}`)");
+        return 0;
+    }
+    let mut failed = 0;
+    for test in tests {
+        match session.run_function(&test.func) {
+            Ok(()) => {
+                let _ = writeln!(session.out(), "prueba \"{}\" ... ok", test.name);
+            }
+            Err(d) => {
+                failed += 1;
+                let _ = writeln!(session.out(), "prueba \"{}\" ... FALLÓ", test.name);
+                for line in sources.render(&d).lines() {
+                    let _ = writeln!(session.out(), "    {line}");
+                }
+            }
+        }
+    }
+    let total = tests.len();
+    let _ = writeln!(
+        session.out(),
+        "
+{total} prueba(s): {} ok, {failed} fallaron",
+        total - failed
+    );
+    let _ = session.out().flush();
+    u8::from(failed > 0)
 }
 
 /// Ejecuta con el intérprete de árbol: sirve para comparar velocidad y comportamiento.

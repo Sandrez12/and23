@@ -56,6 +56,11 @@ impl Compiler {
         &self.module
     }
 
+    /// Índice de la función de nivel superior `name`, si existe.
+    pub fn function_index(&self, name: &str) -> Option<usize> {
+        self.tables.funcs.get(name).map(|(i, _)| *i as usize)
+    }
+
     /// Índice de `main`, si el programa la definió.
     pub fn main_index(&self) -> Option<usize> {
         self.tables.funcs.get("main").map(|(i, _)| *i as usize)

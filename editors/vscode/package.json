@@ -1,0 +1,35 @@
+{
+  "name": "and23",
+  "displayName": "And23",
+  "description": "Resaltado de sintaxis y configuración del lenguaje And23 (.jb)",
+  "version": "0.2.0",
+  "publisher": "and23",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Sandrez12/and23"
+  },
+  "engines": {
+    "vscode": "^1.60.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "and23",
+        "aliases": ["And23", "and23"],
+        "extensions": [".jb"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "and23",
+        "scopeName": "source.and23",
+        "path": "./syntaxes/and23.tmLanguage.json"
+      }
+    ]
+  }
+}

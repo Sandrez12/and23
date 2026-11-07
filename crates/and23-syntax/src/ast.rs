@@ -425,6 +425,14 @@ pub struct UseDecl {
     pub span: Span,
 }
 
+/// `prueba "nombre" { ... }`: el cuerpo se convierte en la función `func` (sin parámetros).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TestDecl {
+    pub name: String,
+    pub func: String,
+    pub span: Span,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program {
     pub stmts: Vec<Stmt>,
@@ -432,4 +440,6 @@ pub struct Program {
     pub uses: Vec<UseDecl>,
     /// Nombres declarados con `open` (visibles para quien importe este archivo).
     pub exports: Vec<String>,
+    /// Las pruebas del archivo, en orden (solo las ejecuta `and23 --prueba`).
+    pub tests: Vec<TestDecl>,
 }

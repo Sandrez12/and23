@@ -290,7 +290,39 @@ productor.espera()
 programa falla con «interbloqueo». Cuando termina la tarea principal, las demás se descartan. Una tarea que nunca cede
 (un bucle sin fin) bloquea a las demás. Hay un ejemplo completo en `examples/tareas.jb`.
 
-## 13. Dónde seguir
+## 13. Pruebas y formato
+
+Un bloque `prueba "nombre" { ... }` define una prueba. Al ejecutar el archivo normalmente no hacen nada; se corren con
+`and23 --prueba archivo.jb`, que ejecuta el nivel superior del archivo (pero no `main`), luego cada prueba, e informa de
+las que fallan sin detenerse. El código de salida es 1 si alguna falla, lo que sirve para el CI.
+
+```jb
+fn doble(x: Int) -> Int = x * 2
+
+prueba "doble de un numero" {
+    afirmaIgual(doble(4), 8)
+    afirma(doble(0) == 0)
+}
+
+prueba "una lista recuerda lo que se le agrega" {
+    fix l = Lista<Int>()
+    l.agrega(7)
+    afirmaIgual(l.tam(), 1)
+}
+```
+
+`afirma(condicion)` y `afirmaIgual(real, esperado)` lanzan un `FalloPrueba` (que hereda de `Fallo`) cuando no se cumplen,
+y el mensaje de `afirmaIgual` dice qué se esperaba y qué fue. Cualquier otro error de ejecución dentro de una prueba también
+la hace fallar. Las variables globales se comparten entre pruebas. Las pruebas de los archivos importados con `use` no se
+ejecutan: solo las del archivo que le pasas a `--prueba`.
+
+`and23 fmt archivo.jb` da formato a los archivos: la sangría (4 espacios por nivel, y 4 más en las líneas que continúan una
+expresión), espacios sobrantes al final de línea y líneas en blanco repetidas. No cambia los saltos de línea ni mueve
+comentarios. `and23 fmt --check archivo.jb` no escribe nada y termina con error si el archivo cambiaría.
+
+Para VS Code hay una extensión con resaltado de sintaxis en `editors/vscode`.
+
+## 14. Dónde seguir
 
 - [`README.md`](../README.md): estado del proyecto y la lista de lo que funciona.
 - [`DESIGN.md`](../DESIGN.md): decisiones de diseño y límites conocidos de cada parte.

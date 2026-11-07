@@ -80,6 +80,17 @@ impl<W: Write> Session<W> {
         result
     }
 
+    /// Ejecuta la función de nivel superior `name`, sin argumentos (las pruebas de `and23 --prueba`).
+    pub fn run_function(&mut self, name: &str) -> Result<(), Diagnostic> {
+        let index = self.compiler.function_index(name).ok_or_else(|| {
+            Diagnostic::new(
+                and23_syntax::Span::new(0, 0),
+                format!("no existe la función `{name}`"),
+            )
+        })?;
+        self.vm.run(self.compiler.module(), index)
+    }
+
     /// Llama a `main()` si el programa la definió.
     pub fn run_main(&mut self) -> Result<(), Diagnostic> {
         let Some(index) = self.compiler.main_index() else {

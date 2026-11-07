@@ -1,0 +1,134 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "And23",
+  "scopeName": "source.and23",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#number" },
+    { "include": "#declaration" },
+    { "include": "#keyword" },
+    { "include": "#constant" },
+    { "include": "#builtin" },
+    { "include": "#type" },
+    { "include": "#call" },
+    { "include": "#operator" }
+  ],
+  "repository": {
+    "comment": {
+      "name": "comment.line.double-slash.and23",
+      "match": "//.*$"
+    },
+    "string": {
+      "name": "string.quoted.double.and23",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.and23",
+          "match": "\\\\(?:[nrt0\\\\\"$]|u\\{[0-9a-fA-F]+\\})"
+        },
+        {
+          "name": "meta.interpolation.and23",
+          "begin": "\\$\\{",
+          "beginCaptures": { "0": { "name": "punctuation.section.interpolation.begin.and23" } },
+          "end": "\\}",
+          "endCaptures": { "0": { "name": "punctuation.section.interpolation.end.and23" } },
+          "patterns": [{ "include": "$self" }]
+        }
+      ]
+    },
+    "number": {
+      "patterns": [
+        {
+          "name": "constant.numeric.float.and23",
+          "match": "\\b\\d[\\d_]*(?:\\.\\d[\\d_]*(?:[eE][+-]?\\d[\\d_]*)?|[eE][+-]?\\d[\\d_]*)\\b"
+        },
+        {
+          "name": "constant.numeric.integer.and23",
+          "match": "\\b\\d[\\d_]*\\b"
+        }
+      ]
+    },
+    "declaration": {
+      "patterns": [
+        {
+          "match": "\\b(fn)\\s+([\\p{L}_][\\p{L}\\p{N}_]*)",
+          "captures": {
+            "1": { "name": "storage.type.function.and23" },
+            "2": { "name": "entity.name.function.and23" }
+          }
+        },
+        {
+          "match": "\\b(thing|kind)\\s+([\\p{L}_][\\p{L}\\p{N}_]*)",
+          "captures": {
+            "1": { "name": "storage.type.class.and23" },
+            "2": { "name": "entity.name.type.class.and23" }
+          }
+        },
+        {
+          "match": "\\b(prueba)\\s+(?=\")",
+          "captures": { "1": { "name": "keyword.other.test.and23" } }
+        },
+        {
+          "match": "\\b(use)\\s+(?=\")",
+          "captures": { "1": { "name": "keyword.control.import.and23" } }
+        }
+      ]
+    },
+    "keyword": {
+      "patterns": [
+        {
+          "name": "keyword.control.and23",
+          "match": "\\b(if|else|while|return|break|continue|attempt|rescue|fail)\\b"
+        },
+        {
+          "name": "storage.modifier.and23",
+          "match": "\\b(fix|mut|open|como)\\b"
+        },
+        {
+          "name": "keyword.operator.word.and23",
+          "match": "\\b(is|as)\\b"
+        },
+        {
+          "name": "variable.language.and23",
+          "match": "\\b(this|super)\\b"
+        }
+      ]
+    },
+    "constant": {
+      "name": "constant.language.and23",
+      "match": "\\b(true|false|nil)\\b"
+    },
+    "builtin": {
+      "name": "support.function.builtin.and23",
+      "match": "\\b(show|len|push|pop|hash|afirma|afirmaIgual|lanza|lanzaDe|cede|duerme|ahora|azar|azarF|semilla|argumentos|entorno|leeLinea|leeArchivo|leeLineas|escribeArchivo|agregaArchivo|borraArchivo|existe|esDir|listaDir|creaDir|unirRuta|nombreDe|carpetaDe|extension|une|raiz|potencia|piso|techo|redondea|aFloat|absoluto|minimo|maximo)\\b(?=\\s*[(<{])"
+    },
+    "type": {
+      "patterns": [
+        {
+          "name": "support.type.primitive.and23",
+          "match": "\\b(Int|Float|Bool|Str|Unit)\\b"
+        },
+        {
+          "name": "entity.name.type.and23",
+          "match": "\\b[A-Z]\\w*\\b"
+        }
+      ]
+    },
+    "call": {
+      "name": "entity.name.function.call.and23",
+      "match": "\\b[a-z_]\\w*(?=\\s*\\()"
+    },
+    "operator": {
+      "patterns": [
+        { "name": "keyword.operator.arrow.and23", "match": "->" },
+        { "name": "keyword.operator.nullsafe.and23", "match": "\\?\\.|\\?:" },
+        { "name": "keyword.operator.comparison.and23", "match": "==|!=|<=|>=|<|>" },
+        { "name": "keyword.operator.logical.and23", "match": "&&|\\|\\||!" },
+        { "name": "keyword.operator.assignment.and23", "match": "\\+=|-=|\\*=|/=|%=|=" },
+        { "name": "keyword.operator.arithmetic.and23", "match": "[-+*/%]" }
+      ]
+    }
+  }
+}

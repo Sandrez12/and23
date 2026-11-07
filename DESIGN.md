@@ -528,6 +528,24 @@ fix m = Mapa<Str, Int>()                                                // expl�
 - **Límites.** Sin formato de números (decimales fijos), sin `Mapa` ordenado, sin borrar carpetas ni copiar o renombrar archivos, sin
   separadores propios del sistema en `unirRuta` (siempre `/`; Windows acepta ambos), sin reloj monótono ni zonas horarias ni fechas.
 
+### Pruebas, formateador y editor
+
+- **Pruebas.** `prueba "nombre" { ... }` es una declaración del nivel superior (`prueba` es una palabra contextual: solo cuenta cuando va
+  seguida de un texto fijo). El parser la convierte en una función sin parámetros `_prueba_N` y anota la prueba en `Program.tests`; el resto
+  del compilador no sabe de pruebas. `and23 --prueba archivo.jb` carga el programa, ejecuta su nivel superior (sin `main`) y llama a cada
+  función `_prueba_N` por separado con `Session::run_function`: un fallo (una excepción sin capturar o un error de ejecución) se informa con
+  su posición y la siguiente prueba sigue. Salida 1 si alguna falla. El preludio aporta `afirma`, `afirmaIgual<T>` y `FalloPrueba`. Las
+  pruebas de los módulos importados se descartan; las variables globales se comparten entre pruebas (no hay aislamiento).
+- **Formateador.** `and23 fmt [--check] archivos...` (`and23_syntax::format`). Es conservador a propósito: trabaja línea a línea y no
+  cambia saltos de línea ni espaciado dentro de la línea, así que no puede alterar el significado ni mover comentarios (un test comprueba
+  que los tokens de todos los ejemplos y del preludio no cambian y que formatear dos veces da lo mismo). Normaliza la sangría (un nivel por
+  cada línea distinta en que se abrió un `{`, `(` o `[` aún abierto, de modo que `f(g {` en una línea sangra un nivel; las líneas que
+  empiezan cerrando retroceden; +4 para las que empiezan con `.`, `?.`, `&&`, `||` o `?:` o siguen a una línea que acaba en operador),
+  quita espacios finales, junta las líneas en blanco y deja un solo salto de línea final. Las cadenas de varias líneas no se tocan y se
+  conserva el fin de línea del archivo (LF o CRLF). Límite: no parte líneas largas ni alinea nada.
+- **Editor.** `editors/vscode` es una extensión sin código: una gramática TextMate (palabras clave, cadenas con `${}`, números con
+  exponente, tipos, llamadas, operadores) y la configuración del lenguaje (comentarios, pares, sangría). No hay servidor de lenguaje.
+
 ## Fuentes de referencia
 
 - Crafting Interpreters (VM de bytecode, GC): https://craftinginterpreters.com

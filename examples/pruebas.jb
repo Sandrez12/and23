@@ -1,0 +1,47 @@
+// Pruebas con `prueba "nombre" { ... }`. No corren con `and23 examples/pruebas.jb` (solo se define el
+// código); se ejecutan con:  and23 --prueba examples/pruebas.jb
+
+fn factorial(n: Int) -> Int {
+    if n <= 1 { return 1 }
+    return n * factorial(n - 1)
+}
+
+fn es_palindromo(s: Str) -> Bool {
+    mut i = 0
+    while i < len(s) / 2 {
+        if s[i] != s[len(s) - 1 - i] { return false }
+        i += 1
+    }
+    return true
+}
+
+prueba "factorial de numeros pequenos" {
+    afirmaIgual(factorial(0), 1)
+    afirmaIgual(factorial(5), 120)
+    afirmaIgual(factorial(10), 3628800)
+}
+
+prueba "palindromos" {
+    afirma(es_palindromo("anilina"))
+    afirma(es_palindromo(""))
+    afirma(!es_palindromo("hola"))
+}
+
+prueba "una lista recuerda lo que se le agrega" {
+    fix l = Lista<Str>()
+    l.agrega("a")
+    l.agrega("b")
+    afirmaIgual(l.tam(), 2)
+    afirmaIgual(l.obtiene(1), "b")
+}
+
+prueba "un fallo se puede esperar" {
+    mut capturado = false
+    attempt {
+        fail Fallo("roto")
+    } rescue e: Fallo {
+        capturado = true
+        afirmaIgual(e.msg, "roto")
+    }
+    afirma(capturado)
+}

@@ -2,6 +2,7 @@
 
 pub mod ast;
 pub mod error;
+pub mod format;
 pub mod lexer;
 pub mod modules;
 pub mod parser;
@@ -9,8 +10,8 @@ pub mod span;
 
 pub use ast::{
     BinOp, Block, CtorParam, Expr, FieldDecl, FnDecl, InterpPart, KindDecl, KindMethod,
-    LambdaParam, Param, Program, Rescue, Stmt, SuperRef, ThingDecl, TypeParam, TypeRef, UnOp,
-    UseDecl,
+    LambdaParam, Param, Program, Rescue, Stmt, SuperRef, TestDecl, ThingDecl, TypeParam, TypeRef,
+    UnOp, UseDecl,
 };
 pub use error::Diagnostic;
 pub use span::Span;

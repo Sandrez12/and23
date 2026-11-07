@@ -106,6 +106,8 @@ struct Loader<R> {
     sources: SourceMap,
     done: HashMap<PathBuf, ModuleInfo>,
     stmts: Vec<Stmt>,
+    /// Las pruebas del archivo principal (las de los módulos importados no se ejecutan).
+    tests: Vec<crate::ast::TestDecl>,
 }
 
 /// Carga `entry` y todo lo que importa. `read` lee un archivo (así los tests no tocan el disco).
@@ -121,6 +123,7 @@ where
         sources: SourceMap::default(),
         done: HashMap::new(),
         stmts: Vec::new(),
+        tests: Vec::new(),
     };
     let mut stack = Vec::new();
     match loader.visit(&key, entry, true, &mut stack) {
@@ -129,6 +132,7 @@ where
                 stmts: loader.stmts,
                 uses: Vec::new(),
                 exports: Vec::new(),
+                tests: loader.tests,
             },
             sources: loader.sources,
         }),
@@ -200,6 +204,9 @@ where
         stack.push(key.to_path_buf());
 
         let id = self.id_of(key);
+        if is_entry {
+            self.tests = program.tests.clone();
+        }
         let mut scope = Scope::new(&id, is_entry);
         for stmt in &program.stmts {
             scope.declare(stmt);

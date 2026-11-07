@@ -3,6 +3,13 @@
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Las versiones siguen
 [SemVer](https://semver.org/lang/es/); mientras sea `0.x`, el lenguaje puede cambiar entre versiones.
 
+## Sin publicar
+
+### Añadido
+- **Marco de pruebas.** `prueba "nombre" { ... }`, `afirma`, `afirmaIgual` y `and23 --prueba archivo.jb`.
+- **Formateador.** `and23 fmt [--check] archivos...`.
+- **Extensión de VS Code** con resaltado de sintaxis (`editors/vscode`).
+
 ## 0.2.0 - 2026-11-07
 
 ### Añadido

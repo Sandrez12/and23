@@ -1,7 +1,7 @@
 use crate::ast::{
     BinOp, Block, CtorParam, Expr, FieldDecl, FnDecl, InterpPart, KindDecl, KindMethod,
-    LambdaParam, Param, Program, Rescue, Stmt, SuperRef, ThingDecl, TypeParam, TypeRef, UnOp,
-    UseDecl,
+    LambdaParam, Param, Program, Rescue, Stmt, SuperRef, TestDecl, ThingDecl, TypeParam, TypeRef,
+    UnOp, UseDecl,
 };
 use crate::error::Diagnostic;
 use crate::lexer::{StrPart, Token, TokenKind};
@@ -175,10 +175,53 @@ impl Parser {
         Ok(UseDecl { path, alias, span })
     }
 
+    /// `prueba "nombre" { ... }`: una función sin parámetros `_prueba_N` con el cuerpo, y su registro.
+    fn test_decl(&mut self, index: usize) -> Result<(FnDecl, TestDecl), Diagnostic> {
+        let start = self.bump().span;
+        let TokenKind::Str(parts) = self.peek().kind.clone() else {
+            return Err(self.error_here("se esperaba el nombre de la prueba entre comillas".into()));
+        };
+        let name_span = self.bump().span;
+        let name = match parts.as_slice() {
+            [StrPart::Text(text)] if !text.is_empty() => text.clone(),
+            _ => {
+                return Err(Diagnostic::new(
+                    name_span,
+                    "el nombre de una prueba es un texto fijo, sin `${}` y no vacío",
+                ))
+            }
+        };
+        self.fn_depth += 1;
+        let body = self.block();
+        self.fn_depth -= 1;
+        let body = body?;
+        let span = start.to(body.span);
+        let func = format!("_prueba_{index}");
+        let decl = FnDecl {
+            name: func.clone(),
+            name_span,
+            type_params: Vec::new(),
+            params: Vec::new(),
+            ret: None,
+            expr_body: false,
+            body,
+            span,
+        };
+        Ok((
+            decl,
+            TestDecl {
+                name,
+                func,
+                span: name_span,
+            },
+        ))
+    }
+
     fn program(&mut self) -> Result<Program, Diagnostic> {
         let mut stmts = Vec::new();
         let mut uses = Vec::new();
         let mut exports = Vec::new();
+        let mut tests = Vec::new();
         loop {
             self.skip_newlines();
             if self.peek().kind == TokenKind::Eof {
@@ -186,7 +229,17 @@ impl Parser {
                     stmts,
                     uses,
                     exports,
+                    tests,
                 });
+            }
+            if matches!(&self.peek().kind, TokenKind::Ident(w) if w == "prueba")
+                && matches!(self.peek_at(1).kind, TokenKind::Str(_))
+            {
+                let (decl, test) = self.test_decl(tests.len())?;
+                stmts.push(Stmt::Fn(Box::new(decl)));
+                tests.push(test);
+                self.end_of_stmt(false)?;
+                continue;
             }
             if matches!(&self.peek().kind, TokenKind::Ident(w) if w == "use")
                 && matches!(self.peek_at(1).kind, TokenKind::Str(_))

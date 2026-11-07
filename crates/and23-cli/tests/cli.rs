@@ -934,3 +934,166 @@ fn los_ejemplos_del_tutorial_se_ejecutan() {
     assert!(count >= 10, "solo {count} bloques");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn run_prueba(src: &str) -> std::process::Output {
+    let dir = std::env::temp_dir().join(format!("and23_prueba_{}", src.len()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("p.jb");
+    std::fs::write(&file, src).unwrap();
+    Command::new(env!("CARGO_BIN_EXE_and23"))
+        .arg("--prueba")
+        .arg(&file)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn las_pruebas_que_pasan_terminan_con_exito() {
+    let out =
+        run_prueba("prueba \"suma\" { afirmaIgual(1 + 1, 2) }\nprueba \"dos\" { afirma(true) }\n");
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out),
+        "prueba \"suma\" ... ok\nprueba \"dos\" ... ok\n\n2 prueba(s): 2 ok, 0 fallaron\n"
+    );
+}
+
+#[test]
+fn una_prueba_que_falla_se_informa_y_las_demas_siguen() {
+    let out = run_prueba(
+        "prueba \"mala\" { afirmaIgual(1, 2) }\nprueba \"buena\" { afirma(true) }\nprueba \"rota\" { show(1 / 0) }\n",
+    );
+    assert_eq!(out.status.code(), Some(1));
+    let text = stdout(&out);
+    assert!(text.contains("prueba \"mala\" ... FALLÓ"), "{text}");
+    assert!(text.contains("se esperaba 2, pero fue 1"), "{text}");
+    assert!(text.contains("prueba \"buena\" ... ok"), "{text}");
+    assert!(text.contains("prueba \"rota\" ... FALLÓ"), "{text}");
+    assert!(text.contains("división entre cero"), "{text}");
+    assert!(text.contains("3 prueba(s): 1 ok, 2 fallaron"), "{text}");
+}
+
+#[test]
+fn sin_la_opcion_prueba_los_bloques_no_se_ejecutan_y_main_si() {
+    let dir = std::env::temp_dir().join("and23_prueba_normal");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("p.jb");
+    std::fs::write(
+        &file,
+        "prueba \"x\" { show(\"no\") }\nfn main() { show(\"main\") }\n",
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_and23"))
+        .arg(&file)
+        .output()
+        .unwrap();
+    assert_eq!(stdout(&out), "main\n");
+    // En modo prueba `main` no se llama.
+    let out = run_prueba("prueba \"x\" { show(\"dentro\") }\nfn main() { show(\"main\") }\n");
+    assert_eq!(
+        stdout(&out),
+        "dentro\nprueba \"x\" ... ok\n\n1 prueba(s): 1 ok, 0 fallaron\n"
+    );
+}
+
+#[test]
+fn un_archivo_sin_pruebas_lo_dice() {
+    let out = run_prueba("show(1)\n");
+    assert!(out.status.success());
+    assert!(stdout(&out).contains("no hay pruebas"), "{}", stdout(&out));
+}
+
+#[test]
+fn el_ejemplo_de_pruebas_pasa() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let out = Command::new(env!("CARGO_BIN_EXE_and23"))
+        .arg("--prueba")
+        .arg("examples/pruebas.jb")
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
+    assert!(stdout(&out).contains("4 prueba(s): 4 ok, 0 fallaron"));
+}
+
+#[test]
+fn las_pruebas_de_los_modulos_importados_no_se_ejecutan() {
+    let dir = std::env::temp_dir().join("and23_prueba_modulos");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("lib.jb"),
+        "open fn uno() -> Int = 1\nprueba \"de la libreria\" { afirma(false) }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("main.jb"),
+        "use \"lib\"\nprueba \"propia\" { afirmaIgual(uno(), 1) }\n",
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_and23"))
+        .arg("--prueba")
+        .arg(dir.join("main.jb"))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
+    assert!(
+        stdout(&out).contains("1 prueba(s): 1 ok"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn fmt_reescribe_el_archivo_y_check_solo_avisa() {
+    let dir = std::env::temp_dir().join("and23_fmt");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("f.jb");
+    std::fs::write(&file, "fn f() {\n\tshow(1)   \n\n\n\nshow(2)\n}\nf()\n").unwrap();
+    let check = Command::new(env!("CARGO_BIN_EXE_and23"))
+        .args(["fmt", "--check"])
+        .arg(&file)
+        .output()
+        .unwrap();
+    assert_eq!(check.status.code(), Some(1));
+    assert!(stdout(&check).contains("sin formato"));
+    // --check no escribe.
+    assert!(std::fs::read_to_string(&file).unwrap().contains('\t'));
+    let fmt = Command::new(env!("CARGO_BIN_EXE_and23"))
+        .arg("fmt")
+        .arg(&file)
+        .output()
+        .unwrap();
+    assert!(fmt.status.success(), "{}", stderr(&fmt));
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "fn f() {\n    show(1)\n\n    show(2)\n}\nf()\n"
+    );
+    let again = Command::new(env!("CARGO_BIN_EXE_and23"))
+        .args(["fmt", "--check"])
+        .arg(&file)
+        .output()
+        .unwrap();
+    assert!(again.status.success());
+    assert_eq!(stdout(&again), "");
+    // El programa formateado sigue haciendo lo mismo.
+    let run = Command::new(env!("CARGO_BIN_EXE_and23"))
+        .arg(&file)
+        .output()
+        .unwrap();
+    assert_eq!(stdout(&run), "1\n2\n");
+}
+
+#[test]
+fn fmt_sin_archivos_o_con_archivo_inexistente_es_un_error() {
+    let none = Command::new(env!("CARGO_BIN_EXE_and23"))
+        .arg("fmt")
+        .output()
+        .unwrap();
+    assert_eq!(none.status.code(), Some(2));
+    let missing = Command::new(env!("CARGO_BIN_EXE_and23"))
+        .args(["fmt", "no_existe_qq.jb"])
+        .output()
+        .unwrap();
+    assert_eq!(missing.status.code(), Some(1));
+    assert!(stderr(&missing).contains("no se pudo leer"));
+}

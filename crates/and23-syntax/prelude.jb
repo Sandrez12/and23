@@ -603,3 +603,18 @@ fn extension(ruta: Str) -> Str {
     }
     return ""
 }
+
+// ---------------------------------------------------------------- pruebas (`prueba "nombre" { ... }`)
+
+/// La excepción de una afirmación que no se cumple.
+thing FalloPrueba(m: Str) : Fallo(m)
+
+/// Falla la prueba si `condicion` es falsa.
+fn afirma(condicion: Bool) {
+    if !condicion { fail FalloPrueba("la afirmación es falsa") }
+}
+
+/// Falla la prueba si `real` y `esperado` no son iguales (`==`).
+fn afirmaIgual<T>(real: T, esperado: T) {
+    if real != esperado { fail FalloPrueba("se esperaba ${esperado}, pero fue ${real}") }
+}
