@@ -14,6 +14,9 @@ pub enum NTy {
     OptStr,
     OptInt,
     OptFloat,
+    Unit,
+    /// `() -> Unit`, la lambda de una tarea.
+    Fn0,
 }
 
 impl NTy {
@@ -27,6 +30,8 @@ impl NTy {
             NTy::OptStr => opt(Type::Str),
             NTy::OptInt => opt(Type::Int),
             NTy::OptFloat => opt(Type::Float),
+            NTy::Unit => Type::Unit,
+            NTy::Fn0 => Type::Fn(vec![], Box::new(Type::Unit)),
         }
     }
 }
@@ -71,6 +76,11 @@ natives! {
     "leeLinea"() -> OptStr;
     "_errorES"() -> Str;
     "_borraArchivo"(Str) -> Bool;
+    // M11: las atiende el planificador de la VM (ids 23 a 26), no `natives::call`.
+    "_lanza"(Fn0) -> Unit;
+    "cede"() -> Unit;
+    "_bloquea"() -> Unit;
+    "_avisa"() -> Unit;
 }
 
 /// Id y firma de la función nativa `name`.

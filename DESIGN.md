@@ -82,7 +82,7 @@ Workspace de Rust en `crates/`:
 | M8 | Closures y lambdas | `lista.map { ... }` (`examples/lambdas.jb`; `Lista` con `map`/`filter`/`reduce`/`ordena`) |
 | M9 | Módulos y paquetes | Proyecto de 3+ archivos (`examples/proyecto/`; `use`, `open`, alias) |
 | M10 | Stdlib inicial (IO, strings, math) | Leer y procesar un archivo (`examples/palabras.jb`, `examples/notas.jb`) |
-| M11 | Concurrencia | Productor/consumidor |
+| M11 | Concurrencia | Productor/consumidor (`examples/tareas.jb`) |
 | M12 | Herramientas (REPL, desensamblador, benchmarks) | `and23 --disasm` |
 | Mn | Auto-compilación | El compilador escrito en And23 se compila a sí mismo |
 
@@ -103,6 +103,7 @@ Workspace de Rust en `crates/`:
 - **M8** (hecho): lambdas, closures (captura por valor y por referencia), tipos de función, métodos genéricos y `Lista` con `map`/`filter`/...; ver "Closures y lambdas (M8)".
 - **M9** (hecho): proyectos de varios archivos con `use`/`open` y alias; ver "Módulos (M9)".
 - **M10** (hecho): biblioteca estándar inicial (texto, números, archivos, entrada estándar); ver "Biblioteca estándar (M10)".
+- **M11** (hecho): tareas cooperativas y canales; ver "Concurrencia (M11)".
 
 ### Diseño de la VM (M1b)
 
@@ -437,7 +438,7 @@ fix m = Mapa<Str, Int>()                                                // expl�
 - **Archivos.** Las nativas de archivos devuelven `nil`/`false` y guardan el mensaje en la VM (`_errorES`); el preludio lo convierte en un
   `ErrorES` (que hereda de `Fallo`), así que se atrapa con `rescue e: ErrorES` o `rescue e: Fallo`. Sin atrapar, es un error con la posición de
   la llamada. `leeArchivo` quita el BOM de UTF-8; `lineas()` acepta `
-` y `
+` y `
 ` y no crea una línea vacía por el salto final. `leeLinea()` lee
   la entrada estándar de la VM (nil al terminar); como el REPL también la lee, no se mezclan.
 - **El preludio es redefinible.** Al añadir funciones al preludio, un programa que ya tenía una con ese nombre dejaría de compilar. Para evitarlo,
@@ -469,6 +470,39 @@ fix m = Mapa<Str, Int>()                                                // expl�
   heap guarda en el relleno que ya tenía: no agranda el heap (1 000 000 de objetos vivos: 89,7 MB antes y después) ni cambia la velocidad.
   No sale de la casilla, porque el recolector las reutiliza y el orden de un `Mapa` con claves-objeto dependería de cuándo corra. Tras
   2^32 asignaciones los números se repiten: dos objetos tan lejanos solo comparten hash.
+
+### Concurrencia (M11)
+
+- **Modelo.** Tareas cooperativas dentro de una sola VM y un solo heap, más canales. No hay hilos del sistema operativo: el heap y el
+  recolector no son seguros entre hilos y hacerlos seguros costaría bloqueos y carreras de datos. Una tarea solo cede el control cuando
+  llama a `cede()`, cuando espera (canal vacío o lleno, `espera()`) o cuando termina. Por eso el programa es determinista, se prueba con
+  `--gc-stress` como todo lo demás y no hay carreras: las variables compartidas (también las `mut` capturadas) no se pisan a mitad de una
+  operación. Costo: no se usan varios núcleos y una tarea que no cede acapara la VM.
+- **Sin sintaxis nueva.** Todo es biblioteca, escrita en el preludio sobre cuatro primitivas:
+  `_lanza(f: () -> Unit)`, `cede()`, `_bloquea()` y `_avisa()`. La VM las atiende dentro de `Op::Native` (necesitan el estado del
+  planificador, que una nativa normal no ve); la tabla `NATIVES` solo les da tipo y número.
+- **API pública.**
+  - `lanza(f: () -> Unit) -> Tarea`: crea la tarea y vuelve de inmediato; la nueva tarea empieza cuando la actual cede o espera.
+  - `lanzaDe<T>(f: () -> T) -> TareaDe<T>`: lo mismo para una tarea que devuelve un valor. Son dos funciones porque `Unit` no puede ser
+    argumento de tipo (no hay forma de escribir `lanza<Unit>`).
+  - `Tarea` y `TareaDe<T>`: `espera()` (bloquea hasta que termine y entrega el resultado; si la tarea lanzó un `Fallo`, lo relanza) y
+    `terminada() -> Bool`.
+  - `Canal<T>(capacidad: Int)`: cola acotada. `envia(x)` espera si está llena; `recibe() -> T?` espera si está vacía y devuelve `nil` solo
+    cuando el canal está cerrado y vacío; `cierra()`; enviar a un canal cerrado lanza `ErrorCanal` (hereda de `Fallo`).
+  - `cede()`: pasa al final de la cola de listas.
+- **Planificador.** Cola FIFO de tareas listas y lista de tareas esperando. `_bloquea()` mueve la tarea actual a las esperando; `_avisa()`
+  las devuelve a todas a la cola de listas (cada una vuelve a comprobar su condición en un `while`). Si una tarea espera y no queda ninguna
+  lista, es un error de ejecución «interbloqueo: todas las tareas esperan», con la posición de la espera. Cuando termina la tarea principal el
+  programa acaba y las demás se descartan (como en Go).
+- **VM.** Cada tarea tiene su pila de valores, de marcos y de manejadores `attempt`; la tarea en ejecución usa las variables locales de
+  `execute` y las demás están guardadas. Cambiar de tarea es intercambiar ese estado. Una tarea nueva empieza en la función de su lambda
+  con la lambda como único valor de la pila. Raíces del recolector: la pila actual, las de todas las tareas guardadas, las globales y las
+  constantes. El límite de recursión se aplica a cada tarea por separado.
+- **Errores.** El cuerpo de cada tarea lo envuelve el preludio en un `attempt`: un `Fallo` queda guardado en la `Tarea` y lo ve quien llame a
+  `espera()`. Un error de ejecución (división por cero, desbordamiento...) aborta todo el programa, como en la tarea principal.
+- **Límites previstos.** Sin expulsión por tiempo (un bucle que no cede bloquea al resto); sin `duerme` ni reloj (llegarán con la
+  biblioteca estándar 2); `leeLinea` bloquea toda la VM; un `Fallo` de una tarea que nadie espera se pierde sin aviso; el REPL descarta las
+  tareas pendientes al terminar cada entrada; el intérprete de árbol no conoce las tareas.
 
 ## Fuentes de referencia
 

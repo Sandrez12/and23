@@ -834,3 +834,24 @@ fn leer_un_archivo_inexistente_sin_atrapar_es_un_error_con_posicion() {
         stderr(&out)
     );
 }
+
+#[test]
+fn ejemplo_de_tareas_suma_con_canales() {
+    let out = run_example_from_root("tareas.jb", "");
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "suma de cuadrados 1..10 = 385\n");
+}
+
+#[test]
+fn un_interbloqueo_es_un_error_con_posicion() {
+    let dir = std::env::temp_dir().join("and23_interbloqueo");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("p.jb");
+    std::fs::write(&file, "fix c = Canal<Int>(1)\nshow(c.recibe())\n").unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_and23"))
+        .arg(&file)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("interbloqueo"), "{}", stderr(&out));
+}

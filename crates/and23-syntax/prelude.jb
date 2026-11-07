@@ -405,3 +405,102 @@ fn borraArchivo(ruta: Str) {
 fn agregaArchivo(ruta: Str, texto: Str) {
     if !_agregaArchivo(ruta, texto) { fail ErrorES(_errorES()) }
 }
+
+// ---------------------------------------------------------------- M11: tareas y canales
+
+/// Una tarea sin resultado (`lanza`). Guarda si terminó y, si falló, el `Fallo`.
+thing Tarea() {
+    mut listo = false
+    mut error: Fallo? = nil
+
+    fn terminada() -> Bool = listo
+
+    /// Bloquea hasta que la tarea termine. Si terminó con un `Fallo`, lo relanza aquí.
+    fn espera() {
+        while !listo { _bloquea() }
+        fix e = error
+        if e != nil { fail e }
+    }
+
+    fn corre(f: () -> Unit) {
+        attempt { f() } rescue e: Fallo { error = e }
+        listo = true
+        _avisa()
+    }
+}
+
+/// Una tarea con resultado (`lanzaDe`).
+thing TareaDe<T>() {
+    mut listo = false
+    mut resultado: [T] = []
+    mut error: Fallo? = nil
+
+    fn terminada() -> Bool = listo
+
+    fn espera() -> T {
+        while !listo { _bloquea() }
+        fix e = error
+        if e != nil { fail e }
+        return resultado[0]
+    }
+
+    fn corre(f: () -> T) {
+        attempt { resultado = [f()] } rescue e: Fallo { error = e }
+        listo = true
+        _avisa()
+    }
+}
+
+/// Crea una tarea que ejecuta `f` y vuelve de inmediato; la tarea empieza cuando la actual cede o espera.
+fn lanza(f: () -> Unit) -> Tarea {
+    fix t = Tarea()
+    _lanza({ t.corre(f) })
+    return t
+}
+
+/// Como `lanza`, pero la tarea devuelve un valor que `espera()` entrega.
+fn lanzaDe<T>(f: () -> T) -> TareaDe<T> {
+    fix t = TareaDe<T>()
+    _lanza({ t.corre(f) })
+    return t
+}
+
+thing ErrorCanal(m: Str) : Fallo(m)
+
+/// Cola con capacidad entre tareas. `envia` espera si está llena; `recibe` espera si está vacía y
+/// devuelve `nil` cuando el canal está cerrado y vacío.
+thing Canal<T>(fix capacidad: Int) {
+    mut items: [T] = []
+    mut inicio = 0
+    mut cerrado = false
+
+    fn tam() -> Int = len(items) - inicio
+    fn estaCerrado() -> Bool = cerrado
+
+    fn envia(x: T) {
+        mut tope = capacidad
+        if tope < 1 { tope = 1 }
+        while !cerrado && tam() >= tope { _bloquea() }
+        if cerrado { fail ErrorCanal("canal cerrado") }
+        push(items, x)
+        _avisa()
+    }
+
+    fn recibe() -> T? {
+        while tam() == 0 && !cerrado { _bloquea() }
+        if tam() == 0 { return nil }
+        fix x = items[inicio]
+        inicio += 1
+        if inicio == len(items) {
+            items = []
+            inicio = 0
+        }
+        _avisa()
+        return x
+    }
+
+    fn cierra() {
+        cerrado = true
+        _avisa()
+    }
+}

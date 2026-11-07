@@ -1,0 +1,46 @@
+// M11: tareas cooperativas y canales. Un productor genera números, dos trabajadores los elevan al
+// cuadrado y la tarea principal suma los resultados. Se ejecuta con:  and23 examples/tareas.jb
+
+fn main() {
+    fix entrada = Canal<Int>(4)
+    fix salida = Canal<Int>(4)
+
+    fix productor = lanza {
+        mut i = 1
+        while i <= 10 {
+            entrada.envia(i)
+            i += 1
+        }
+        entrada.cierra()
+    }
+
+    // Cada trabajador toma números hasta que el canal se cierra y queda vacío.
+    fix trabajadores = Lista<Tarea>()
+    mut k = 0
+    while k < 2 {
+        trabajadores.agrega(lanza {
+            mut n = entrada.recibe()
+            while n != nil {
+                salida.envia(n * n)
+                n = entrada.recibe()
+            }
+        })
+        k += 1
+    }
+
+    // Cuando todos terminan, se cierra la salida.
+    fix cierre = lanza {
+        productor.espera()
+        trabajadores.paraCada { t -> t.espera() }
+        salida.cierra()
+    }
+
+    mut suma = 0
+    mut r = salida.recibe()
+    while r != nil {
+        suma += r
+        r = salida.recibe()
+    }
+    cierre.espera()
+    show("suma de cuadrados 1..10 = ${suma}")
+}

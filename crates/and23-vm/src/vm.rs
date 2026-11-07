@@ -2,6 +2,7 @@ use crate::heap::{Heap, HeapStats, ObjRef, Object};
 use crate::value::Value;
 use and23_bytecode::{Function, Module, Op};
 use and23_syntax::{Diagnostic, Span};
+use std::collections::VecDeque;
 use std::io::Write;
 
 /// Llamadas anidadas permitidas antes de abortar con un error.
@@ -35,6 +36,20 @@ struct Frame<'m> {
     function: &'m Function,
     ip: usize,
     base: usize,
+}
+
+/// Id de la primera nativa que atiende el planificador (`_lanza`, `cede`, `_bloquea`, `_avisa`).
+const FIRST_SCHED_NATIVE: u32 = 23;
+
+/// Una tarea guardada (M11): todo el estado que la VM tiene en variables locales mientras la ejecuta.
+struct Task<'m> {
+    stack: Vec<Value>,
+    frames: Vec<Frame<'m>>,
+    handlers: Vec<Handler<'m>>,
+    function: &'m Function,
+    ip: usize,
+    base: usize,
+    main: bool,
 }
 
 impl<W: Write> Vm<W> {
@@ -106,6 +121,10 @@ impl<W: Write> Vm<W> {
         let mut function = entry;
         let mut ip = 0usize;
         let mut base = 0usize;
+        // Tareas (M11): la cola de las listas y las que esperan una señal. La tarea principal es `is_main`.
+        let mut queue: VecDeque<Task<'m>> = VecDeque::new();
+        let mut waiting: Vec<Task<'m>> = Vec::new();
+        let mut is_main = true;
 
         macro_rules! fail {
             ($($msg:tt)*) => {
@@ -176,11 +195,45 @@ impl<W: Write> Vm<W> {
                     let roots = stack
                         .iter()
                         .copied()
+                        .chain(
+                            queue
+                                .iter()
+                                .chain(waiting.iter())
+                                .flat_map(|t| t.stack.iter().copied()),
+                        )
                         .chain(globals.iter().flatten().copied())
                         .chain(consts.iter().flatten().map(|r| Value::Obj(*r)));
                     heap.collect(roots);
                 }
             };
+        }
+
+        // Guarda la tarea en ejecución (deja vacías las variables que la describen).
+        macro_rules! park {
+            () => {
+                Task {
+                    stack: std::mem::take(stack),
+                    frames: std::mem::take(&mut frames),
+                    handlers: std::mem::take(&mut handlers),
+                    function,
+                    ip,
+                    base,
+                    main: is_main,
+                }
+            };
+        }
+        // Pone `$t` en ejecución.
+        macro_rules! resume {
+            ($t:expr) => {{
+                let t: Task<'m> = $t;
+                *stack = t.stack;
+                frames = t.frames;
+                handlers = t.handlers;
+                function = t.function;
+                ip = t.ip;
+                base = t.base;
+                is_main = t.main;
+            }};
         }
 
         loop {
@@ -426,6 +479,55 @@ impl<W: Write> Vm<W> {
                         None => fail!("`pop` sobre un arreglo vacío"),
                     }
                 }
+                Op::Native(id) if id >= FIRST_SCHED_NATIVE => {
+                    match id - FIRST_SCHED_NATIVE {
+                        // _lanza(f): la tarea nueva empieza en la función de la lambda.
+                        0 => {
+                            let Value::Obj(closure) = pop!() else {
+                                fail!("`lanza` necesita una función");
+                            };
+                            let Some(target) = heap.closure_function(closure) else {
+                                fail!("`lanza` necesita una función");
+                            };
+                            queue.push_back(Task {
+                                stack: vec![Value::Obj(closure)],
+                                frames: Vec::new(),
+                                handlers: Vec::new(),
+                                function: &module.functions[target as usize],
+                                ip: 0,
+                                base: 0,
+                                main: false,
+                            });
+                            stack.push(Value::Unit);
+                        }
+                        // cede(): al final de la cola, si hay alguien más.
+                        1 => {
+                            stack.push(Value::Unit);
+                            if let Some(next) = queue.pop_front() {
+                                let current = park!();
+                                queue.push_back(current);
+                                resume!(next);
+                            }
+                        }
+                        // _bloquea(): espera hasta el próximo `_avisa`.
+                        2 => {
+                            stack.push(Value::Unit);
+                            match queue.pop_front() {
+                                Some(next) => {
+                                    let current = park!();
+                                    waiting.push(current);
+                                    resume!(next);
+                                }
+                                None => fail!("interbloqueo: todas las tareas esperan"),
+                            }
+                        }
+                        // _avisa(): todas las que esperan vuelven a la cola.
+                        _ => {
+                            stack.push(Value::Unit);
+                            queue.extend(waiting.drain(..));
+                        }
+                    }
+                }
                 Op::Native(id) => {
                     gc_point!();
                     let argc = and23_types::NATIVES[id as usize].params.len();
@@ -634,7 +736,12 @@ impl<W: Write> Vm<W> {
                             base = frame.base;
                             stack.push(result);
                         }
-                        None => return Ok(()),
+                        None if is_main => return Ok(()),
+                        // Terminó una tarea: sigue la siguiente. Si no hay ninguna lista, la principal espera.
+                        None => match queue.pop_front() {
+                            Some(next) => resume!(next),
+                            None => fail!("interbloqueo: todas las tareas esperan"),
+                        },
                     }
                 }
                 Op::Show => {
