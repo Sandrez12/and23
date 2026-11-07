@@ -7,7 +7,7 @@ use std::io::{self, BufRead, IsTerminal, Write};
 use std::process::ExitCode;
 
 const USAGE: &str = "\
-And23 (M9)
+And23 (M10)
 
 Uso:
   and23 <archivo.jb>   ejecuta un programa (y llama a main() si existe)
@@ -178,6 +178,8 @@ fn disasm_file(path: &str) -> u8 {
             compiler
                 .compile(&prelude, &res, false)
                 .expect("preludio válido");
+            checker.seal_prelude();
+            compiler.seal_prelude();
             let skip = compiler.module().functions.len();
             let res = checker.check(&program).map_err(|d| sources.render(&d))?;
             compiler

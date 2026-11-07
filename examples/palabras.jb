@@ -1,0 +1,41 @@
+// M10: leer un archivo de texto y procesarlo. Cuenta las palabras con un Mapa y muestra las más
+// frecuentes. Se ejecuta desde la raíz del repositorio:  and23 examples/palabras.jb
+
+fn palabras(texto: Str) -> Lista<Str> {
+    // Minúsculas y sin signos de puntuación: cada signo se cambia por un espacio.
+    mut limpio = texto.minus()
+    fix signos = ".,;:!?()-"
+    mut i = 0
+    while i < signos.largo() {
+        limpio = limpio.reemplaza(signos[i], " ")
+        i += 1
+    }
+    return limpio.reemplaza("\n", " ").parte(" ").filter { w -> !w.vacia() }
+}
+
+fn main() {
+    attempt {
+        fix lineas = leeLineas("examples/datos/texto.txt")
+        fix todas = palabras(leeArchivo("examples/datos/texto.txt"))
+        show("${lineas.tam()} líneas, ${todas.tam()} palabras")
+
+        fix cuentas = Mapa<Str, Int>()
+        todas.paraCada { w -> cuentas.pone(w, (cuentas.obtiene(w) ?: 0) + 1) }
+        fix claves = cuentas.claves()
+        // Más frecuentes primero; a igual frecuencia, orden alfabético.
+        claves.ordena { a, b ->
+            fix ca = cuentas.obtiene(a) ?: 0
+            fix cb = cuentas.obtiene(b) ?: 0
+            ca > cb || (ca == cb && a < b)
+        }
+        show("distintas: ${claves.tam()}")
+        mut i = 0
+        while i < 5 {
+            fix w = claves.obtiene(i)
+            show("${w}: ${cuentas.obtiene(w) ?: 0}")
+            i += 1
+        }
+    } rescue e: ErrorES {
+        show("no pude leer el archivo: ${e.msg}")
+    }
+}

@@ -290,3 +290,118 @@ thing Mapa<K, V>() {
         }
     }
 }
+
+// --- Texto: los métodos de Str (`s.largo()`, `s.parte(",")`...) son estas funciones, con la cadena
+// como primer argumento. Las posiciones cuentan caracteres, igual que `len`. ---
+fn _str_largo(s: Str) -> Int = len(s)
+fn _str_vacia(s: Str) -> Bool = len(s) == 0
+fn _str_recorta(s: Str) -> Str = _recorta(s)
+fn _str_mayus(s: Str) -> Str = _mayus(s)
+fn _str_minus(s: Str) -> Str = _minus(s)
+fn _str_contiene(s: Str, t: Str) -> Bool = _busca(s, t, 0) >= 0
+fn _str_indiceDe(s: Str, t: Str) -> Int = _busca(s, t, 0)
+fn _str_empiezaCon(s: Str, t: Str) -> Bool = _empieza(s, t)
+fn _str_terminaCon(s: Str, t: Str) -> Bool = _termina(s, t)
+fn _str_reemplaza(s: Str, de: Str, por: Str) -> Str = _reemplaza(s, de, por)
+fn _str_trozo(s: Str, desde: Int, hasta: Int) -> Str = _trozo(s, desde, hasta)
+
+/// Trozos de `s` separados por `sep`; con `sep` vacío, un trozo por carácter.
+fn _str_parte(s: Str, sep: Str) -> Lista<Str> {
+    fix partes = Lista<Str>()
+    if len(sep) == 0 {
+        mut i = 0
+        while i < len(s) {
+            partes.agrega(s[i])
+            i += 1
+        }
+        return partes
+    }
+    mut desde = 0
+    while true {
+        fix i = _busca(s, sep, desde)
+        if i < 0 { break }
+        partes.agrega(_trozo(s, desde, i))
+        desde = i + len(sep)
+    }
+    partes.agrega(_trozo(s, desde, len(s)))
+    return partes
+}
+
+/// Las líneas de `s` (separadas por "\n" o "\r\n"); un salto final no crea una línea vacía.
+fn _str_lineas(s: Str) -> Lista<Str> {
+    fix crudas = _str_parte(s, "\n")
+    fix lineas = Lista<Str>()
+    mut i = 0
+    while i < crudas.tam() {
+        mut linea = crudas.obtiene(i)
+        if _termina(linea, "\r") { linea = _trozo(linea, 0, len(linea) - 1) }
+        lineas.agrega(linea)
+        i += 1
+    }
+    if lineas.tam() > 0 && len(lineas.obtiene(lineas.tam() - 1)) == 0 { lineas.quita() }
+    return lineas
+}
+
+/// Une las cadenas de `partes` poniendo `sep` entre ellas.
+fn une(partes: Lista<Str>, sep: Str) -> Str {
+    mut texto = ""
+    mut i = 0
+    while i < partes.tam() {
+        if i > 0 { texto = texto + sep }
+        texto = texto + partes.obtiene(i)
+        i += 1
+    }
+    return texto
+}
+
+// --- Números: `Int.parse(s)` y `Float.parse(s)` devuelven nil si el texto no es un número ---
+fn _int_parse(s: Str) -> Int? = _parseInt(_recorta(s))
+fn _float_parse(s: Str) -> Float? = _parseFloat(_recorta(s))
+
+fn absoluto(n: Int) -> Int {
+    if n < 0 { return 0 - n }
+    return n
+}
+fn minimo(a: Int, b: Int) -> Int {
+    if a < b { return a }
+    return b
+}
+fn maximo(a: Int, b: Int) -> Int {
+    if a > b { return a }
+    return b
+}
+fn absolutoF(x: Float) -> Float {
+    if x < 0.0 { return 0.0 - x }
+    return x
+}
+fn minimoF(a: Float, b: Float) -> Float {
+    if a < b { return a }
+    return b
+}
+fn maximoF(a: Float, b: Float) -> Float {
+    if a > b { return a }
+    return b
+}
+
+// --- Archivos: los fallos de lectura y escritura lanzan ErrorES (un Fallo) ---
+thing ErrorES(m: Str) : Fallo(m)
+
+fn leeArchivo(ruta: Str) -> Str {
+    fix contenido = _leeArchivo(ruta)
+    if contenido != nil { return contenido }
+    fail ErrorES(_errorES())
+}
+
+fn leeLineas(ruta: Str) -> Lista<Str> = leeArchivo(ruta).lineas()
+
+fn escribeArchivo(ruta: Str, texto: Str) {
+    if !_escribeArchivo(ruta, texto) { fail ErrorES(_errorES()) }
+}
+
+fn borraArchivo(ruta: Str) {
+    if !_borraArchivo(ruta) { fail ErrorES(_errorES()) }
+}
+
+fn agregaArchivo(ruta: Str, texto: Str) {
+    if !_agregaArchivo(ruta, texto) { fail ErrorES(_errorES()) }
+}

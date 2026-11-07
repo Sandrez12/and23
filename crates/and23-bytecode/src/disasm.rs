@@ -17,6 +17,7 @@ pub fn disassemble(module: &Module, function: &Function) -> String {
                     module.functions[*func as usize].name
                 )
             }
+            Op::Native(n) => format!("  ; {}", and23_types::NATIVES[*n as usize].name),
             Op::Alloc { class, .. } => format!("  ; {}", module.classes[*class as usize].name),
             Op::IsInstance(n) | Op::Cast(n) => {
                 format!("  ; {}", module.classes[*n as usize].name)

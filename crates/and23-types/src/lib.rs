@@ -9,6 +9,9 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 /// Funciones integradas; no se pueden redefinir.
+pub mod natives;
+pub use natives::{native, NATIVES};
+
 pub const BUILTINS: [&str; 4] = ["len", "push", "pop", "hash"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,6 +137,9 @@ pub struct Resolutions {
     pub valuecalls: HashSet<Span>,
     /// Posición de la última expresión de una lambda cuyo valor se descarta (la lambda devuelve Unit).
     pub discards: HashSet<Span>,
+    /// Posición de una llamada `s.metodo(..)` sobre una cadena o `Int.parse(..)`/`Float.parse(..)` ->
+    /// función del preludio que la implementa y si el receptor va como primer argumento.
+    pub redirects: HashMap<Span, (String, bool)>,
 }
 
 /// Verificador con estado: recuerda las funciones y globales de las entradas anteriores (REPL).
@@ -143,11 +149,19 @@ pub struct Checker {
     classes: HashMap<String, ClassInfo>,
     kinds: HashMap<String, KindInfo>,
     globals: Vars,
+    /// Funciones del preludio: un programa puede definir otra con el mismo nombre.
+    overridable: HashSet<String>,
 }
 
 impl Checker {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Marca las funciones definidas hasta ahora (el preludio) como redefinibles por el programa:
+    /// así el preludio puede crecer sin romper programas que ya usaban esos nombres.
+    pub fn seal_prelude(&mut self) {
+        self.overridable = self.funcs.keys().cloned().collect();
     }
 
     /// Verifica el programa. Si falla, el estado del verificador no cambia.
@@ -157,6 +171,7 @@ impl Checker {
             classes: self.classes.clone(),
             kinds: self.kinds.clone(),
             globals: self.globals.clone(),
+            overridable: self.overridable.clone(),
             decls: HashMap::new(),
             state: HashMap::new(),
             declared: HashMap::new(),
@@ -171,6 +186,7 @@ impl Checker {
         self.classes = pass.classes;
         self.kinds = pass.kinds;
         self.globals = pass.globals;
+        self.overridable = pass.overridable;
         Ok(pass.res)
     }
 
@@ -213,6 +229,7 @@ struct Pass<'p> {
     classes: HashMap<String, ClassInfo>,
     kinds: HashMap<String, KindInfo>,
     globals: Vars,
+    overridable: HashSet<String>,
     /// Parámetros de tipo a la vista (los de la clase o función que se está declarando o verificando).
     scope_params: Vec<TParam>,
     /// Orden de declaración de las clases de este programa: el padre antes que el hijo.
@@ -241,7 +258,7 @@ impl<'p> Pass<'p> {
                 Stmt::Kind(decl) => (&decl.name, decl.name_span),
                 _ => continue,
             };
-            if BUILTINS.contains(&name.as_str())
+            if natives::is_builtin(name)
                 || RESERVED_TYPES.contains(&name.as_str())
                 || self.funcs.contains_key(name)
                 || self.classes.contains_key(name)
@@ -281,7 +298,7 @@ impl<'p> Pass<'p> {
         // Las firmas se registran antes: las funciones pueden usarse antes de su definición.
         for stmt in &program.stmts {
             let Stmt::Fn(decl) = stmt else { continue };
-            if BUILTINS.contains(&decl.name.as_str()) {
+            if natives::is_builtin(&decl.name) {
                 return Err(Diagnostic::new(
                     decl.name_span,
                     format!(
@@ -290,7 +307,7 @@ impl<'p> Pass<'p> {
                     ),
                 ));
             }
-            if self.funcs.contains_key(&decl.name)
+            if (self.funcs.contains_key(&decl.name) && !self.overridable.remove(&decl.name))
                 || self.classes.contains_key(&decl.name)
                 || self.kinds.contains_key(&decl.name)
             {
@@ -1351,7 +1368,7 @@ impl<'p> Pass<'p> {
             span,
         } = expr
         {
-            if !BUILTINS.contains(&name.as_str()) {
+            if !natives::is_builtin(name) {
                 let found = self.call(ctx, name, args, type_args, *span, Some(expected))?;
                 return self.expect(expected, &found, expr.span());
             }
@@ -1478,6 +1495,12 @@ impl<'p> Pass<'p> {
                 value,
                 span,
             } => {
+                if self.expr(ctx, target)? == Type::Str {
+                    return Err(Diagnostic::new(
+                        target.span(),
+                        "las cadenas no se pueden modificar: crea una nueva con `+` o `reemplaza`",
+                    ));
+                }
                 let elem = self.indexed_type(ctx, target, index)?;
                 self.assigned(ctx, &elem, *op, value, *span)?;
             }
@@ -1619,9 +1642,11 @@ impl<'p> Pass<'p> {
         }
         match target_ty {
             Type::Array(elem) => Ok(*elem),
+            // `s[i]` es la cadena de un carácter.
+            Type::Str => Ok(Type::Str),
             other => Err(Diagnostic::new(
                 target.span(),
-                format!("solo se puede indexar un arreglo, pero esto es {other}"),
+                format!("solo se puede indexar un arreglo o una cadena, pero esto es {other}"),
             )),
         }
     }
@@ -1693,7 +1718,31 @@ impl<'p> Pass<'p> {
                 args,
                 span,
             } => {
+                // `Int.parse(s)` / `Float.parse(s)`: funciones del preludio.
+                if let Expr::Var(owner, _) = &**target {
+                    if (owner == "Int" || owner == "Float") && !self.is_variable(ctx, owner) {
+                        let key = format!("_{}_{name}", owner.to_lowercase());
+                        return self.std_call(
+                            ctx, &key, name, name_span, owner, None, args, type_args, *span,
+                        );
+                    }
+                }
                 let target_ty = self.expr(ctx, target)?;
+                // Métodos de Str: funciones del preludio con la cadena como primer argumento.
+                if target_ty == Type::Str {
+                    let key = format!("_str_{name}");
+                    return self.std_call(
+                        ctx,
+                        &key,
+                        name,
+                        name_span,
+                        "Str",
+                        Some(target),
+                        args,
+                        type_args,
+                        *span,
+                    );
+                }
                 let receiver = self.method_receiver(&target_ty, target.span())?;
                 let Some((key, map)) = self.find_method(&receiver, name) else {
                     // `obj.alClic(x)`: llamada a un campo de tipo función.
@@ -1896,7 +1945,7 @@ impl<'p> Pass<'p> {
                 type_args,
                 span,
             } => {
-                if BUILTINS.contains(&name.as_str()) {
+                if natives::is_builtin(name) {
                     self.builtin(ctx, name, args, *span)
                 } else {
                     self.call(ctx, name, args, type_args, *span, None)
@@ -1912,6 +1961,22 @@ impl<'p> Pass<'p> {
         args: &[Expr],
         span: Span,
     ) -> Result<Type, Diagnostic> {
+        if let Some((_, native)) = native(name) {
+            if args.len() != native.params.len() {
+                return Err(Diagnostic::new(
+                    span,
+                    format!(
+                        "la función `{name}` espera {} argumento(s), pero recibió {}",
+                        native.params.len(),
+                        args.len()
+                    ),
+                ));
+            }
+            for (arg, param) in args.iter().zip(native.params) {
+                self.expr_as(ctx, arg, &param.to_type())?;
+            }
+            return Ok(native.ret.to_type());
+        }
         let wanted = if name == "push" { 2 } else { 1 };
         if args.len() != wanted {
             return Err(Diagnostic::new(
@@ -2027,6 +2092,60 @@ impl<'p> Pass<'p> {
 
     /// El tipo donde buscar métodos al llamar sobre `ty`: el propio objeto o, para un parámetro de tipo,
     /// su cota.
+    fn is_variable(&self, ctx: &Ctx, name: &str) -> bool {
+        ctx.scopes.iter().any(|sc| sc.contains_key(name)) || self.globals.contains_key(name)
+    }
+
+    /// Llamada a un método de un tipo básico (`"a,b".parte(",")`, `Int.parse(s)`) que el preludio
+    /// implementa como la función `key`; `receiver` va de primer argumento.
+    #[allow(clippy::too_many_arguments)]
+    fn std_call(
+        &mut self,
+        ctx: &mut Ctx,
+        key: &str,
+        name: &str,
+        name_span: &Span,
+        owner: &str,
+        receiver: Option<&Expr>,
+        args: &[Expr],
+        type_args: &[TypeRef],
+        span: Span,
+    ) -> Result<Type, Diagnostic> {
+        let Some(sig) = self.funcs.get(key).cloned() else {
+            return Err(Diagnostic::new(
+                *name_span,
+                format!("{owner} no tiene el método `{name}`"),
+            ));
+        };
+        let skip = usize::from(receiver.is_some());
+        if sig.params.len() != args.len() + skip {
+            return Err(Diagnostic::new(
+                span,
+                format!(
+                    "el método `{name}` de {owner} espera {} argumento(s), pero recibió {}",
+                    sig.params.len() - skip,
+                    args.len()
+                ),
+            ));
+        }
+        let mut all: Vec<Expr> = receiver.into_iter().cloned().collect();
+        all.extend(args.iter().cloned());
+        self.res
+            .redirects
+            .insert(span, (key.to_string(), receiver.is_some()));
+        self.call_sig(
+            ctx,
+            key,
+            name,
+            "el método",
+            &all,
+            type_args,
+            span,
+            TMap::new(),
+            None,
+        )
+    }
+
     fn method_receiver(&self, ty: &Type, span: Span) -> Result<Type, Diagnostic> {
         match ty {
             Type::Obj(..) => Ok(ty.clone()),
@@ -2200,7 +2319,7 @@ impl<'p> Pass<'p> {
 
     /// Una función con nombre usada como valor (`aplica(doble, 3)`): su tipo de función.
     fn function_value(&mut self, name: &str, span: Span) -> Result<Type, Diagnostic> {
-        if BUILTINS.contains(&name) {
+        if natives::is_builtin(name) {
             return Err(Diagnostic::new(
                 span,
                 format!("`{name}` es una función integrada y no se puede usar como valor; envuélvela en una lambda"),
@@ -3032,6 +3151,7 @@ mod tests {
         checker
             .check(&parse(and23_syntax::PRELUDE).map_err(|d| d.message)?)
             .map_err(|d| d.message)?;
+        checker.seal_prelude();
         checker
             .check(&parse(src).map_err(|d| d.message)?)
             .map(|_| ())

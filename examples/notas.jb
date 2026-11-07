@@ -1,0 +1,35 @@
+// M10: leer un CSV, convertir texto a números (Float.parse devuelve nil si no es un número) y
+// calcular un resumen. Se ejecuta desde la raíz del repositorio:  and23 examples/notas.jb
+
+fn main() {
+    fix lineas = leeLineas("examples/datos/notas.csv")
+    mut suma = 0.0
+    mut validas = 0
+    mut mejor = ""
+    mut mejorNota = 0.0
+    mut i = 1                      // la línea 0 es el encabezado
+    while i < lineas.tam() {
+        fix campos = lineas.obtiene(i).parte(",")
+        fix nota = Float.parse(campos.obtiene(1))
+        if nota == nil {
+            show("línea ${i + 1} ignorada: «${campos.obtiene(1)}» no es una nota")
+        } else {
+            suma += nota
+            validas += 1
+            if nota > mejorNota {
+                mejorNota = nota
+                mejor = campos.obtiene(0)
+            }
+        }
+        i += 1
+    }
+    fix promedio = aFloat(redondea(suma / aFloat(validas) * 100.0)) / 100.0   // dos decimales
+    show("promedio de ${validas} notas: ${promedio}")
+    show("mejor nota: ${mejor} con ${mejorNota}")
+
+    // Escribir un resumen y leerlo de vuelta.
+    fix salida = "resumen.tmp"
+    escribeArchivo(salida, "validas=${validas}\nmejor=${mejor}\n")
+    show(une(leeLineas(salida), " | "))
+    borraArchivo(salida)
+}

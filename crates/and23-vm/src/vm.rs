@@ -16,6 +16,8 @@ pub struct Vm<W: Write> {
     /// Objeto de cada cadena constante, creado la primera vez que se usa. Son raíces del GC.
     consts: Vec<Option<ObjRef>>,
     max_depth: usize,
+    /// Mensaje del último error de archivos (lo lee `_errorES`).
+    io_error: String,
 }
 
 /// Manejador instalado por un `attempt`: a dónde volver si se lanza una excepción.
@@ -44,6 +46,7 @@ impl<W: Write> Vm<W> {
             heap: Heap::new(),
             consts: Vec::new(),
             max_depth: DEFAULT_MAX_DEPTH,
+            io_error: String::new(),
         }
     }
 
@@ -96,6 +99,7 @@ impl<W: Write> Vm<W> {
             heap,
             consts,
             max_depth,
+            io_error,
         } = self;
         let mut frames: Vec<Frame<'m>> = Vec::new();
         let mut handlers: Vec<Handler<'m>> = Vec::new();
@@ -221,11 +225,25 @@ impl<W: Write> Vm<W> {
                     stack.push(v);
                 }
                 Op::Index => {
+                    gc_point!();
                     let index = pop!();
                     let target = pop!();
                     let (Value::Int(i), Value::Obj(r)) = (index, target) else {
                         fail!("no se puede indexar este valor");
                     };
+                    if let Object::Str(s) = heap.get(r) {
+                        // `s[i]`: la cadena de un carácter.
+                        let picked = usize::try_from(i).ok().and_then(|i| s.chars().nth(i));
+                        let Some(c) = picked else {
+                            fail!(
+                                "índice fuera de rango: {i} en una cadena de {} carácter(es)",
+                                s.chars().count()
+                            );
+                        };
+                        let v = heap.alloc_str(c.to_string());
+                        stack.push(v);
+                        continue;
+                    }
                     let Object::Array(items) = heap.get(r) else {
                         fail!("no se puede indexar este valor");
                     };
@@ -406,6 +424,17 @@ impl<W: Write> Vm<W> {
                     match heap.pop(r) {
                         Some(v) => stack.push(v),
                         None => fail!("`pop` sobre un arreglo vacío"),
+                    }
+                }
+                Op::Native(id) => {
+                    gc_point!();
+                    let argc = and23_types::NATIVES[id as usize].params.len();
+                    let start = stack.len() - argc;
+                    let result = crate::natives::call(id, heap, &stack[start..], io_error);
+                    stack.truncate(start);
+                    match result {
+                        Ok(v) => stack.push(v),
+                        Err(message) => fail!("{message}"),
                     }
                 }
                 Op::Hash => {

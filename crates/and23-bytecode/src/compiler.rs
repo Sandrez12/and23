@@ -22,6 +22,8 @@ struct Tables {
     types: HashMap<String, u32>,
     /// nombre de método -> id (índice en `Module::methods`)
     method_ids: HashMap<String, u32>,
+    /// Funciones del preludio: un programa puede definir otra con el mismo nombre.
+    overridable: HashSet<String>,
 }
 
 #[derive(Clone)]
@@ -42,6 +44,11 @@ pub struct Compiler {
 impl Compiler {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Marca las funciones definidas hasta ahora (el preludio) como redefinibles por el programa.
+    pub fn seal_prelude(&mut self) {
+        self.tables.overridable = self.tables.funcs.keys().cloned().collect();
     }
 
     pub fn module(&self) -> &Module {
@@ -104,7 +111,7 @@ impl Compiler {
         name_span: Span,
         arity: usize,
     ) -> Result<usize, Diagnostic> {
-        if self.tables.funcs.contains_key(&key) {
+        if self.tables.funcs.contains_key(&key) && !self.tables.overridable.remove(&key) {
             return Err(Diagnostic::new(
                 name_span,
                 format!("la función `{key}` ya está definida"),
@@ -1366,6 +1373,22 @@ impl<'a> FnCompiler<'a> {
             }
             Expr::MethodCall {
                 target, args, span, ..
+            } if self.res.redirects.contains_key(span) => {
+                // `s.metodo(..)` sobre una cadena o `Int.parse(..)`: función del preludio.
+                let (key, has_receiver) = self.res.redirects[span].clone();
+                let &(index, _) = self.tables.funcs.get(&key).ok_or_else(|| {
+                    Diagnostic::new(*span, format!("la función `{key}` no está definida"))
+                })?;
+                if has_receiver {
+                    self.expr(target)?;
+                }
+                for arg in args {
+                    self.expr(arg)?;
+                }
+                self.emit(Op::Call(index), *span);
+            }
+            Expr::MethodCall {
+                target, args, span, ..
             } if self.res.valuecalls.contains(span) => {
                 // `obj.alClic(x)`: el campo guarda una función.
                 let field = self.field_index(*span)?;
@@ -1473,6 +1496,15 @@ impl<'a> FnCompiler<'a> {
                     self.emit(binary_op(*op), *span);
                 }
             },
+            Expr::Call {
+                name, args, span, ..
+            } if and23_types::native(name).is_some() => {
+                let (id, _) = and23_types::native(name).expect("comprobado arriba");
+                for arg in args {
+                    self.expr(arg)?;
+                }
+                self.emit(Op::Native(id), *span);
+            }
             Expr::Call {
                 name, args, span, ..
             } if matches!(name.as_str(), "len" | "push" | "pop" | "hash") => {

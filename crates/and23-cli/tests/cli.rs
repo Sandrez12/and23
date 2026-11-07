@@ -672,3 +672,120 @@ show(suma(500))
     assert!(stderr(&malo).contains("--max-depth"), "{}", stderr(&malo));
     std::fs::remove_file(&path).ok();
 }
+
+/// Los ejemplos de archivos usan rutas relativas a la raíz del repositorio.
+fn run_example_from_root(name: &str, stdin: &str) -> Output {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut child = and23()
+        .current_dir(root)
+        .arg(format!("examples/{name}"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(stdin.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn ejemplo_de_palabras_lee_y_procesa_un_archivo() {
+    let out = run_example_from_root("palabras.jb", "");
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out),
+        "5 líneas, 39 palabras
+distintas: 26
+el: 4
+lenguaje: 4
+pequeño: 3
+es: 2
+programa: 2
+"
+    );
+}
+
+#[test]
+fn ejemplo_de_notas_convierte_texto_y_escribe_un_archivo() {
+    let out = run_example_from_root("notas.jb", "");
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out),
+        "línea 4 ignorada: «sin nota» no es una nota
+promedio de 4 notas: 4.05
+mejor nota: dani con 5.0
+validas=4 | mejor=dani
+"
+    );
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    assert!(
+        !root.join("resumen.tmp").exists(),
+        "el ejemplo debe borrar su archivo"
+    );
+}
+
+#[test]
+fn lee_linea_lee_la_entrada_estandar_hasta_el_final() {
+    let path = std::env::temp_dir().join(format!("and23_cli_stdin_{}.jb", std::process::id()));
+    std::fs::write(
+        &path,
+        "mut total = 0
+mut lineas = 0
+while true {
+    fix l = leeLinea()
+    if l == nil { break }
+    lineas += 1
+    total += Int.parse(l) ?: 0
+}
+show(\"${lineas} líneas, suma ${total}\")
+",
+    )
+    .unwrap();
+    let mut child = and23()
+        .arg(&path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(
+            b"10
+20
+abc
+
+5",
+        )
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    std::fs::remove_file(&path).ok();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out),
+        "5 líneas, suma 35
+"
+    );
+}
+
+#[test]
+fn leer_un_archivo_inexistente_sin_atrapar_es_un_error_con_posicion() {
+    let out = run_source(
+        "sinarchivo",
+        "show(leeArchivo(\"no_existe_nunca.txt\"))
+",
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("no se pudo leer `no_existe_nunca.txt`"),
+        "{}",
+        stderr(&out)
+    );
+}

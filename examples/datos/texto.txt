@@ -1,0 +1,5 @@
+El lenguaje es pequeño, estático y orientado a objetos.
+Un lenguaje pequeño se aprende rápido; un lenguaje claro se lee mejor.
+
+Los tipos estáticos encuentran errores antes de ejecutar el programa.
+El programa es pequeño, y el lenguaje también.

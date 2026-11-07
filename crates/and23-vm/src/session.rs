@@ -24,6 +24,9 @@ impl<W: Write> Session<W> {
         session
             .run(&prelude, false)
             .expect("el preludio se ejecuta sin errores");
+        // Los programas pueden definir funciones con los nombres del preludio (la suya gana).
+        session.checker.seal_prelude();
+        session.compiler.seal_prelude();
         session
     }
 

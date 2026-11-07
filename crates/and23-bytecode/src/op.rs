@@ -92,6 +92,8 @@ pub enum Op {
     Push,
     /// Saca un arreglo y deja su último elemento, que quita del arreglo (`pop`).
     ArrayPop,
+    /// Función nativa número `n` de `and23_types::NATIVES`: saca sus argumentos y deja el resultado.
+    Native(u32),
     /// Saca un valor y deja su hash (`hash`): igual para valores iguales, nunca negativo.
     Hash,
     /// Saca un valor y deja una celda nueva que lo contiene (variable `mut` capturada por una lambda).

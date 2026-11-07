@@ -81,7 +81,7 @@ Workspace de Rust en `crates/`:
 | M7 | Genéricos con erasure | `List<T>` y `Map<K,V>` propios (`Lista<T>` y `Mapa<K, V>` en `prelude.jb`, escritas en And23) |
 | M8 | Closures y lambdas | `lista.map { ... }` (`examples/lambdas.jb`; `Lista` con `map`/`filter`/`reduce`/`ordena`) |
 | M9 | Módulos y paquetes | Proyecto de 3+ archivos (`examples/proyecto/`; `use`, `open`, alias) |
-| M10 | Stdlib inicial (IO, strings, math) | Leer y procesar un archivo |
+| M10 | Stdlib inicial (IO, strings, math) | Leer y procesar un archivo (`examples/palabras.jb`, `examples/notas.jb`) |
 | M11 | Concurrencia | Productor/consumidor |
 | M12 | Herramientas (REPL, desensamblador, benchmarks) | `and23 --disasm` |
 | Mn | Auto-compilación | El compilador escrito en And23 se compila a sí mismo |
@@ -102,6 +102,7 @@ Workspace de Rust en `crates/`:
 - **M7** (hecho): genéricos con erasure (clases, interfaces y funciones), cotas, `Lista<T>` y `Mapa<K, V>` en el preludio; ver "Genéricos (M7)".
 - **M8** (hecho): lambdas, closures (captura por valor y por referencia), tipos de función, métodos genéricos y `Lista` con `map`/`filter`/...; ver "Closures y lambdas (M8)".
 - **M9** (hecho): proyectos de varios archivos con `use`/`open` y alias; ver "Módulos (M9)".
+- **M10** (hecho): biblioteca estándar inicial (texto, números, archivos, entrada estándar); ver "Biblioteca estándar (M10)".
 
 ### Diseño de la VM (M1b)
 
@@ -413,6 +414,40 @@ fix m = Mapa<Str, Int>()                                                // expl�
 - **Límites conocidos de M9:** no hay `use` en el REPL; no hay reexportaciones ni importar solo algunos nombres; no hay manifiesto ni carpeta
   de paquetes (un «paquete» es una carpeta de archivos con `use`); dentro de un método, un campo heredado de una clase de otro archivo no tapa a
   una global del mismo nombre del archivo del método (el renombrado no ve los campos del padre).
+
+### Biblioteca estándar (M10)
+
+- **Dos capas.** Lo que no se puede escribir en And23 son funciones *nativas* (Rust): una tabla única, `and23_types::NATIVES` (nombre, tipos de
+  los parámetros y del resultado), que usan los tres pasos: el verificador las tipa como las funciones integradas (`len`...), el compilador
+  emite `Op::Native(id)` y la VM las ejecuta (`and23-vm/src/natives.rs`). El orden de la tabla fija el id. Todo lo demás está en el preludio,
+  escrito en el propio lenguaje, encima de las nativas. Las nativas con prefijo `_` (`_trozo`, `_busca`, `_leeArchivo`...) son detalles del
+  preludio; las demás (`raiz`, `existe`, `leeLinea`...) las usa el programa directamente.
+- **Métodos de `Str`.** `Str` no es un objeto, así que `s.metodo(args)` no pasa por la tabla de métodos: el verificador busca la función
+  `_str_metodo` del preludio (la cadena es su primer argumento), la tipa como una llamada normal y anota la redirección
+  (`Resolutions.redirects`) para que el compilador emita `Call`. `Int.parse` y `Float.parse` igual (`_int_parse`, `_float_parse`, sin receptor).
+  Añadir un método a `Str` es escribir una función del preludio. `s[i]` es una operación de la VM (`Index` acepta cadenas); asignar a `s[i]` es
+  un error de tipos.
+- **Posiciones de texto.** Cuentan caracteres (no bytes), como `len`. Con texto ASCII la conversión a bytes es directa; con otro texto es O(n) por
+  llamada.
+- **Números.** `parse` devuelve un opcional (nil si no es un número, también `nan` e `inf`) en vez de lanzar: `Int.parse(s) ?: 0`. No hay
+  conversión implícita entre Int y Float: `aFloat`, `piso`, `techo` y `redondea` convierten, y un Float no finito o fuera del rango de Int es un
+  error de ejecución. Los nombres de las matemáticas son españoles (`absoluto`, `minimo`, `maximo`) con variante `F` para Float, porque no hay
+  sobrecarga.
+- **Archivos.** Las nativas de archivos devuelven `nil`/`false` y guardan el mensaje en la VM (`_errorES`); el preludio lo convierte en un
+  `ErrorES` (que hereda de `Fallo`), así que se atrapa con `rescue e: ErrorES` o `rescue e: Fallo`. Sin atrapar, es un error con la posición de
+  la llamada. `leeArchivo` quita el BOM de UTF-8; `lineas()` acepta `
+` y `
+` y no crea una línea vacía por el salto final. `leeLinea()` lee
+  la entrada estándar de la VM (nil al terminar); como el REPL también la lee, no se mezclan.
+- **El preludio es redefinible.** Al añadir funciones al preludio, un programa que ya tenía una con ese nombre dejaría de compilar. Para evitarlo,
+  tras cargar el preludio el verificador y el compilador marcan sus funciones como redefinibles: la del programa gana y lo ya compilado del
+  preludio sigue usando la suya (las llamadas ya van por índice). Las clases del preludio y las funciones integradas no se pueden redefinir.
+- **Idioma de lectura.** Una `mut` asignada en el cuerpo de un `while` pierde su estrechamiento, así que `while l != nil { l.largo() }` no
+  compila; el bucle de lectura se escribe `while true { fix l = leeLinea(); if l == nil { break } ... }`.
+- **Límites conocidos de M10:** `show` de una `Lista` imprime sus campos internos (`texto()` da la forma legible); sin literales con exponente
+  (`1e3`); sin formato de números (decimales), `Mapa` ni ordenar por clave en la biblioteca; sin directorios (listar, crear), sin rutas
+  (unir, nombre), sin variables de entorno ni argumentos del programa; sin Unicode avanzado (`mayus`/`minus` usan las reglas de Rust,
+  `recorta` quita el espacio Unicode); `leeLinea` bloquea la VM mientras espera; el intérprete de árbol no conoce la biblioteca.
 
 ## Fuentes de referencia
 

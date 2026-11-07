@@ -1,6 +1,7 @@
 //! Máquina virtual de pila de And23 y la sesión que une compilador y VM.
 
 mod heap;
+mod natives;
 mod session;
 mod value;
 mod vm;

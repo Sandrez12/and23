@@ -44,6 +44,7 @@ fn well_typed(src: &str) -> bool {
     let mut checker = and23_types::Checker::new();
     let prelude = parse(and23_syntax::PRELUDE).expect("preludio válido");
     checker.check(&prelude).expect("preludio válido");
+    checker.seal_prelude();
     parse(src).is_ok_and(|p| checker.check(&p).is_ok())
 }
 
@@ -64,6 +65,9 @@ fn same(src: &str) {
 #[test]
 fn los_ejemplos_coinciden() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+    // Los ejemplos que leen archivos usan rutas relativas a la raíz del repositorio. Ningún otro
+    // test de este archivo toca el disco, así que cambiar el directorio no los afecta.
+    std::env::set_current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")).unwrap();
     let mut count = 0;
     for entry in std::fs::read_dir(dir).unwrap() {
         let path = entry.unwrap().path();
@@ -71,10 +75,11 @@ fn los_ejemplos_coinciden() {
             let src = std::fs::read_to_string(&path).unwrap();
             assert!(well_typed(&src), "{path:?}");
             let expected = tree(&src, false);
-            // El intérprete de árbol no conoce las cadenas ni los arreglos (M3).
+            // El intérprete de árbol no conoce las cadenas ni los arreglos (M3) ni la biblioteca
+            // estándar (M10).
             if expected
                 .as_ref()
-                .is_err_and(|e| e.contains("no soporta cadenas"))
+                .is_err_and(|e| e.contains("no soporta cadenas") || e.contains("no está definida"))
             {
                 assert!(vm(&src, false).is_ok(), "{path:?}");
                 continue;
