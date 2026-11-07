@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "and23-bytecode"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "and23-syntax",
  "and23-types",
@@ -12,7 +12,7 @@ dependencies = [
 
 [[package]]
 name = "and23-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "and23-bytecode",
  "and23-eval",
@@ -23,25 +23,25 @@ dependencies = [
 
 [[package]]
 name = "and23-eval"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "and23-syntax",
 ]
 
 [[package]]
 name = "and23-syntax"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "and23-types"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "and23-syntax",
 ]
 
 [[package]]
 name = "and23-vm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "and23-bytecode",
  "and23-eval",

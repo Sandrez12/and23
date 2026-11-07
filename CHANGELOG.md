@@ -3,7 +3,7 @@
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Las versiones siguen
 [SemVer](https://semver.org/lang/es/); mientras sea `0.x`, el lenguaje puede cambiar entre versiones.
 
-## Sin publicar
+## 0.2.0 - 2026-11-07
 
 ### Añadido
 - **Biblioteca estándar 2.** `argumentos()`, `entorno()`, `ahora()`, `duerme()`, `azar()`, `azarF()`, `semilla()`, `unirRuta`,
