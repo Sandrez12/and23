@@ -548,3 +548,52 @@ fn el_ejemplo_de_lambdas_corre() {
     let out = ok(&src);
     assert!(out.contains("pares al cuadrado"), "{out}");
 }
+
+/// Cada lambda de una llamada genérica se mira al deducir y al comprobar; sin memoria, 40 niveles
+/// serían 2^40 verificaciones.
+#[test]
+fn las_lambdas_anidadas_no_cuestan_exponencial() {
+    let depth = 40;
+    let mut inner = format!("a{}", depth - 1);
+    for i in (0..depth).rev() {
+        inner = format!("xs.map {{ a{i} -> {inner} }}.tam()");
+    }
+    let src = format!(
+        "fix xs = Lista<Int>()
+xs.agrega(1)
+show({inner})
+"
+    );
+    assert_eq!(
+        ok(&src),
+        "1
+"
+    );
+}
+
+#[test]
+fn la_memoria_de_lambdas_distingue_los_tipos_de_las_variables_a_la_vista() {
+    // La misma forma de lambda en dos funciones con variables de distinto tipo: cada una se verifica.
+    let src = r#"
+fn a() -> Int {
+    fix k = 1
+    fix xs = Lista<Int>()
+    xs.agrega(5)
+    return xs.map { x -> x + k }.obtiene(0)
+}
+fn b() -> Str {
+    fix k = "!"
+    fix xs = Lista<Str>()
+    xs.agrega("hola")
+    return xs.map { x -> x + k }.obtiene(0)
+}
+show(a())
+show(b())
+"#;
+    assert_eq!(
+        ok(src),
+        "6
+hola!
+"
+    );
+}

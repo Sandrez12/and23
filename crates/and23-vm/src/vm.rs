@@ -5,7 +5,7 @@ use and23_syntax::{Diagnostic, Span};
 use std::io::Write;
 
 /// Llamadas anidadas permitidas antes de abortar con un error.
-pub const DEFAULT_MAX_DEPTH: usize = 10_000;
+pub const DEFAULT_MAX_DEPTH: usize = 100_000;
 
 /// Máquina de pila. Conserva las globales entre ejecuciones (REPL).
 pub struct Vm<W: Write> {

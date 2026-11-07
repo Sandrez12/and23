@@ -611,3 +611,64 @@ fn un_error_de_tipos_en_una_lambda_senala_su_posicion() {
     assert!(err.contains(":1:30"), "{err}");
     assert!(err.contains("se esperaba Int, pero es Str"), "{err}");
 }
+
+#[test]
+fn la_recursion_de_decenas_de_miles_de_llamadas_funciona() {
+    let src = "fn suma(n: Int) -> Int {
+ if n == 0 { return 0 }
+ return n + suma(n - 1)
+}
+show(suma(90000))
+";
+    let out = run_source("recursion90k", src);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out),
+        "4050045000
+"
+    );
+}
+
+#[test]
+fn max_depth_cambia_el_limite_de_llamadas() {
+    let path = std::env::temp_dir().join(format!("and23_cli_depth_{}.jb", std::process::id()));
+    std::fs::write(
+        &path,
+        "fn suma(n: Int) -> Int {
+ if n == 0 { return 0 }
+ return n + suma(n - 1)
+}
+show(suma(500))
+",
+    )
+    .unwrap();
+    let corto = and23()
+        .args(["--max-depth", "100"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert_eq!(corto.status.code(), Some(1));
+    assert!(
+        stderr(&corto).contains("más de 100 llamadas"),
+        "{}",
+        stderr(&corto)
+    );
+    let largo = and23()
+        .args(["--max-depth", "1000"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert_eq!(
+        stdout(&largo),
+        "125250
+"
+    );
+    let malo = and23()
+        .args(["--max-depth", "abc"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert_eq!(malo.status.code(), Some(2));
+    assert!(stderr(&malo).contains("--max-depth"), "{}", stderr(&malo));
+    std::fs::remove_file(&path).ok();
+}

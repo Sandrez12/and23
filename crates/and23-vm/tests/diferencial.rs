@@ -30,7 +30,8 @@ fn tree_inner(src: &str, echo: bool) -> Outcome {
 
 fn vm(src: &str, echo: bool) -> Outcome {
     let program = parse(src).map_err(|d| d.message)?;
-    let mut session = Session::new(Vec::new());
+    // Mismo límite de llamadas que el intérprete de árbol, para que el error sea el mismo.
+    let mut session = Session::new(Vec::new()).with_max_depth(and23_eval::DEFAULT_MAX_DEPTH);
     let result = session
         .run(&program, echo)
         .and_then(|()| session.run_main())

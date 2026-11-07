@@ -110,7 +110,7 @@ Workspace de Rust en `crates/`:
   y `break`/`continue` sacan los que declaró el cuerpo del bucle antes de saltar.
 - Las `fix`/`mut` del nivel superior son globales (ranuras); las funciones y globales del archivo se registran antes de
   compilar, así que una función puede usar una global declarada más abajo (falla al ejecutar si aún no tiene valor).
-- Las llamadas no usan la pila nativa de Rust: un marco por llamada en un `Vec`, con límite de 10 000.
+- Las llamadas no usan la pila nativa de Rust: un marco por llamada en un `Vec`, con límite de 100 000 (`--max-depth N` lo cambia; el intérprete de árbol sigue en 10 000).
 - Variable no definida, asignación a `fix`, aridad incorrecta y función desconocida se detectan **al compilar**
   (antes de ejecutar nada); los errores de tipo, desbordamiento y división entre cero, al ejecutar.
 - Si la compilación falla, el compilador queda intacto (REPL). `and23 --disasm archivo.jb` imprime el bytecode.
@@ -125,7 +125,7 @@ Workspace de Rust en `crates/`:
 - Las funciones se declaran solo al nivel superior, pueden usarse antes de su definición y ven las variables
   globales, no las locales del llamador. Si el archivo define `main()`, se llama tras el código del nivel superior.
 - Las anotaciones de tipo (`n: Int`, `-> Int`) son obligatorias en los parámetros y desde M2 se verifican.
-- Recursión limitada a 10 000 llamadas anidadas: más allá es un error con posición, no un cierre del proceso.
+- Recursión limitada a 100 000 llamadas anidadas (configurable con `--max-depth`): más allá es un error con posición, no un cierre del proceso.
 - Desde M1b esos errores de nombres y aridad se informan al compilar, no al ejecutar.
 - Palabras clave: `fix mut fn if else while return break continue true false show` (desde M4 `thing this`, desde M5 `kind super is as` y desde M6 `nil attempt rescue fail`).
 
@@ -381,6 +381,9 @@ fix m = Mapa<Str, Int>()                                                // expl�
   Las demás `mut` no pagan nada; el coste es compilar dos veces algunas funciones. `this` se captura como una variable más.
 - **Funciones como valores:** `aplica(triple, 4)` crea una lambda sin capturas que llama a la función (un envoltorio `triple.<ref>`).
 - **Recolector:** el marcado recorre los valores capturados y el contenido de las celdas; `--gc-stress` da la misma salida en todos los tests.
+- **Verificación de lambdas:** una llamada genérica mira cada lambda dos veces (al deducir y al comprobar), y el cuerpo contiene a su vez
+  llamadas con lambdas. Para que no costara 2^profundidad, el verificador recuerda el tipo de cada lambda ya verificada, con clave: su
+  posición, los tipos esperados y los tipos de todas las variables a la vista. 40 niveles anidados verifican al instante.
 - **Límites conocidos de M8:** una lambda no puede referirse a sí misma por su nombre dentro de una función (solo vale en el nivel superior y con el tipo anotado,
   `fix f: (Int) -> Int = { ... f(x) ... }`, donde `f` es global); no hay `it` implícito ni sintaxis `::nombre`; los métodos y constructores no se pasan como
   valores (envuélvelos en una lambda); no hay lambdas genéricas ni cotas en las interfaces; `ordena` es una inserción estable O(n²).

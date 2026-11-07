@@ -15,6 +15,7 @@ Uso:
   and23 --disasm <archivo.jb>   muestra el bytecode en vez de ejecutar
   and23 --tree <archivo.jb>     usa el intérprete de árbol (referencia de M1a; sin cadenas)
   and23 --gc-stress ...         recolecta basura en cada punto seguro (prueba del GC)
+  and23 --max-depth N ...       llamadas anidadas permitidas (por defecto 100000)
   and23 --version
 ";
 
@@ -44,6 +45,15 @@ fn dispatch(args: &[String]) -> u8 {
         .filter(|a| *a != "--gc-stress")
         .cloned()
         .collect();
+    // `--max-depth N` cambia cuántas llamadas pueden estar anidadas antes del error de pila.
+    let (depth, args) = match take_max_depth(args) {
+        Ok(parsed) => parsed,
+        Err(message) => {
+            eprintln!("error: {message}");
+            return 2;
+        }
+    };
+    let stress = Options { stress, depth };
     match args.as_slice() {
         [] => repl(stress),
         [flag] if flag == "--version" || flag == "-V" => {
@@ -62,6 +72,43 @@ fn dispatch(args: &[String]) -> u8 {
             2
         }
     }
+}
+
+/// Opciones de ejecución que valen para cualquier modo.
+#[derive(Clone, Copy)]
+struct Options {
+    stress: bool,
+    depth: Option<usize>,
+}
+
+impl Options {
+    fn session<W: Write>(self, out: W) -> Session<W> {
+        let session = Session::new(out).with_gc_stress(self.stress);
+        match self.depth {
+            Some(depth) => session.with_max_depth(depth),
+            None => session,
+        }
+    }
+}
+
+/// Quita `--max-depth N` de los argumentos y devuelve N.
+fn take_max_depth(args: Vec<String>) -> Result<(Option<usize>, Vec<String>), String> {
+    let mut depth = None;
+    let mut rest = Vec::new();
+    let mut it = args.into_iter();
+    while let Some(arg) = it.next() {
+        if arg == "--max-depth" {
+            let value = it
+                .next()
+                .and_then(|v| v.parse::<usize>().ok())
+                .filter(|n| *n > 0)
+                .ok_or("`--max-depth` necesita un número entero positivo")?;
+            depth = Some(value);
+        } else {
+            rest.push(arg);
+        }
+    }
+    Ok((depth, rest))
 }
 
 /// Carga el archivo y todo lo que importa con `use`; el error ya viene listo para mostrarse.
@@ -86,13 +133,13 @@ fn execute<W: Write>(
     session.run(&program, echo).map_err(|d| d.render(file, src))
 }
 
-fn run_file(path: &str, stress: bool) -> u8 {
+fn run_file(path: &str, options: Options) -> u8 {
     let loaded = match load_program(path) {
         Ok(loaded) => loaded,
         Err(text) => return finish(Err(text)),
     };
     let sources = loaded.sources;
-    let mut session = Session::new(io::stdout()).with_gc_stress(stress);
+    let mut session = options.session(io::stdout());
     let result = session
         .run(&loaded.program, false)
         .and_then(|()| session.run_main())
@@ -170,10 +217,10 @@ fn open_braces(src: &str) -> isize {
         .sum()
 }
 
-fn repl(stress: bool) -> u8 {
+fn repl(options: Options) -> u8 {
     let stdin = io::stdin();
     let interactive = stdin.is_terminal();
-    let mut session = Session::new(io::stdout()).with_gc_stress(stress);
+    let mut session = options.session(io::stdout());
     let mut pending = String::new();
     loop {
         if interactive {

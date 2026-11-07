@@ -163,6 +163,7 @@ impl Checker {
             scope_params: Vec::new(),
             things: HashMap::new(),
             class_state: HashMap::new(),
+            lambda_cache: HashMap::new(),
             res: Resolutions::default(),
         };
         pass.program(program)?;
@@ -222,6 +223,9 @@ struct Pass<'p> {
     /// Clases de este programa y si ya se infirieron los tipos de los campos de su cuerpo.
     things: HashMap<String, &'p ThingDecl>,
     class_state: HashMap<String, State>,
+    /// Lambdas ya verificadas: una llamada genérica mira cada lambda dos veces (al deducir y al
+    /// comprobar) y sin esto las lambdas anidadas costarían 2^profundidad.
+    lambda_cache: HashMap<String, Type>,
     res: Resolutions,
 }
 
@@ -2233,6 +2237,41 @@ impl<'p> Pass<'p> {
     /// Verifica una lambda. `expected` trae, si el contexto lo sabe, el tipo de cada parámetro y el
     /// del resultado; sin ellos los parámetros deben llevar anotación y el resultado se infiere.
     fn lambda(
+        &mut self,
+        ctx: &mut Ctx,
+        params: &[LambdaParam],
+        body: &Block,
+        span: Span,
+        expected: Option<(&[Option<Type>], Option<Type>)>,
+    ) -> Result<Type, Diagnostic> {
+        // Misma lambda, mismos tipos esperados y mismas variables a la vista: mismo resultado, y sus
+        // anotaciones (`Resolutions`) ya quedaron registradas la primera vez.
+        let mut visible: Vec<String> = ctx
+            .scopes
+            .iter()
+            .flat_map(|sc| sc.iter())
+            .map(|(name, entry)| format!("{name}:{:?}", entry))
+            .collect();
+        visible.sort();
+        let mut narrowed: Vec<String> = ctx
+            .script_narrow
+            .iter()
+            .map(|(name, ty)| format!("{name}={ty:?}"))
+            .collect();
+        narrowed.sort();
+        let key = format!(
+            "{}-{}|{:?}|{:?}|{:?}|{:?}",
+            span.start, span.end, expected, ctx.this, visible, narrowed
+        );
+        if let Some(found) = self.lambda_cache.get(&key) {
+            return Ok(found.clone());
+        }
+        let found = self.lambda_uncached(ctx, params, body, span, expected)?;
+        self.lambda_cache.insert(key, found.clone());
+        Ok(found)
+    }
+
+    fn lambda_uncached(
         &mut self,
         ctx: &mut Ctx,
         params: &[LambdaParam],
