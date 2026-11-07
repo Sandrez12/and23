@@ -905,3 +905,32 @@ fn un_error_de_ejecucion_muestra_la_cadena_de_llamadas() {
     assert!(err.contains("llamado desde el nivel superior ("), "{err}");
     assert!(err.contains("t.jb:3:"), "{err}");
 }
+
+/// Cada bloque ```jb del tutorial es un programa completo: tiene que ejecutarse sin errores.
+#[test]
+fn los_ejemplos_del_tutorial_se_ejecutan() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let tutorial = std::fs::read_to_string(root.join("docs/tutorial.md")).unwrap();
+    let dir = std::env::temp_dir().join("and23_tutorial");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut count = 0;
+    for (i, chunk) in tutorial.split("```jb\n").skip(1).enumerate() {
+        let code = chunk.split("```").next().unwrap();
+        let file = dir.join(format!("bloque{i}.jb"));
+        std::fs::write(&file, code).unwrap();
+        let out = Command::new(env!("CARGO_BIN_EXE_and23"))
+            .arg(&file)
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "bloque {i}:\n{code}\n{}",
+            stderr(&out)
+        );
+        count += 1;
+    }
+    assert!(count >= 10, "solo {count} bloques");
+    let _ = std::fs::remove_dir_all(&dir);
+}
