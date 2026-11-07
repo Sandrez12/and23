@@ -1,0 +1,15 @@
+// Módulo de utilidades numéricas. Solo lo que lleva `open` lo ven los demás archivos.
+
+open fix PI = 3.14159
+
+open fn cuadrado(x: Float) -> Float = x * x
+
+open fn maximo(a: Int, b: Int) -> Int {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+// Privada: ningún otro archivo puede llamarla.
+fn auxiliar(x: Int) -> Int = x + 1

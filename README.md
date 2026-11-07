@@ -4,7 +4,7 @@ And23 es un lenguaje de programación estático y orientado a objetos, de nivel 
 
 Los archivos de código usan la extensión `.jb`. Los identificadores admiten Unicode (`dueño`, `ñandú`).
 
-> **Estado: M8.** Hoy verifica tipos y compila a bytecode programas con variables, `if`/`while`, funciones recursivas, cadenas con interpolación, arreglos, clases, herencia, interfaces, excepciones, tipos opcionales, genéricos y lambdas con closures, y los ejecuta en una VM de pila con recolector de basura (`fib(30)` en ~0,13 s, unas 9 veces más rápido que el intérprete de árbol anterior). Un programa mal tipado se rechaza con su línea y columna antes de ejecutar nada. Los módulos y el resto llegan en los siguientes hitos (ver [`DESIGN.md`](DESIGN.md)).
+> **Estado: M9.** Hoy verifica tipos y compila a bytecode programas con variables, `if`/`while`, funciones recursivas, cadenas con interpolación, arreglos, clases, herencia, interfaces, excepciones, tipos opcionales, genéricos, lambdas con closures y proyectos de varios archivos, y los ejecuta en una VM de pila con recolector de basura (`fib(30)` en ~0,13 s, unas 9 veces más rápido que el intérprete de árbol anterior). Un programa mal tipado se rechaza con su línea y columna antes de ejecutar nada. La biblioteca estándar y el resto llegan en los siguientes hitos (ver [`DESIGN.md`](DESIGN.md)).
 
 ## Cómo se ve
 
@@ -105,6 +105,19 @@ fix c = contador()
 show("${c()} ${c()}")                           // 1 2: `n` sigue vivo aunque contador() ya terminó
 ```
 
+Varios archivos (desde M9): `use "ruta"` importa lo que otro archivo marcó con `open`; el resto es privado:
+
+```
+// util/mate.jb
+open fn cuadrado(x: Int) -> Int = x * x
+fn auxiliar() { ... }                 // privada: nadie fuera de este archivo la ve
+
+// main.jb
+use "util/mate"                       // los nombres abiertos entran directamente
+use "formas" como f                   // o con alias: f.Circulo(2.0)
+show(cuadrado(7))                     // 49
+```
+
 ## Lo que funciona hoy
 
 ```
@@ -143,6 +156,7 @@ show(suma)            // 30
 - Tipos opcionales: `T?` admite un `T` o `nil`; un `T` común nunca es `nil` (`fix x: Perro = nil` es un error). Usar un `T?` como `T` (`p.nombre`, `p.m()`, pasarlo donde se pide `T`) se rechaza al compilar. Se trabaja con `p?.campo` y `p?.metodo()` (dan `nil` si `p` lo es y no evalúan los argumentos), `p ?: valor` (valor por defecto) y comprobando: tras `if p != nil { ... }` (o `&&`, `||`, `!`, `while p != nil`, y `if p == nil { return }` para el resto del bloque) el compilador sabe que `p` no es `nil`. Solo se estrechan variables locales, parámetros y globales `fix`; no los campos ni los `mut` globales.
 - Genéricos con *erasure*: `thing Caja<T>(...)`, `kind Fuente<T>` y `fn primero<T>(xs: [T]) -> T` (los métodos usan los parámetros de su clase, pero no tienen los suyos). Los argumentos de tipo se escriben `Caja<Int>` o se deducen de los argumentos (`Caja(5)`), del tipo esperado (`fix l: Lista<Int> = Lista()`) o se dan explícitos (`Lista<Int>()`, `primero<Int>(xs)`). `<T: Ordenable<T>>` pone una cota: solo se aceptan tipos que la cumplan y dentro se pueden usar sus métodos y campos. Son invariantes (`Caja<Perro>` no es `Caja<Animal>`). Como en ejecución `T` no existe, los valores no se encajonan; por lo mismo `x is Lista` comprueba solo la clase y `as Lista<Int>` no existe.
 - Biblioteca base (`crates/and23-syntax/prelude.jb`, escrita en And23 y cargada en cada sesión): `Lista<T>` (`agrega`, `obtiene`, `pone`, `tam`, `vacia`, `contiene`, `indiceDe`, `inserta`, `quita`, `quitaEn`, `copia`, `texto`) y `Mapa<K, V>`, una tabla hash (`pone`, `obtiene` que da `V?`, `contiene`, `quita`, `tam`, `vacio`, `claves`, `valores`). Sus nombres, `Fallo` y `Entrada` quedan reservados. Para escribirlas se añadieron `pop(arreglo)` y `hash(valor)`.
+- Módulos: `use "ruta"` (sin `.jb`, relativa a la carpeta del archivo que importa) trae las declaraciones `open` de ese archivo (`open fn`, `open thing`, `open kind`, `open fix`); `use "ruta" como a` las deja bajo el alias (`a.f(1)`, `a.Clase(..)`, `x: a.Clase`, `: a.Padre`). Sin `open` una declaración es privada, y dos archivos pueden tener funciones privadas del mismo nombre. Cada archivo se carga una sola vez y se ejecuta antes que quien lo importa; una dependencia circular es un error. Los errores indican el archivo, la línea y la columna correctos. `and23 main.jb` ejecuta el proyecto desde el archivo principal (su `main()` es el punto de entrada). El REPL no admite `use`.
 - Lambdas y closures: `{ a, b -> cuerpo }` (los tipos de los parámetros se deducen del contexto o se escriben `{ a: Int -> ... }`; `{ cuerpo }` sin `->` no tiene parámetros). La última expresión es el valor y `return` sale de la lambda. Si la lambda es el último argumento va fuera del paréntesis (`lista.map { x -> x }`, `f(1) { ... }`, y `f { ... }` si es el único). Los tipos de función se escriben `(Int, Str) -> Bool` (`() -> Unit` sin parámetros), y `((Int) -> Int)?` es opcional. Valen para variables, parámetros, retornos, arreglos y campos (`b.alClic(x)` llama al campo); `f(1)(2)` llama a lo que devuelve `f(1)`, y una función con nombre se pasa como valor (`aplica(triple, 4)`). Captura: lo `fix` se copia y lo `mut` se comparte por referencia (la lambda y la función de fuera ven los mismos cambios, también después de que esa función termine); `this` y los campos se capturan igual. Las funciones genéricas y los métodos admiten parámetros de tipo propios que se deducen de la lambda (`fn mapea<R>(f: (T) -> R) -> Caja<R>`; explícito: `c.mapea<Float> { ... }`). `Lista` ganó `paraCada`, `map`, `filter`, `reduce`, `busca`, `alguno`, `todos` y `ordena`, y `Mapa` ganó `paraCada`.
 - Igualdad: `==` y `!=` valen entre valores del mismo tipo: los números por valor, las cadenas por contenido y los objetos y arreglos por referencia (`[1] == [1]` es falso). Un `nil` solo se compara con un opcional.
 - Recolector de basura mark-sweep propio: 10 millones de asignaciones corren con el heap acotado. `--gc-stress` recolecta en cada punto seguro para probarlo.
@@ -150,7 +164,7 @@ show(suma)            // 30
   infinita da un error en vez de cerrar el proceso.
 - El REPL recuerda variables y funciones entre líneas y acepta bloques en varias líneas.
 
-Más ejemplos en [`examples/`](examples/): `aritmetica.jb`, `funciones.jb`, `control.jb`, `cadenas.jb`, `clases.jb` (un programa orientado a objetos de ~220 líneas), `polimorfismo.jb` (herencia, interfaces, `is`/`as`/`super`), `excepciones.jb` (excepciones propias y opcionales) `genericos.jb` (`Lista`, `Mapa`, clases, interfaces y funciones genéricas) y `lambdas.jb` (lambdas, closures, callbacks y `Lista` con `map`/`filter`/`ordena`).
+Más ejemplos en [`examples/`](examples/): `aritmetica.jb`, `funciones.jb`, `control.jb`, `cadenas.jb`, `clases.jb` (un programa orientado a objetos de ~220 líneas), `polimorfismo.jb` (herencia, interfaces, `is`/`as`/`super`), `excepciones.jb` (excepciones propias y opcionales) `genericos.jb` (`Lista`, `Mapa`, clases, interfaces y funciones genéricas) `lambdas.jb` (lambdas, closures, callbacks y `Lista` con `map`/`filter`/`ordena`) y `proyecto/` (un proyecto de tres archivos con `use`/`open`).
 
 ```
 error: se esperaba Int, pero es Bool
@@ -183,6 +197,7 @@ cargo run -p and23-cli -- examples/polimorfismo.jb         # herencia e interfac
 cargo run -p and23-cli -- examples/excepciones.jb          # excepciones y opcionales
 cargo run -p and23-cli -- examples/genericos.jb            # genéricos, Lista y Mapa
 cargo run -p and23-cli -- examples/lambdas.jb              # lambdas y closures
+cargo run -p and23-cli -- examples/proyecto/main.jb        # proyecto de varios archivos
 cargo test --workspace                             # tests
 ```
 
@@ -190,7 +205,7 @@ cargo test --workspace                             # tests
 
 | Crate | Contenido |
 |---|---|
-| `and23-syntax` | lexer, AST, parser Pratt y diagnósticos con línea y columna |
+| `and23-syntax` | lexer, AST, parser Pratt, diagnósticos con línea y columna y el cargador de módulos (`use`/`open`) |
 | `and23-types` | verificador de tipos estáticos (con estado para el REPL) |
 | `and23-bytecode` | instrucciones, compilador del AST a bytecode y desensamblador |
 | `and23-vm` | VM de pila, heap con recolector mark-sweep y sesión (verificador + compilador + VM con estado para el REPL) |
@@ -199,7 +214,7 @@ cargo test --workspace                             # tests
 
 ## Hoja de ruta
 
-M0 expresiones, M1 variables y funciones con bytecode y VM, M2 tipos estáticos, M3 strings y GC, M4 clases, M5 herencia e interfaces (hecho), M6 excepciones y null-safety (hecho), M7 genéricos (hecho), M8 closures y lambdas (hecho), y más adelante módulos, stdlib, concurrencia y auto-compilación. El detalle y los criterios de éxito están en [`DESIGN.md`](DESIGN.md).
+M0 expresiones, M1 variables y funciones con bytecode y VM, M2 tipos estáticos, M3 strings y GC, M4 clases, M5 herencia e interfaces (hecho), M6 excepciones y null-safety (hecho), M7 genéricos (hecho), M8 closures y lambdas (hecho), M9 módulos (hecho), y más adelante stdlib, concurrencia y auto-compilación. El detalle y los criterios de éxito están en [`DESIGN.md`](DESIGN.md).
 
 ## Licencia
 

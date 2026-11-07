@@ -417,7 +417,19 @@ impl Stmt {
     }
 }
 
+/// `use "ruta"` o `use "ruta" como alias`: importa las declaraciones abiertas de otro archivo.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UseDecl {
+    pub path: String,
+    pub alias: Option<String>,
+    pub span: Span,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program {
     pub stmts: Vec<Stmt>,
+    /// Los `use` del archivo, en orden.
+    pub uses: Vec<UseDecl>,
+    /// Nombres declarados con `open` (visibles para quien importe este archivo).
+    pub exports: Vec<String>,
 }

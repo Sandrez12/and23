@@ -1,0 +1,29 @@
+// Formas geométricas: una interfaz abierta y dos clases que la implementan.
+use "util/mate"
+
+open kind Forma {
+    fn area() -> Float
+    fn nombre() -> Str
+}
+
+open thing Circulo(fix radio: Float) : Forma {
+    fn area() -> Float = PI * cuadrado(radio)
+    fn nombre() -> Str = "círculo"
+}
+
+open thing Rectangulo(fix ancho: Float, fix alto: Float) : Forma {
+    fn area() -> Float = ancho * alto
+    fn nombre() -> Str = "rectángulo"
+}
+
+// Una clase que solo usa este archivo.
+thing Registro(mut cuenta: Int) {
+    fn suma() { cuenta += 1 }
+}
+
+fix registro = Registro(0)
+
+open fn describe(f: Forma) -> Str {
+    registro.suma()
+    return "${f.nombre()} #${registro.cuenta}: ${f.area()}"
+}

@@ -1,6 +1,7 @@
 use crate::ast::{
     BinOp, Block, CtorParam, Expr, FieldDecl, FnDecl, InterpPart, KindDecl, KindMethod,
     LambdaParam, Param, Program, Rescue, Stmt, SuperRef, ThingDecl, TypeParam, TypeRef, UnOp,
+    UseDecl,
 };
 use crate::error::Diagnostic;
 use crate::lexer::{StrPart, Token, TokenKind};
@@ -132,12 +133,84 @@ impl Parser {
         }
     }
 
+    /// Nombre de tipo o de clase, posiblemente cualificado por el alias de un `use`: `util.Persona`.
+    fn qualified_ident(&mut self, what: &str) -> Result<(String, Span), Diagnostic> {
+        let (mut name, mut span) = self.expect_ident(what)?;
+        if self.peek().kind == TokenKind::Dot {
+            if let TokenKind::Ident(member) = self.peek_at(1).kind.clone() {
+                self.bump();
+                span = span.to(self.bump().span);
+                name = format!("{name}.{member}");
+            }
+        }
+        Ok((name, span))
+    }
+
+    /// `use "ruta"` o `use "ruta" como alias`; la palabra `use` ya está en el token actual.
+    fn use_decl(&mut self) -> Result<UseDecl, Diagnostic> {
+        let start = self.bump().span;
+        let TokenKind::Str(parts) = self.peek().kind.clone() else {
+            return Err(
+                self.error_here("se esperaba la ruta entre comillas después de `use`".into())
+            );
+        };
+        let path_span = self.bump().span;
+        let path = match parts.as_slice() {
+            [StrPart::Text(text)] if !text.is_empty() => text.clone(),
+            _ => {
+                return Err(Diagnostic::new(
+                    path_span,
+                    "la ruta de `use` es un texto fijo, sin `${}` y no vacío",
+                ))
+            }
+        };
+        let mut span = start.to(path_span);
+        let mut alias = None;
+        if matches!(&self.peek().kind, TokenKind::Ident(w) if w == "como") {
+            self.bump();
+            let (name, name_span) = self.expect_ident("el alias después de `como`")?;
+            span = span.to(name_span);
+            alias = Some(name);
+        }
+        Ok(UseDecl { path, alias, span })
+    }
+
     fn program(&mut self) -> Result<Program, Diagnostic> {
         let mut stmts = Vec::new();
+        let mut uses = Vec::new();
+        let mut exports = Vec::new();
         loop {
             self.skip_newlines();
             if self.peek().kind == TokenKind::Eof {
-                return Ok(Program { stmts });
+                return Ok(Program {
+                    stmts,
+                    uses,
+                    exports,
+                });
+            }
+            if matches!(&self.peek().kind, TokenKind::Ident(w) if w == "use")
+                && matches!(self.peek_at(1).kind, TokenKind::Str(_))
+            {
+                uses.push(self.use_decl()?);
+                self.end_of_stmt(false)?;
+                continue;
+            }
+            let open = matches!(&self.peek().kind, TokenKind::Ident(w) if w == "open")
+                && matches!(
+                    self.peek_at(1).kind,
+                    TokenKind::Fn
+                        | TokenKind::Thing
+                        | TokenKind::Kind
+                        | TokenKind::Fix
+                        | TokenKind::Mut
+                );
+            if open {
+                self.bump();
+                if self.peek().kind == TokenKind::Mut {
+                    return Err(self.error_here(
+                        "una variable `mut` no se puede abrir: otro archivo no podría cambiarla; usa `open fix` o una función".into(),
+                    ));
+                }
             }
             let stmt = if self.peek().kind == TokenKind::Fn {
                 Stmt::Fn(Box::new(self.fn_decl()?))
@@ -148,6 +221,15 @@ impl Parser {
             } else {
                 self.stmt()?
             };
+            if open {
+                match &stmt {
+                    Stmt::Fn(d) => exports.push(d.name.clone()),
+                    Stmt::Thing(d) => exports.push(d.name.clone()),
+                    Stmt::Kind(d) => exports.push(d.name.clone()),
+                    Stmt::Let { name, .. } => exports.push(name.clone()),
+                    _ => {}
+                }
+            }
             stmts.push(stmt);
             self.end_of_stmt(false)?;
         }
@@ -303,7 +385,7 @@ impl Parser {
                 span: open.to(close.span),
             });
         }
-        let (name, span) = self.expect_ident("un nombre de tipo")?;
+        let (name, span) = self.qualified_ident("un nombre de tipo")?;
         // `Lista<Int>`, `Mapa<Str, [Int]>`
         if self.peek().kind == TokenKind::Lt {
             self.bump();
@@ -461,7 +543,7 @@ impl Parser {
         if self.peek().kind == TokenKind::Colon {
             self.bump();
             loop {
-                let (sname, sspan) = self.expect_ident("el nombre de una clase o interfaz")?;
+                let (sname, sspan) = self.qualified_ident("el nombre de una clase o interfaz")?;
                 let mut type_args = Vec::new();
                 let mut head = sspan;
                 if self.peek().kind == TokenKind::Lt {

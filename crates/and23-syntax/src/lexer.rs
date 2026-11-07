@@ -244,6 +244,33 @@ fn operator(c: char, next: Option<char>) -> Option<(TokenKind, usize)> {
 }
 
 /// Convierte el código fuente en tokens. Los identificadores admiten Unicode.
+/// Como `lex`, con todas las posiciones desplazadas `base` bytes.
+pub fn lex_at(src: &str, base: usize) -> Result<Vec<Token>, Diagnostic> {
+    if base == 0 {
+        return lex(src);
+    }
+    let shift = |span: Span| Span::new(span.start + base, span.end + base);
+    let mut tokens = lex(src).map_err(|mut d| {
+        d.span = shift(d.span);
+        d
+    })?;
+    shift_tokens(&mut tokens, base);
+    Ok(tokens)
+}
+
+fn shift_tokens(tokens: &mut [Token], base: usize) {
+    for token in tokens {
+        token.span = Span::new(token.span.start + base, token.span.end + base);
+        if let TokenKind::Str(parts) = &mut token.kind {
+            for part in parts {
+                if let StrPart::Code(code) = part {
+                    shift_tokens(code, base);
+                }
+            }
+        }
+    }
+}
+
 pub fn lex(src: &str) -> Result<Vec<Token>, Diagnostic> {
     let chars: Vec<(usize, char)> = src.char_indices().collect();
     let lexer = Lexer {

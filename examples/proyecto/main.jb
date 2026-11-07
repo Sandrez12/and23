@@ -1,0 +1,13 @@
+// Proyecto de varios archivos: `use "ruta"` importa lo que otro archivo marcó con `open`.
+use "formas"
+use "util/mate" como mate
+
+fn main() {
+    fix figuras = Lista<Forma>()
+    figuras.agrega(Circulo(2.0))
+    figuras.agrega(Rectangulo(3.0, 4.5))
+    figuras.paraCada { f -> show(describe(f)) }
+
+    show("mayor: ${mate.maximo(3, 9)}")
+    show("pi al cuadrado: ${mate.cuadrado(mate.PI)}")
+}

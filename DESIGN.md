@@ -80,7 +80,7 @@ Workspace de Rust en `crates/`:
 | M6 | Excepciones y null-safety | `attempt`/`rescue`; el compilador rechaza deref de `T?` (`examples/excepciones.jb`) |
 | M7 | Genéricos con erasure | `List<T>` y `Map<K,V>` propios (`Lista<T>` y `Mapa<K, V>` en `prelude.jb`, escritas en And23) |
 | M8 | Closures y lambdas | `lista.map { ... }` (`examples/lambdas.jb`; `Lista` con `map`/`filter`/`reduce`/`ordena`) |
-| M9 | Módulos y paquetes | Proyecto de 3+ archivos |
+| M9 | Módulos y paquetes | Proyecto de 3+ archivos (`examples/proyecto/`; `use`, `open`, alias) |
 | M10 | Stdlib inicial (IO, strings, math) | Leer y procesar un archivo |
 | M11 | Concurrencia | Productor/consumidor |
 | M12 | Herramientas (REPL, desensamblador, benchmarks) | `and23 --disasm` |
@@ -101,6 +101,7 @@ Workspace de Rust en `crates/`:
 - **M6** (hecho): excepciones (`attempt`/`rescue`/`fail`) y opcionales (`T?`, `nil`, `?.`, `?:`, estrechamiento); ver "Excepciones y opcionales (M6)".
 - **M7** (hecho): genéricos con erasure (clases, interfaces y funciones), cotas, `Lista<T>` y `Mapa<K, V>` en el preludio; ver "Genéricos (M7)".
 - **M8** (hecho): lambdas, closures (captura por valor y por referencia), tipos de función, métodos genéricos y `Lista` con `map`/`filter`/...; ver "Closures y lambdas (M8)".
+- **M9** (hecho): proyectos de varios archivos con `use`/`open` y alias; ver "Módulos (M9)".
 
 ### Diseño de la VM (M1b)
 
@@ -383,6 +384,32 @@ fix m = Mapa<Str, Int>()                                                // expl�
 - **Límites conocidos de M8:** una lambda no puede referirse a sí misma por su nombre dentro de una función (solo vale en el nivel superior y con el tipo anotado,
   `fix f: (Int) -> Int = { ... f(x) ... }`, donde `f` es global); no hay `it` implícito ni sintaxis `::nombre`; los métodos y constructores no se pasan como
   valores (envuélvelos en una lambda); no hay lambdas genéricas ni cotas en las interfaces; `ordena` es una inserción estable O(n²).
+
+### Módulos (M9)
+
+- **Sintaxis:** `use "ruta"` y `use "ruta" como alias` al nivel superior de un archivo (`use` y `como` son palabras contextuales: siguen siendo
+  nombres válidos en otros sitios); `open` antes de `fn`, `thing`, `kind` o `fix` hace pública esa declaración. `open mut` es un error (otro
+  archivo no podría cambiarla). Los métodos y campos no tienen visibilidad propia: la visibilidad es del nivel superior. Los nombres
+  cualificados `alias.nombre` valen como valor, llamada (`a.f(x)`, `a.Clase(x)`) y tipo (`x: a.Clase`, `is a.Clase`, `: a.Padre`).
+- **Resolución:** la ruta se resuelve respecto a la carpeta del archivo que escribe el `use`, se le añade `.jb` y se normalizan `.` y `..` (no
+  hay carpeta raíz de proyecto ni manifiesto). Importar es transitivo hacia dentro pero no hacia fuera: `main` ve lo abierto de `formas`, no lo
+  que `formas` importó. Sin alias, los nombres abiertos entran directamente; chocar con una declaración propia o con otro `use` es un error
+  (se resuelve con `como`). Un alias no puede repetir un nombre ya usado.
+- **Cómo se une todo:** `modules::load` lee el archivo principal, carga recursivamente cada `use` (cada archivo una sola vez, dependencias
+  primero; un ciclo es un error que muestra la cadena `a -> b -> a`) y devuelve un único `Program` con las sentencias de todos en orden de
+  dependencia. Por eso los efectos del nivel superior de un módulo (`show`, variables globales) ocurren una vez, antes de los de quien lo
+  importa. El verificador, el compilador y la VM no saben que existen módulos.
+- **Renombrado:** las declaraciones del nivel superior de los archivos distintos del principal se renombran a `ruta.nombre` (`util/mate.cuadrado`);
+  el principal conserva sus nombres. Un recorrido por el AST de cada archivo cambia cada referencia (variables, llamadas, tipos, clases
+  base, `is`/`as`/`rescue`, asignaciones) respetando los nombres locales que la tapan (parámetros, variables, parámetros de tipo, campos de la
+  clase). Así dos archivos pueden tener un `ayuda` privado, y los mensajes de error nombran el módulo (`util/mate.Punto`), al igual que
+  `show` de un objeto.
+- **Errores con archivo:** todos los archivos comparten un único espacio de posiciones (cada uno empieza donde acabó el anterior), así que un
+  `Diagnostic` del verificador, del compilador o de la VM encuentra su archivo y su línea (`SourceMap`). Si un nombre no existe pero es
+  privado en un módulo importado, el error lo dice: «`ayuda` es privado en `util`: declárala con `open` allí».
+- **Límites conocidos de M9:** no hay `use` en el REPL; no hay reexportaciones ni importar solo algunos nombres; no hay manifiesto ni carpeta
+  de paquetes (un «paquete» es una carpeta de archivos con `use`); dentro de un método, un campo heredado de una clase de otro archivo no tapa a
+  una global del mismo nombre del archivo del método (el renombrado no ve los campos del padre).
 
 ## Fuentes de referencia
 

@@ -1,12 +1,13 @@
 use and23_bytecode::{disassemble, Compiler};
 use and23_eval::Interpreter;
+use and23_syntax::Diagnostic;
 use and23_types::Checker;
 use and23_vm::Session;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::process::ExitCode;
 
 const USAGE: &str = "\
-And23 (M8)
+And23 (M9)
 
 Uso:
   and23 <archivo.jb>   ejecuta un programa (y llama a main() si existe)
@@ -63,12 +64,9 @@ fn dispatch(args: &[String]) -> u8 {
     }
 }
 
-/// Lee el archivo; el error ya viene listo para mostrarse.
-fn read_source(path: &str) -> Result<String, u8> {
-    std::fs::read_to_string(path).map_err(|e| {
-        eprintln!("error: no se pudo leer `{path}`: {e}");
-        1
-    })
+/// Carga el archivo y todo lo que importa con `use`; el error ya viene listo para mostrarse.
+fn load_program(path: &str) -> Result<and23_syntax::modules::Loaded, String> {
+    and23_syntax::modules::load(path, |p| std::fs::read_to_string(p)).map_err(|f| f.render())
 }
 
 /// Analiza, compila y ejecuta `src` en `session`. El error ya viene formateado con su posición.
@@ -79,17 +77,26 @@ fn execute<W: Write>(
     echo: bool,
 ) -> Result<(), String> {
     let program = and23_syntax::parse(src).map_err(|d| d.render(file, src))?;
+    if let Some(u) = program.uses.first() {
+        return Err(
+            Diagnostic::new(u.span, "`use` solo funciona en archivos, no en el REPL")
+                .render(file, src),
+        );
+    }
     session.run(&program, echo).map_err(|d| d.render(file, src))
 }
 
 fn run_file(path: &str, stress: bool) -> u8 {
-    let src = match read_source(path) {
-        Ok(src) => src,
-        Err(code) => return code,
+    let loaded = match load_program(path) {
+        Ok(loaded) => loaded,
+        Err(text) => return finish(Err(text)),
     };
+    let sources = loaded.sources;
     let mut session = Session::new(io::stdout()).with_gc_stress(stress);
-    let result = execute(&mut session, &src, path, false)
-        .and_then(|()| session.run_main().map_err(|d| d.render(path, &src)));
+    let result = session
+        .run(&loaded.program, false)
+        .and_then(|()| session.run_main())
+        .map_err(|d| sources.render(&d));
     // La salida normal debe quedar escrita antes del mensaje de error.
     let _ = session.out().flush();
     finish(result)
@@ -97,31 +104,25 @@ fn run_file(path: &str, stress: bool) -> u8 {
 
 /// Ejecuta con el intérprete de árbol: sirve para comparar velocidad y comportamiento.
 fn run_file_tree(path: &str) -> u8 {
-    let src = match read_source(path) {
-        Ok(src) => src,
-        Err(code) => return code,
+    let loaded = match load_program(path) {
+        Ok(loaded) => loaded,
+        Err(text) => return finish(Err(text)),
     };
+    let sources = loaded.sources;
     let mut interp = Interpreter::new(io::stdout());
-    let result = and23_syntax::parse(&src)
-        .map_err(|d| d.render(path, &src))
-        .and_then(|program| {
-            interp
-                .run(&program, false)
-                .map_err(|d| d.render(path, &src))
-        })
-        .and_then(|()| interp.run_main().map_err(|d| d.render(path, &src)));
+    let result = interp
+        .run(&loaded.program, false)
+        .and_then(|()| interp.run_main())
+        .map_err(|d| sources.render(&d));
     let _ = interp.out.flush();
     finish(result)
 }
 
 fn disasm_file(path: &str) -> u8 {
-    let src = match read_source(path) {
-        Ok(src) => src,
-        Err(code) => return code,
-    };
-    let result = and23_syntax::parse(&src)
-        .map_err(|d| d.render(path, &src))
-        .and_then(|program| {
+    let result = load_program(path).and_then(|loaded| {
+        let sources = loaded.sources;
+        let program = loaded.program;
+        {
             // El preludio (la clase `Fallo`) se compila primero y no se muestra.
             let prelude = and23_syntax::parse(and23_syntax::PRELUDE).expect("preludio válido");
             let mut checker = Checker::new();
@@ -131,16 +132,17 @@ fn disasm_file(path: &str) -> u8 {
                 .compile(&prelude, &res, false)
                 .expect("preludio válido");
             let skip = compiler.module().functions.len();
-            let res = checker.check(&program).map_err(|d| d.render(path, &src))?;
+            let res = checker.check(&program).map_err(|d| sources.render(&d))?;
             compiler
                 .compile(&program, &res, false)
-                .map_err(|d| d.render(path, &src))?;
+                .map_err(|d| sources.render(&d))?;
             let module = compiler.module();
             for function in &module.functions[skip..] {
                 println!("{}", disassemble(module, function));
             }
             Ok(())
-        });
+        }
+    });
     finish(result)
 }
 
