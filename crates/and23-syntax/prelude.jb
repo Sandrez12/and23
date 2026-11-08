@@ -152,8 +152,11 @@ thing Lista<T>() {
     fn texto() -> Str = "${items}"
 }
 
-// --- Mapa<K, V>: una tabla hash con cubetas ---
-thing Entrada<K, V>(fix clave: K, mut valor: V)
+// --- Mapa<K, V>: una tabla hash con cubetas que además recuerda el orden de inserción ---
+/// Una entrada del `Mapa`. `vivo` pasa a `false` cuando se quita (queda en `orden` hasta que se compacta).
+thing Entrada<K, V>(fix clave: K, mut valor: V) {
+    mut vivo = true
+}
 
 fn _cubetasVacias<K, V>(n: Int) -> [[Entrada<K, V>]] {
     mut todas: [[Entrada<K, V>]] = []
@@ -166,16 +169,21 @@ fn _cubetasVacias<K, V>(n: Int) -> [[Entrada<K, V>]] {
     return todas
 }
 
+/// Recorrer un `Mapa` (`claves`, `valores`, `paraCada` y `show`) sigue el orden en que se pusieron las claves: poner una clave que ya
+/// está conserva su lugar; quitarla y volver a ponerla la deja al final. Buscar sigue siendo por hash (`cubetas`); `orden` guarda las
+/// entradas en el orden de inserción, con las quitadas marcadas (`vivo`) hasta que son más de la mitad y se compacta.
 thing Mapa<K, V>() {
     mut cubetas: [[Entrada<K, V>]] = _cubetasVacias<K, V>(8)
+    mut orden: [Entrada<K, V>] = []
     mut cantidad = 0
+    mut huecos = 0
 
     fn tam() -> Int = cantidad
     fn vacio() -> Bool = cantidad == 0
 
     fn cubetaDe(clave: K) -> [Entrada<K, V>] = cubetas[hash(clave) % len(cubetas)]
 
-    /// Asocia `clave` con `valor`; si ya estaba, reemplaza el valor.
+    /// Asocia `clave` con `valor`; si ya estaba, reemplaza el valor (sin cambiar su lugar en el orden).
     fn pone(clave: K, valor: V) {
         fix cubeta = cubetaDe(clave)
         mut i = 0
@@ -186,7 +194,9 @@ thing Mapa<K, V>() {
             }
             i += 1
         }
-        push(cubeta, Entrada<K, V>(clave, valor))
+        fix nueva = Entrada<K, V>(clave, valor)
+        push(cubeta, nueva)
+        push(orden, nueva)
         cantidad += 1
         if cantidad > len(cubetas) * 2 { crece() }
     }
@@ -220,26 +230,29 @@ thing Mapa<K, V>() {
         mut hallada = false
         mut i = 0
         while i < len(cubeta) {
-            if cubeta[i].clave == clave { hallada = true } else { push(nueva, cubeta[i]) }
+            if cubeta[i].clave == clave {
+                hallada = true
+                cubeta[i].vivo = false
+            } else {
+                push(nueva, cubeta[i])
+            }
             i += 1
         }
         if hallada {
             cubetas[pos] = nueva
             cantidad -= 1
+            huecos += 1
+            if huecos > 8 && huecos * 2 > len(orden) { compacta() }
         }
         return hallada
     }
 
     fn claves() -> Lista<K> {
         fix res = Lista<K>()
+        fix recorrido = orden
         mut i = 0
-        while i < len(cubetas) {
-            fix cubeta = cubetas[i]
-            mut j = 0
-            while j < len(cubeta) {
-                res.agrega(cubeta[j].clave)
-                j += 1
-            }
+        while i < len(recorrido) {
+            if recorrido[i].vivo { res.agrega(recorrido[i].clave) }
             i += 1
         }
         return res
@@ -247,47 +260,53 @@ thing Mapa<K, V>() {
 
     fn valores() -> Lista<V> {
         fix res = Lista<V>()
+        fix recorrido = orden
         mut i = 0
-        while i < len(cubetas) {
-            fix cubeta = cubetas[i]
-            mut j = 0
-            while j < len(cubeta) {
-                res.agrega(cubeta[j].valor)
-                j += 1
-            }
+        while i < len(recorrido) {
+            if recorrido[i].vivo { res.agrega(recorrido[i].valor) }
             i += 1
         }
         return res
     }
 
-    /// Llama a `f(clave, valor)` con cada entrada.
+    /// Llama a `f(clave, valor)` con cada entrada, en el orden de inserción. Si `f` cambia el mapa, no se visitan las claves
+    /// nuevas y las quitadas que aún no se visitaron se saltan.
     fn paraCada(f: (K, V) -> Unit) {
+        fix recorrido = orden
+        fix n = len(recorrido)
         mut i = 0
-        while i < len(cubetas) {
-            fix cubeta = cubetas[i]
-            mut j = 0
-            while j < len(cubeta) {
-                f(cubeta[j].clave, cubeta[j].valor)
-                j += 1
-            }
+        while i < n {
+            fix e = recorrido[i]
+            if e.vivo { f(e.clave, e.valor) }
             i += 1
         }
     }
 
+    /// Vuelve a repartir las entradas vivas en el doble de cubetas.
     fn crece() {
-        fix viejas = cubetas
-        cubetas = _cubetasVacias<K, V>(len(viejas) * 2)
-        cantidad = 0
+        fix nuevas = _cubetasVacias<K, V>(len(cubetas) * 2)
         mut i = 0
-        while i < len(viejas) {
-            fix cubeta = viejas[i]
-            mut j = 0
-            while j < len(cubeta) {
-                pone(cubeta[j].clave, cubeta[j].valor)
-                j += 1
+        while i < len(orden) {
+            fix e = orden[i]
+            if e.vivo {
+                fix cubeta = nuevas[hash(e.clave) % len(nuevas)]
+                push(cubeta, e)
             }
             i += 1
         }
+        cubetas = nuevas
+    }
+
+    /// Deja en `orden` solo las entradas vivas.
+    fn compacta() {
+        fix vivas: [Entrada<K, V>] = []
+        mut i = 0
+        while i < len(orden) {
+            if orden[i].vivo { push(vivas, orden[i]) }
+            i += 1
+        }
+        orden = vivas
+        huecos = 0
     }
 }
 

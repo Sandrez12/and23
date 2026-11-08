@@ -383,32 +383,29 @@ impl Heap {
                     self.render_rec(fields[0], true, out, open);
                 }
                 Object::Instance { class, fields }
-                    if self.classes[*class as usize].name == "Mapa" && fields.len() == 2 =>
+                    if self.classes[*class as usize].name == "Mapa" && fields.len() == 4 =>
                 {
                     open.push(r);
                     out.push('{');
                     let mut first = true;
-                    if let Value::Obj(buckets) = fields[0] {
-                        if let Object::Array(buckets) = self.get(buckets) {
-                            for bucket in buckets {
-                                let Value::Obj(bucket) = bucket else { continue };
-                                let Object::Array(entries) = self.get(*bucket) else {
+                    // `fields[1]` es `orden`: las entradas en el orden de inserción (las quitadas llevan `vivo` en falso).
+                    if let Value::Obj(order) = fields[1] {
+                        if let Object::Array(entries) = self.get(order) {
+                            for entry in entries {
+                                let Value::Obj(entry) = entry else { continue };
+                                let Object::Instance { fields: kv, .. } = self.get(*entry) else {
                                     continue;
                                 };
-                                for entry in entries {
-                                    let Value::Obj(entry) = entry else { continue };
-                                    let Object::Instance { fields: kv, .. } = self.get(*entry)
-                                    else {
-                                        continue;
-                                    };
-                                    if !first {
-                                        out.push_str(", ");
-                                    }
-                                    first = false;
-                                    self.render_rec(kv[0], true, out, open);
-                                    out.push_str(": ");
-                                    self.render_rec(kv[1], true, out, open);
+                                if kv.get(2) == Some(&Value::Bool(false)) {
+                                    continue;
                                 }
+                                if !first {
+                                    out.push_str(", ");
+                                }
+                                first = false;
+                                self.render_rec(kv[0], true, out, open);
+                                out.push_str(": ");
+                                self.render_rec(kv[1], true, out, open);
                             }
                         }
                     }

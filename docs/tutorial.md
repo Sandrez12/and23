@@ -85,7 +85,8 @@ show(edades.obtiene("Ana") ?: 0)     // 30
 show(edades.obtiene("Zoe") ?: 0)     // 0: obtiene devuelve Int?
 ```
 
-Un `Mapa` no recuerda el orden de inserción. Las claves de texto se comparan por contenido; las de objetos, por
+Un `Mapa` se recorre (`claves()`, `valores()`, `paraCada` y `show`) en el orden en que se pusieron las claves; poner una
+clave que ya está conserva su lugar, y quitarla y volver a ponerla la deja al final. Las claves de texto se comparan por contenido; las de objetos, por
 identidad.
 
 ## 5. Clases, herencia e interfaces

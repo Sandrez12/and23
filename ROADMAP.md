@@ -52,7 +52,7 @@ Se deciden **antes** de tocar el lenguaje, porque cada una condiciona la Fase 2.
 **Hacer antes de 1.0** (los que un usuario encuentra a la primera semana):
 
 - [x] **2.1 Lambdas que se llaman a sí mismas dentro de una función.** (M)
-- [ ] **2.2 `Mapa` con orden de inserción.** (M) Hoy el orden al recorrer no es predecible.
+- [x] **2.2 `Mapa` con orden de inserción.** (M) Hoy el orden al recorrer no es predecible.
 - [ ] **2.3 Formato de decimales** (`formato(x, 2)` o equivalente). (S)
 - [ ] **2.4 `ordena` en O(n log n).** (S) Hoy es O(n²).
 - [ ] **2.5 `!!` y `?:` con `return`/`fail` a la derecha.** (M) El patrón más natural para opcionales.

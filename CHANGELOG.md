@@ -45,6 +45,8 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). L
 - `listaDe(arreglo)` (una `Lista` desde un arreglo literal) y `Dupla<A, B>` (dos valores juntos) en la biblioteca base.
 
 ### Cambiado (lenguaje)
+- **`Mapa` recuerda el orden de inserción:** `claves()`, `valores()`, `paraCada` y `show` lo recorren en el orden en que se pusieron las claves (poner
+  una clave existente conserva su lugar; quitarla y volver a ponerla la deja al final). Antes el orden era el de las cubetas del hash.
 - **Una lambda local puede llamarse a sí misma:** `fix f: (Int) -> Int = { n -> ... f(n - 1) ... }` ya vale dentro de funciones, métodos y bloques
   (antes solo en el nivel superior). Hace falta anotar el tipo de función; sin él, el error explica cómo. Ver `examples/lambdas.jb`.
 

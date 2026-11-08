@@ -356,7 +356,7 @@ fix m = Mapa<Str, Int>()                                                // expl�
   `Lista`, `Entrada`, `Mapa` y `_cubetasVacias`.
 - **Límites conocidos de M7:** (los métodos genéricos propios llegaron en M8) sin cotas múltiples, sin genéricos en `rescue`, sin comodines ni varianza
   (`Lista<out T>`), sin tipos crudos (`Lista` a secas es un error, salvo en `is`), sin deducir los argumentos de tipo de un método a partir del
-  tipo esperado, y `Mapa` es una tabla sin orden (los `claves()` salen en el orden de las cubetas).
+  tipo esperado, y `Mapa` es una tabla hash (desde 1.0 recuerda el orden de inserción, ver «Ergonomía tras M10»).
 
 ### Closures y lambdas (M8)
 
@@ -453,15 +453,20 @@ fix m = Mapa<Str, Int>()                                                // expl�
   preludio sigue usando la suya (las llamadas ya van por índice). Las clases del preludio y las funciones integradas no se pueden redefinir.
 - **Bucle de lectura.** `mut l = leeLinea()` seguido de `while l != nil { ...; l = leeLinea() }` funciona, también en el nivel superior (ver
   "Estrechamiento de globales `mut`"); `while true { fix l = leeLinea(); if l == nil { break } ... }` es la alternativa.
-- **Límites conocidos de M10:** sin formato de números (decimales), `Mapa` ni ordenar por clave en la biblioteca; sin Unicode avanzado (`mayus`/`minus` usan las reglas de Rust,
+- **Límites conocidos de M10:** sin formato de números (decimales), `Mapa` ni ordenar por clave en la biblioteca (el `Mapa` recorre en orden de inserción desde 1.0, pero no ordenado por clave); sin Unicode avanzado (`mayus`/`minus` usan las reglas de Rust,
   `recorta` quita el espacio Unicode); `leeLinea` bloquea la VM mientras espera.
 
 ### Ergonomía tras M10
 
 - **`show` de colecciones.** `Lista` se imprime como el arreglo que guarda (`[1, 2, 3]`) y `Mapa` como `{"a": 1, "b": 2}`. Lo decide la
   impresión del heap (`render_rec`), que reconoce las clases `Lista` y `Mapa` del preludio por su nombre y forma; también vale para `"${m}"`.
-  Un `Mapa` no recuerda el orden de inserción: sus entradas salen en el orden de sus cubetas (estable entre ejecuciones, pero no
-  alfabético). Las clases del usuario siguen mostrándose como `Clase(campo=valor)`, y un ciclo se corta con `...`.
+  Un `Mapa` recuerda el orden de inserción (paso 2.2 de 1.0): `claves`, `valores`, `paraCada` y `show` lo recorren en el orden en que se
+  pusieron las claves; poner una clave que ya está conserva su lugar, y quitarla y volver a ponerla la deja al final. Se hace con una lista
+  `orden` de entradas junto a las cubetas (que siguen sirviendo para buscar por hash): quitar marca la entrada (`vivo`) y, cuando las
+  marcadas son más de la mitad (y más de 8), se compacta la lista; `crece` solo reparte las entradas vivas en más cubetas. `paraCada`
+  recorre una foto de `orden` con el largo del comienzo: si `f` quita una clave aún no visitada se salta, y las claves nuevas no se visitan.
+  El impresor del heap lee `orden` (campo 1) y salta las entradas con `vivo` en falso. Costo: un `push` más por clave nueva, sin diferencia
+  medible en el benchmark de colecciones. Las clases del usuario siguen mostrándose como `Clase(campo=valor)`, y un ciclo se corta con `...`.
 - **Estrechamiento de globales `mut`.** Antes ninguna global `mut` se estrechaba, lo que hacía inútil `mut linea = leeLinea()` +
   `while linea != nil` en el nivel superior. Ahora se estrecha, con la misma regla de las locales (se ensancha al asignarle algo que puede
   ser `nil`; no se estrecha si se asigna en un bucle anidado), siempre que (1) el código esté en el nivel superior —no dentro de una
@@ -539,7 +544,7 @@ fix m = Mapa<Str, Int>()                                                // expl�
   de `Lista.obtiene` se señala en la línea del usuario que la llamó (antes caía en una posición sin sentido del archivo del usuario, porque
   las posiciones del preludio no pertenecen a ningún archivo). La traza va en `Diagnostic.trace`; la VM la calcula solo cuando falla, así
   que no cuesta nada en la ejecución normal.
-- **Límites.** Sin formato de números (decimales fijos), sin `Mapa` ordenado, sin borrar carpetas ni copiar o renombrar archivos, sin
+- **Límites.** Sin formato de números (decimales fijos), sin ordenar un `Mapa` por clave, sin borrar carpetas ni copiar o renombrar archivos, sin
   separadores propios del sistema en `unirRuta` (siempre `/`; Windows acepta ambos), sin reloj monótono ni zonas horarias ni fechas.
 
 ### Pruebas, formateador y editor
@@ -741,7 +746,7 @@ las palabras reservadas, `len`, `push`, `pop` y `hash` son funciones integradas,
 | Límite | Veredicto | Paso |
 |---|---|---|
 | Lambda que se llama a sí misma dentro de una función | **Antes de 1.0** | 2.1, hecho |
-| `Mapa` sin orden de inserción | **Antes de 1.0** | 2.2 |
+| `Mapa` sin orden de inserción | **Antes de 1.0** | 2.2, hecho |
 | Sin formato de decimales | **Antes de 1.0** | 2.3 |
 | `ordena` en O(n²) | **Antes de 1.0** | 2.4 |
 | Sin `!!` ni `?:` con `return`/`fail` a la derecha | **Antes de 1.0** | 2.5 |
