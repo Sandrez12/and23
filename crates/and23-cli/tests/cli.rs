@@ -170,14 +170,6 @@ fn repl_con_bloque_sin_cerrar_al_terminar_muestra_el_error() {
 }
 
 #[test]
-fn tree_ejecuta_con_el_interprete_de_arbol() {
-    let path = example("funciones.jb");
-    let out = and23().arg("--tree").arg(&path).output().unwrap();
-    assert!(out.status.success());
-    assert_eq!(stdout(&out), run_example("funciones.jb"));
-}
-
-#[test]
 fn disasm_muestra_el_bytecode_sin_ejecutar() {
     let path = example("funciones.jb");
     let out = and23().arg("--disasm").arg(&path).output().unwrap();

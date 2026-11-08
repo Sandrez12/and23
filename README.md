@@ -216,7 +216,6 @@ Requiere [Rust](https://rustup.rs) estable.
 cargo run -p and23-cli -- examples/funciones.jb    # ejecuta un archivo
 cargo run -p and23-cli                             # REPL (":q" sale)
 cargo run -p and23-cli -- --disasm examples/funciones.jb   # muestra el bytecode
-cargo run -p and23-cli -- --tree examples/funciones.jb     # intérprete de árbol (referencia, sin cadenas ni clases)
 cargo run -p and23-cli -- --gc-stress examples/cadenas.jb  # GC en cada punto seguro
 cargo run -p and23-cli -- examples/clases.jb               # programa orientado a objetos
 cargo run -p and23-cli -- examples/polimorfismo.jb         # herencia e interfaces
@@ -237,7 +236,6 @@ cargo test --workspace                             # tests
 | `and23-types` | verificador de tipos estáticos (con estado para el REPL) |
 | `and23-bytecode` | instrucciones, compilador del AST a bytecode y desensamblador |
 | `and23-vm` | VM de pila, heap con recolector mark-sweep y sesión (verificador + compilador + VM con estado para el REPL) |
-| `and23-eval` | intérprete de árbol de M0/M1a; queda como referencia para comparar comportamiento y velocidad (no soporta cadenas, arreglos, clases, excepciones, genéricos ni lambdas) |
 | `and23-cli` | binario `and23`: ejecuta archivos `.jb` y ofrece un REPL |
 
 ## Hoja de ruta

@@ -11,7 +11,6 @@ path = "src/main.rs"
 
 [dependencies]
 and23-syntax = { path = "../and23-syntax" }
-and23-eval = { path = "../and23-eval" }
 and23-bytecode = { path = "../and23-bytecode" }
 and23-vm = { path = "../and23-vm" }
 and23-types = { path = "../and23-types" }

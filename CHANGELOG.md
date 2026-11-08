@@ -44,6 +44,10 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). L
   de la etapa 4.
 - `listaDe(arreglo)` (una `Lista` desde un arreglo literal) y `Dupla<A, B>` (dos valores juntos) en la biblioteca base.
 
+### Eliminado
+- El intérprete de árbol (`and23 --tree` y el crate `and23-eval`): era la referencia de M1a y no conocía la biblioteca, las tareas ni las cadenas. Sus
+  salidas esperadas quedaron fijas en `crates/and23-vm/tests/semantica.rs` (antes `diferencial.rs`).
+
 ### Cambiado
 - `s.parte(sep)` es lineal: pasó a una nativa (`_parte`) en vez de repetir `_busca` y `_trozo`, que costaba O(n) por trozo. Partir 1,4 MB en
   100 000 trozos tardaba 24 s; ahora 0,1 s.

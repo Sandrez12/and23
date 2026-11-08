@@ -63,7 +63,7 @@ Workspace de Rust en `crates/`:
 - `and23-types`: verificador de tipos (`Checker`); corre entre el parser y el compilador.
 - `and23-bytecode`: `Op`, `Module`/`Function`, compilador AST → bytecode y desensamblador.
 - `and23-vm`: VM de pila (`Vm`) y `Session`, que une compilador y VM conservando el estado del REPL.
-- `and23-eval`: intérprete de árbol (M0/M1a). Ya no es el camino de ejecución; se conserva como oráculo en los tests diferenciales y para `--tree`.
+- `and23-eval` (retirado en 1.0): intérprete de árbol de M0/M1a. Fue el oráculo de los tests diferenciales; `crates/and23-vm/tests/semantica.rs` conserva sus salidas esperadas.
 - `and23-cli`: binario `and23` (ejecuta archivos `.jb` y ofrece un REPL).
 
 
@@ -92,7 +92,7 @@ Workspace de Rust en `crates/`:
 - **M1a** (hecho): variables, booleanos, `if`/`while`, funciones y recursión sobre el intérprete de árbol.
   `examples/funciones.jb` y `examples/control.jb`. Referencia para M1b: `fib(30)` = 832040 en ~1,7 s (release).
 - **M1b** (hecho): compilador a bytecode y VM de pila. `fib(30)` = 832040 en ~0,17 s (release) contra ~1,6 s del
-  árbol (≈9×). Tests diferenciales: la VM da la misma salida y los mismos errores que el intérprete de árbol.
+  árbol (≈9×). Tests diferenciales (entonces): la VM daba la misma salida y los mismos errores que el intérprete de árbol.
 
 - **M2** (hecho): tipos estáticos (`Int`, `Float`, `Bool`, `Unit`) con errores de línea y columna; ver "Tipos (M2)".
 - **M3** (hecho): cadenas UTF-8, interpolación, arreglos y GC mark-sweep propio; ver "Cadenas, arreglos y GC (M3)".
@@ -112,7 +112,7 @@ Workspace de Rust en `crates/`:
   y `break`/`continue` sacan los que declaró el cuerpo del bucle antes de saltar.
 - Las `fix`/`mut` del nivel superior son globales (ranuras); las funciones y globales del archivo se registran antes de
   compilar, así que una función puede usar una global declarada más abajo (falla al ejecutar si aún no tiene valor).
-- Las llamadas no usan la pila nativa de Rust: un marco por llamada en un `Vec`, con límite de 100 000 (`--max-depth N` lo cambia; el intérprete de árbol sigue en 10 000).
+- Las llamadas no usan la pila nativa de Rust: un marco por llamada en un `Vec`, con límite de 100 000 (`--max-depth N` lo cambia).
 - Variable no definida, asignación a `fix`, aridad incorrecta y función desconocida se detectan **al compilar**
   (antes de ejecutar nada); los errores de tipo, desbordamiento y división entre cero, al ejecutar.
 - Si la compilación falla, el compilador queda intacto (REPL). `and23 --disasm archivo.jb` imprime el bytecode.
@@ -448,7 +448,7 @@ fix m = Mapa<Str, Int>()                                                // expl�
 - **Bucle de lectura.** `mut l = leeLinea()` seguido de `while l != nil { ...; l = leeLinea() }` funciona, también en el nivel superior (ver
   "Estrechamiento de globales `mut`"); `while true { fix l = leeLinea(); if l == nil { break } ... }` es la alternativa.
 - **Límites conocidos de M10:** sin formato de números (decimales), `Mapa` ni ordenar por clave en la biblioteca; sin Unicode avanzado (`mayus`/`minus` usan las reglas de Rust,
-  `recorta` quita el espacio Unicode); `leeLinea` bloquea la VM mientras espera; el intérprete de árbol no conoce la biblioteca.
+  `recorta` quita el espacio Unicode); `leeLinea` bloquea la VM mientras espera.
 
 ### Ergonomía tras M10
 
@@ -508,7 +508,7 @@ fix m = Mapa<Str, Int>()                                                // expl�
   el verificador y el compilador de Mn no entran porque así tardan minutos (264 s el verificador sobre un archivo), ya que cada punto seguro
   recorre el heap entero con el preludio cargado.
 - **Límites previstos.** Sin expulsión por tiempo (un bucle que no cede bloquea al resto); `leeLinea` bloquea toda la VM; (un `Fallo` de una tarea que nadie espera ya no se pierde: ver «Errores»); el REPL descarta las
-  tareas pendientes al terminar cada entrada; el intérprete de árbol no conoce las tareas.
+  tareas pendientes al terminar cada entrada.
 
 ### Biblioteca estándar 2 y trazas de pila
 
@@ -741,7 +741,7 @@ las palabras reservadas, `len`, `push`, `pop` y `hash` son funciones integradas,
 | Sin `!!` ni `?:` con `return`/`fail` a la derecha | **Antes de 1.0** | 2.5 |
 | Sin `use` en el REPL | **Antes de 1.0** | 2.6 |
 | Métodos y constructores no se pasan como valores | **Antes de 1.0** | 2.7 |
-| Intérprete de árbol (`--tree`) | **Retirar** (ver 1.4) | 2.8 |
+| Intérprete de árbol (`--tree`) | **Retirado** (ver 1.4) | 2.8, hecho |
 | Una sola clase padre; interfaces sin herencia ni métodos por defecto | Documentar como límite | |
 | Sin cotas múltiples, varianza ni comodines en genéricos | Documentar como límite | |
 | `match` sin guardas, sin desestructuración, sin variantes con datos | Documentar como límite (se usan clases con `kind`) | |
@@ -758,8 +758,8 @@ Lo que se **documenta como límite** no se promete resolver: si se resuelve en 1
 
 ### Intérprete de árbol (1.4)
 
-Se **retira** antes de 1.0 (`and23 --tree` y el crate `and23-eval`): no conoce la biblioteca, las tareas ni las cadenas, y era solo la
-referencia de M1a. Los tests que lo usan como referencia (`diferencial.rs`) se reemplazan por salidas esperadas escritas a mano.
+Se **retiró** antes de 1.0 (`and23 --tree` y el crate `and23-eval`): no conoce la biblioteca, las tareas ni las cadenas, y era solo la
+referencia de M1a. Los tests que lo usaban como referencia (`diferencial.rs`) pasaron a `semantica.rs`, con las salidas esperadas fijas (se generaron con el propio intérprete antes de quitarlo).
 
 ### Papel de Rust y de Mn (1.5)
 

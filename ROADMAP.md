@@ -58,7 +58,7 @@ Se deciden **antes** de tocar el lenguaje, porque cada una condiciona la Fase 2.
 - [ ] **2.5 `!!` y `?:` con `return`/`fail` a la derecha.** (M) El patrón más natural para opcionales.
 - [ ] **2.6 `use` en el REPL.** (S)
 - [ ] **2.7 Pasar métodos y constructores como valores.** (M) Hoy hay que envolverlos en una lambda.
-- [ ] **2.8 Retirar el intérprete de árbol** (`--tree` y el crate `and23-eval`). (M) Decidido en 1.4: los tests de `diferencial.rs` pasan a
+- [x] **2.8 Retirar el intérprete de árbol** (`--tree` y el crate `and23-eval`). (M) Decidido en 1.4: los tests de `diferencial.rs` pasan a
   salidas esperadas escritas a mano.
 
 **Documentar como límite de 1.0, posponer a 1.x** (si no hay razón para cambiarlo):

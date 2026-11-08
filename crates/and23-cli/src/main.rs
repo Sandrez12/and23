@@ -1,5 +1,4 @@
 use and23_bytecode::{disassemble, dump_module, load_dump, Compiler, DumpFrom};
-use and23_eval::Interpreter;
 use and23_syntax::Diagnostic;
 use and23_types::Checker;
 use and23_vm::{Session, Vm};
@@ -22,14 +21,12 @@ Uso:
   and23 --resuelve <archivo.jb> como --check, más lo que decidió el verificador para el compilador (campos, llamadas virtuales...)
   and23 --check <archivo.jb>    verifica los tipos (para comparar con el verificador escrito en And23, mn/checker.jb)
   and23 --prueba <archivo.jb>   ejecuta los bloques `prueba` del archivo y resume el resultado
-  and23 --tree <archivo.jb>     usa el intérprete de árbol (referencia de M1a; sin cadenas)
   and23 --gc-stress ...         recolecta basura en cada punto seguro (prueba del GC)
   and23 --max-depth N ...       llamadas anidadas permitidas (por defecto 100000)
   and23 --version
 ";
 
-/// La VM no recurre en la pila nativa, pero el parser sí (expresiones muy anidadas) y el
-/// intérprete de árbol (`--tree`) también: con 256 MB caben sus 10 000 llamadas anidadas.
+/// La VM no recurre en la pila nativa, pero el parser y el verificador sí (expresiones muy anidadas): con 256 MB caben.
 const STACK_BYTES: usize = 256 * 1024 * 1024;
 
 fn main() -> ExitCode {
@@ -79,7 +76,6 @@ fn dispatch(args: &[String]) -> u8 {
         [flag, prelude, program, rest @ ..] if flag == "--carga" => {
             run_dump(prelude, program, stress.with_args(rest))
         }
-        [flag, path] if flag == "--tree" => run_file_tree(path),
         [flag, path] if flag == "--prueba" => run_tests(path, stress),
         [path, rest @ ..] if !path.starts_with("--") => run_file(path, stress.with_args(rest)),
         _ => {
@@ -438,22 +434,6 @@ fn run_tests(path: &str, options: Options) -> u8 {
     );
     let _ = session.out().flush();
     u8::from(failed > 0)
-}
-
-/// Ejecuta con el intérprete de árbol: sirve para comparar velocidad y comportamiento.
-fn run_file_tree(path: &str) -> u8 {
-    let loaded = match load_program(path) {
-        Ok(loaded) => loaded,
-        Err(text) => return finish(Err(text)),
-    };
-    let sources = loaded.sources;
-    let mut interp = Interpreter::new(io::stdout());
-    let result = interp
-        .run(&loaded.program, false)
-        .and_then(|()| interp.run_main())
-        .map_err(|d| sources.render(&d));
-    let _ = interp.out.flush();
-    finish(result)
 }
 
 fn disasm_file(path: &str) -> u8 {
