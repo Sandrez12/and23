@@ -1182,7 +1182,7 @@ fn el_parser_escrito_en_and23_coincide_con_el_de_rust() {
 /// Mn, etapa 3: el verificador de tipos escrito en And23 (`mn/checker.jb`) da el mismo resultado que el de Rust
 /// (`--check`): `ok` o el mismo error con el mismo mensaje y la misma posición. Se prueba con el preludio, los
 /// ejemplos, los archivos de `mn` y los casos de `mn/casos_checker` (los programas de los tests del verificador y
-/// uno por cada mensaje de error). Se reparte entre hilos porque cada caso arranca dos procesos.
+/// uno por cada mensaje de error). Se reparte entre hilos; el verificador de And23 recibe cada grupo de archivos en un solo proceso.
 #[test]
 fn el_verificador_escrito_en_and23_coincide_con_el_de_rust() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -1191,6 +1191,7 @@ fn el_verificador_escrito_en_and23_coincide_con_el_de_rust() {
         root.join("mn/lexer.jb"),
         root.join("mn/parser.jb"),
         root.join("mn/checker.jb"),
+        root.join("mn/modulos.jb"),
     ];
     jb_files(&root.join("examples"), &mut files);
     jb_files(&root.join("mn/casos_checker"), &mut files);
@@ -1235,26 +1236,226 @@ fn main() {",
         for part in files.chunks(chunk) {
             let root = &root;
             scope.spawn(move || {
-                for file in part {
+                // El verificador de And23 recibe todos los archivos del grupo de una vez: comprueba el preludio una
+                // sola vez y, entre archivo y archivo, vuelve a su estado (también tras un error).
+                let and23 = Command::new(env!("CARGO_BIN_EXE_and23"))
+                    .arg("mn/checker.jb")
+                    .args(part)
+                    .current_dir(root)
+                    .output()
+                    .unwrap();
+                assert!(and23.status.success(), "{}", stderr(&and23));
+                let out = stdout(&and23);
+                let lines: Vec<&str> = out.lines().collect();
+                assert_eq!(
+                    lines.len(),
+                    part.len(),
+                    "una línea por archivo:
+{out}"
+                );
+                for (file, line) in part.iter().zip(lines) {
                     let rust = Command::new(env!("CARGO_BIN_EXE_and23"))
                         .arg("--check")
                         .arg(file)
                         .output()
                         .unwrap();
-                    let and23 = Command::new(env!("CARGO_BIN_EXE_and23"))
-                        .arg("mn/checker.jb")
+                    assert_eq!(
+                        line,
+                        stdout(&rust).trim_end(),
+                        "resultados distintos en {file:?}"
+                    );
+                }
+                // Además de `ok` o el error, lo que el verificador decidió para el compilador (campos, llamadas
+                // virtuales, redirecciones...): una línea por decisión y `---` al final de cada archivo.
+                let and23 = Command::new(env!("CARGO_BIN_EXE_and23"))
+                    .arg("mn/checker.jb")
+                    .arg("--resoluciones")
+                    .args(part)
+                    .current_dir(root)
+                    .output()
+                    .unwrap();
+                assert!(and23.status.success(), "{}", stderr(&and23));
+                let mut esperado = String::new();
+                for file in part {
+                    let rust = Command::new(env!("CARGO_BIN_EXE_and23"))
+                        .arg("--resuelve")
                         .arg(file)
+                        .output()
+                        .unwrap();
+                    esperado.push_str(&stdout(&rust));
+                    esperado.push_str(
+                        "---
+",
+                    );
+                }
+                assert_eq!(
+                    stdout(&and23),
+                    esperado,
+                    "resoluciones distintas en {part:?}"
+                );
+            });
+        }
+    });
+}
+
+fn raiz_del_repo() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+#[test]
+fn la_tabla_de_nativas_de_mn_es_la_de_natives_rs() {
+    // `mn/checker.jb` repite la tabla de `natives.rs` como texto; si cambia una, esta prueba obliga a cambiar la otra.
+    let esperado: Vec<String> = and23_types::natives::NATIVES
+        .iter()
+        .map(|n| {
+            let ps: Vec<String> = n.params.iter().map(|p| format!("{p:?}")).collect();
+            format!("{}:{}:{:?}", n.name, ps.join(","), n.ret)
+        })
+        .collect();
+    let fuente = std::fs::read_to_string(raiz_del_repo().join("mn/checker.jb")).unwrap();
+    let ini = fuente
+        .find("fix NATIVAS_TEXTO = \"")
+        .expect("NATIVAS_TEXTO")
+        + "fix NATIVAS_TEXTO = \"".len();
+    let fin = ini + fuente[ini..].find('"').unwrap();
+    assert_eq!(
+        fuente[ini..fin],
+        esperado.join(" "),
+        "mn/checker.jb: NATIVAS_TEXTO no coincide con natives.rs"
+    );
+}
+
+#[test]
+fn la_gramatica_de_vscode_conoce_todas_las_funciones_predefinidas() {
+    let gramatica = std::fs::read_to_string(
+        raiz_del_repo().join("editors/vscode/syntaxes/and23.tmLanguage.json"),
+    )
+    .unwrap();
+    let ini = gramatica.find("\"builtin\"").unwrap();
+    let lista = &gramatica[ini..ini + gramatica[ini..].find("(?=").unwrap()];
+    let mut nombres: Vec<String> = and23_types::BUILTINS
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    nombres.push("show".into());
+    nombres.extend(
+        and23_types::natives::NATIVES
+            .iter()
+            .map(|n| n.name.to_string()),
+    );
+    // Funciones públicas del preludio (las que empiezan en la columna 0).
+    let preludio =
+        std::fs::read_to_string(raiz_del_repo().join("crates/and23-syntax/prelude.jb")).unwrap();
+    for l in preludio.lines() {
+        if let Some(r) = l.strip_prefix("fn ").or_else(|| l.strip_prefix("open fn ")) {
+            nombres.push(r.split(['(', '<']).next().unwrap().to_string());
+        }
+    }
+    let faltan: Vec<_> = nombres
+        .iter()
+        .filter(|n| !n.starts_with('_'))
+        .filter(|n| {
+            !lista.contains(&format!("|{n}|"))
+                && !lista.contains(&format!("({n}|"))
+                && !lista.contains(&format!("|{n})"))
+        })
+        .collect();
+    assert!(
+        faltan.is_empty(),
+        "la gramática de VS Code no conoce: {faltan:?}"
+    );
+}
+
+/// `mn/modulos.jb` (el cargador de `use`) escribe lo mismo que `and23 --unido`: el programa unido con las posiciones
+/// sobre los archivos juntos y los avisos de «es privado», o el mismo error. Cubre `examples/proyecto`, los propios
+/// archivos de Mn (que usan `use`) y `mn/casos_modulos` (un caso por cada error del cargador).
+#[test]
+fn el_cargador_de_modulos_escrito_en_and23_coincide_con_el_de_rust() {
+    let root = raiz_del_repo();
+    let mut entradas = vec![
+        "examples/proyecto/main.jb".to_string(),
+        "mn/checker.jb".to_string(),
+        "mn/modulos.jb".to_string(),
+        "mn/parser.jb".to_string(),
+    ];
+    let mut todos = Vec::new();
+    jb_files(&root.join("mn/casos_modulos"), &mut todos);
+    for f in todos {
+        if f.file_name().is_some_and(|n| n == "main.jb") {
+            let rel = f.strip_prefix(&root).unwrap_or(&f);
+            entradas.push(rel.to_string_lossy().replace('\\', "/"));
+        }
+    }
+    assert!(entradas.len() > 20, "{} entradas", entradas.len());
+    let hilos = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
+    let trozo = entradas.len().div_ceil(hilos);
+    std::thread::scope(|scope| {
+        for parte in entradas.chunks(trozo) {
+            let root = &root;
+            scope.spawn(move || {
+                for entrada in parte {
+                    let rust = Command::new(env!("CARGO_BIN_EXE_and23"))
+                        .arg("--unido")
+                        .arg(entrada)
                         .current_dir(root)
                         .output()
                         .unwrap();
-                    assert!(and23.status.success(), "{file:?}: {}", stderr(&and23));
+                    let and23 = Command::new(env!("CARGO_BIN_EXE_and23"))
+                        .arg("mn/modulos.jb")
+                        .arg(entrada)
+                        .current_dir(root)
+                        .output()
+                        .unwrap();
+                    assert!(and23.status.success(), "{entrada}: {}", stderr(&and23));
                     assert_eq!(
                         stdout(&and23),
                         stdout(&rust),
-                        "resultados distintos en {file:?}"
+                        "resultados distintos en {entrada}"
                     );
                 }
             });
         }
     });
+}
+
+#[test]
+fn dump_vuelca_el_modulo_con_posiciones_en_caracteres() {
+    // Es el texto con el que se compara el compilador escrito en And23: tablas, funciones, instrucciones y la
+    // posición (en caracteres) de cada una. Los números de función dependen del preludio, así que no se fijan.
+    let src = "show(\"ñ\" + \"b\")\nfn f(x: Int) -> Int = x * 2\nthing P(fix a: Int)\n";
+    let out = run_dump(src);
+    assert!(out.starts_with("Modulo\nCadenas "), "{out}");
+    assert!(out.contains("\nClases "), "{out}");
+    assert!(out.contains(" P campos=[a] supers=["), "{out}");
+    assert!(
+        out.contains("f/1 @19-20\n  0000 GetLocal 0 @38-39\n  0001 Int 2 @42-43\n  0002 Mul @38-43\n  0003 Return @38-43\n"),
+        "{out}"
+    );
+    assert!(
+        out.contains("<script>/0 @0-0\n  0000 Str 10 @5-8\n  0001 Str 11 @11-14\n  0002 Add @5-14\n  0003 Show @0-15\n"),
+        "{out}"
+    );
+    // Un programa solo vuelca lo suyo: el preludio tiene su propio volcado.
+    let prelude = Command::new(env!("CARGO_BIN_EXE_and23"))
+        .arg("--dump-preludio")
+        .output()
+        .unwrap();
+    let prelude = stdout(&prelude);
+    assert!(
+        prelude.contains("\nfn 0 "),
+        "el preludio empieza en la función 0"
+    );
+    assert!(!out.contains("\nfn 0 "), "{out}");
+}
+
+fn run_dump(src: &str) -> String {
+    let path = std::env::temp_dir().join("and23_dump_prueba.jb");
+    std::fs::write(&path, src).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_and23"))
+        .arg("--dump")
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    stdout(&out)
 }

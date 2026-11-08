@@ -1,4 +1,4 @@
-use and23_bytecode::{disassemble, Compiler};
+use and23_bytecode::{disassemble, dump_module, Compiler, DumpFrom};
 use and23_eval::Interpreter;
 use and23_syntax::Diagnostic;
 use and23_types::Checker;
@@ -16,6 +16,9 @@ Uso:
   and23 fmt [--check] <archivos.jb...>   da formato a los archivos (con --check solo avisa de los que cambiarían)
   and23 --tokens <archivo.jb>   vuelca los tokens (para comparar con el lexer escrito en And23, mn/lexer.jb)
   and23 --ast <archivo.jb>      vuelca el árbol sintáctico (para comparar con el parser escrito en And23, mn/parser.jb)
+  and23 --dump <archivo.jb>     vuelca el módulo compilado (para comparar con el compilador escrito en And23); --dump-preludio, el del preludio
+  and23 --unido <archivo.jb>    vuelca el programa unido tras cargar `use` (para comparar con mn/modulos.jb)
+  and23 --resuelve <archivo.jb> como --check, más lo que decidió el verificador para el compilador (campos, llamadas virtuales...)
   and23 --check <archivo.jb>    verifica los tipos (para comparar con el verificador escrito en And23, mn/checker.jb)
   and23 --prueba <archivo.jb>   ejecuta los bloques `prueba` del archivo y resume el resultado
   and23 --tree <archivo.jb>     usa el intérprete de árbol (referencia de M1a; sin cadenas)
@@ -66,8 +69,12 @@ fn dispatch(args: &[String]) -> u8 {
         [cmd, rest @ ..] if cmd == "fmt" => run_fmt(rest),
         [flag, path] if flag == "--tokens" => dump_tokens(path),
         [flag, path] if flag == "--ast" => dump_ast(path),
-        [flag, path] if flag == "--check" => check_file(path),
+        [flag, path] if flag == "--check" => check_file(path, false),
+        [flag, path] if flag == "--resuelve" => check_file(path, true),
+        [flag, path] if flag == "--unido" => dump_unido(path),
         [flag, path] if flag == "--disasm" => disasm_file(path),
+        [flag, path] if flag == "--dump" => dump_bytecode(Some(path)),
+        [flag] if flag == "--dump-preludio" => dump_bytecode(None),
         [flag, path] if flag == "--tree" => run_file_tree(path),
         [flag, path] if flag == "--prueba" => run_tests(path, stress),
         [path, rest @ ..] if !path.starts_with("--") => run_file(path, stress.with_args(rest)),
@@ -221,9 +228,44 @@ fn dump_ast(path: &str) -> u8 {
     0
 }
 
+/// `and23 --unido archivo`: el programa que sale de cargar el archivo y todo lo que importa con `use` (nombres de
+/// otros archivos con su ruta, como `util.doble`), con las posiciones sobre los archivos unidos, y los avisos de
+/// «es privado»; o `Error mensaje @desde-hasta`.
+fn dump_unido(path: &str) -> u8 {
+    use and23_syntax::modules::{load, Failure};
+    match load(path, |p| std::fs::read_to_string(p)) {
+        Ok(loaded) => {
+            let src = loaded.sources.combined();
+            print!(
+                "{}",
+                and23_syntax::astdump::dump_program(&loaded.program, &src)
+            );
+            let at = |b: usize| src[..b.min(src.len())].chars().count();
+            for (pos, hint) in loaded.sources.hints() {
+                println!("Aviso @{}{}", at(pos), hint);
+            }
+        }
+        Err(Failure::Io(text)) => {
+            eprint!("{text}");
+            return 1;
+        }
+        Err(Failure::Diag(d, sources)) => {
+            let src = sources.combined();
+            let at = |b: usize| src[..b.min(src.len())].chars().count();
+            println!(
+                "Error {} @{}-{}",
+                d.message,
+                at(d.span.start),
+                at(d.span.end)
+            );
+        }
+    }
+    0
+}
+
 /// `and23 --check archivo`: verifica los tipos del archivo (sin cargar `use`) después del preludio y escribe
 /// `ok` o `Error mensaje @desde-hasta`.
-fn check_file(path: &str) -> u8 {
+fn check_file(path: &str, resolutions: bool) -> u8 {
     let src = match std::fs::read_to_string(path) {
         Ok(src) => src,
         Err(e) => {
@@ -245,7 +287,12 @@ fn check_file(path: &str) -> u8 {
             at(d.span.end)
         ),
         Ok(program) => match checker.check(&program) {
-            Ok(_) => println!("ok"),
+            Ok(res) => {
+                println!("ok");
+                if resolutions {
+                    print_resolutions(&res, at);
+                }
+            }
             Err(d) => println!(
                 "Error {} @{}-{}",
                 d.message,
@@ -255,6 +302,43 @@ fn check_file(path: &str) -> u8 {
         },
     }
     0
+}
+
+/// Lo que el verificador decidió, una línea por decisión y ordenado por posición (ver `Checker.resoluciones` en
+/// `mn/checker.jb`, que escribe lo mismo).
+fn print_resolutions(res: &and23_types::Resolutions, at: impl Fn(usize) -> usize) {
+    let mut lines: Vec<(usize, usize, u8, String)> = Vec::new();
+    let mut push = |span: and23_syntax::Span, order: u8, name: &str, extra: String| {
+        let (a, b) = (at(span.start), at(span.end));
+        let text = if extra.is_empty() {
+            format!("{name} @{a}-{b}")
+        } else {
+            format!("{name} @{a}-{b} {extra}")
+        };
+        lines.push((a, b, order, text));
+    };
+    for (span, i) in &res.fields {
+        push(*span, 0, "campo", i.to_string());
+    }
+    for (span, key) in &res.methods {
+        push(*span, 1, "metodo", key.clone());
+    }
+    for (span, name) in &res.virtuals {
+        push(*span, 2, "virtual", name.clone());
+    }
+    for span in &res.valuecalls {
+        push(*span, 3, "llamadaValor", String::new());
+    }
+    for span in &res.discards {
+        push(*span, 4, "descarta", String::new());
+    }
+    for (span, (key, receiver)) in &res.redirects {
+        push(*span, 5, "redirige", format!("{key} {receiver}"));
+    }
+    lines.sort();
+    for (_, _, _, text) in lines {
+        println!("{text}");
+    }
 }
 
 /// `and23 fmt [--check] archivos...`: reescribe cada archivo con el formato estándar. Con `--check` no
@@ -380,6 +464,47 @@ fn disasm_file(path: &str) -> u8 {
             }
             Ok(())
         }
+    });
+    finish(result)
+}
+
+/// `and23 --dump archivo` escribe el módulo que compila el programa (cargando `use`) después del preludio, sin
+/// lo del preludio; `and23 --dump-preludio`, el del preludio solo. Es el texto exacto con el que se compara el
+/// compilador escrito en And23 (ver `dump_module`).
+fn dump_bytecode(path: Option<&str>) -> u8 {
+    let prelude_src = and23_syntax::PRELUDE;
+    let prelude_at = |b: usize| prelude_src[..b.min(prelude_src.len())].chars().count();
+    let prelude = and23_syntax::parse(prelude_src).expect("preludio válido");
+    let mut checker = Checker::new();
+    let mut compiler = Compiler::new();
+    let res = checker.check(&prelude).expect("preludio válido");
+    compiler
+        .compile(&prelude, &res, false)
+        .expect("preludio válido");
+    checker.seal_prelude();
+    compiler.seal_prelude();
+    let Some(path) = path else {
+        let text = dump_module(
+            compiler.module(),
+            DumpFrom::default(),
+            &prelude_at,
+            &prelude_at,
+        );
+        print!("{text}");
+        return 0;
+    };
+    let result = load_program(path).and_then(|loaded| {
+        let from = DumpFrom::of(compiler.module());
+        let program_src = loaded.sources.combined();
+        let res = checker
+            .check(&loaded.program)
+            .map_err(|d| loaded.sources.render(&d))?;
+        compiler
+            .compile(&loaded.program, &res, false)
+            .map_err(|d| loaded.sources.render(&d))?;
+        let at = |b: usize| program_src[..b.min(program_src.len())].chars().count();
+        print!("{}", dump_module(compiler.module(), from, &prelude_at, &at));
+        Ok(())
     });
     finish(result)
 }

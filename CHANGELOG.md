@@ -17,7 +17,22 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). L
 - **Mn, etapa 1.** `mn/lexer.jb`, el lexer de And23 escrito en And23, comparado token por token con el de Rust (`and23 --tokens`).
 - Texto: `c.esLetra()`, `c.esAlfanumerico()`, `c.esDigito()`, `s.caracteres()` y `desdeCodigo(n)`.
 
+- **Mn, pasos hacia el compilador.** `mn/modulos.jb` carga `use` como `modules.rs` (nombres con su ruta, `open`, alias, avisos de «es privado»,
+  dependencias circulares) y se compara con `and23 --unido`; el verificador de `mn/checker.jb` calcula las resoluciones del compilador (índice de
+  campo, llamada virtual, `super`, llamada a un valor, descartes, redirecciones de `Str`) y se compara con `and23 --resuelve`; y `and23 --dump`
+  / `--dump-preludio` vuelcan el módulo compilado (tablas, funciones, instrucciones y posiciones en caracteres) para comparar el compilador
+  de la etapa 4.
+- `listaDe(arreglo)` (una `Lista` desde un arreglo literal) y `Dupla<A, B>` (dos valores juntos) en la biblioteca base.
+
 ### Cambiado
+- Un valor devuelto que es a veces `T` y a veces `nil` en una función o lambda sin tipo de retorno (y en un `if` como valor) da `T?`, en vez
+  de pedir anotar el tipo.
+- Los campos `fix` de `this` se estrechan tras comprobar `!= nil` (los `mut` siguen sin estrecharse).
+- `mn/checker.jb` acepta varios archivos (`and23 mn/checker.jb a.jb b.jb`): comprueba el preludio una vez y vuelve a su estado entre archivo y
+  archivo, también tras un error. El test que lo compara con Rust pasó de 11 s a 3 s.
+- La gramática de VS Code conoce `absolutoF`, `minimoF`, `maximoF`, `desdeCodigo` y `listaDe`; un test avisa si falta alguna función predefinida.
+- Un test comprueba que la tabla de nativas de `mn/checker.jb` coincide con `natives.rs`.
+- La release prueba el binario de cada sistema (`--version`, un ejemplo y los dos verificadores) antes de empaquetarlo.
 - `une(partes, sep)` pasó de cuadrática a lineal.
 
 ## 0.3.0 - 2026-11-07

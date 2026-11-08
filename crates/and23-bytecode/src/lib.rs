@@ -5,5 +5,5 @@ mod disasm;
 mod op;
 
 pub use compiler::Compiler;
-pub use disasm::disassemble;
+pub use disasm::{disassemble, dump_module, DumpFrom};
 pub use op::{Function, Module, Op};

@@ -301,7 +301,8 @@ if p != nil { show(p.nombre) }
   al lado derecho de `&&`/`||` y, si un bloque sale (`return`, `fail`, `break`, `continue`), al resto del bloque que lo contiene.
   Se implementa con una entrada que tapa a la variable en un ámbito propio y recuerda su tipo declarado.
 - **Qué se estrecha:** locales y parámetros, y globales `fix` (en el nivel superior se guardan aparte, para no filtrar el estrechamiento a
-  las funciones, que se verifican después). No se estrechan los campos. Una global `mut` se estrecha solo en el código del nivel superior y solo
+  las funciones, que se verifican después). Los campos `fix` de `this` también se estrechan (se guardan en el ámbito con la clave `@campo:nombre`, para que el compilador siga
+  resolviéndolos como campo); los `mut` no, porque cualquier llamada puede cambiarlos. Una global `mut` se estrecha solo en el código del nivel superior y solo
   si ninguna función, método ni lambda del programa la asigna (ver "Estrechamiento de globales `mut`"); si no, otro código podría cambiarla
   entre la comprobación y el uso. Un `mut` local se estrecha, pero una asignación que pueda dar `nil` lo vuelve a ensanchar, y si se asigna
   dentro de un bucle anidado en el bloque no se estrecha (el bucle repetiría un uso anterior a la asignación).
@@ -608,18 +609,38 @@ argumentos, lambdas con tipos del contexto, herencia e interfaces). Recorre el �
   `mn/casos_checker`: 297 programas sacados de los tests del verificador de Rust (91 válidos, 206 con error, unos 125 mensajes distintos) y
   108 casos propios (`x_*.jb`) que tocan los mensajes que los otros no alcanzan. Además junta lexer, parser y verificador en un solo archivo
   (4 200 líneas) y comprueba que el verificador de And23 lo acepta, igual que el de Rust: se verifica a sí mismo.
-- **Qué no hace (todavía).** No carga `use` (el módulo del lado Rust, `modules.rs`, no está portado; `--check` tampoco lo hace, así que se
-  comparan igual), no calcula las `Resolutions` que usa el compilador (índices de campo, llamadas virtuales...: eso es de la etapa del
-  compilador, que las puede dejar anotadas en los nodos) y no deshace su estado si una verificación falla (el REPL de Rust sí lo hace).
+- **Qué no hace.** No carga `use` por sí mismo (eso lo hace `mn/modulos.jb`, abajo; `--check` tampoco lo hace, así que se comparan
+  igual). Las `Resolutions` que usa el compilador sí las calcula (abajo). Y se puede deshacer su estado (`Checker.foto()` y `restaura(foto)`, como hace el REPL de Rust): con varios archivos en la línea
+  de comandos comprueba el preludio una vez y vuelve a él entre archivo y archivo, también tras un error.
+- **Cómo se compara, ahora.** El test reparte los archivos en grupos y pasa cada grupo al verificador de And23 en un solo proceso (unos 3 s
+  en total); `--check` de Rust sigue siendo un proceso por archivo.
 - **Datos.** `Tipo(k, nombre, args)` uniforme, con `igual` estructural; el estado son `Mapa`s (`funcs`, `classes`, `kinds`, `globals`) y los
   ámbitos son una `Lista<Mapa<Str, VarE>>`. Los errores son `fail ErrorTipo(mensaje, rango)`; donde Rust ignora un `Err` (`self.expr(..)`
   dentro de una asignación estrechada), aquí hay un `attempt`/`rescue`. La tabla de funciones nativas está repetida como texto: si cambia
-  `natives.rs` hay que cambiarla también (el test de cada archivo que use una nativa lo notaría).
+  `natives.rs` hay que cambiarla también (un test compara las dos tablas y avisa).
 - **Lo que mostró del lenguaje.** `kind`, `rescue`, `enum` y `match` son palabras clave: al nombrar variables hubo que cambiarlas. El nombre
-  `Entrada` ya lo usaba el preludio (el verificador avisó). Comparar `Str?` con `Str` no se permite (hay que `?: ""`), y un `if` usado como
-  valor entre `T` y `nil` no infiere `T?` (se usa una variable `mut` anotada).
+  `Entrada` ya lo usaba el preludio (el verificador avisó). Un `if` usado como valor entre `T` y `nil` no
+  inferia `T?` y los campos no se estrechaban: ambas cosas se arreglaron después en Rust y en Mn (ver el CHANGELOG), y se añadieron `listaDe` y
+  `Dupla` a la biblioteca base. Siguen siendo palabras clave `kind`, `rescue`, `enum`, `match` y `show`, y no hay sintaxis de tuplas.
 - **Rendimiento.** Verificar el preludio más un programa pequeño: 0,12 s con el de And23 (la mayor parte es leer y analizar el preludio) contra
-  0,04 s con el de Rust, que incluye arrancar el proceso. Verificar sus 4 200 líneas: 0,58 s contra 0,19 s.
+  0,04 s con el de Rust, que incluye arrancar el proceso. Verificar sus 4 200 líneas: 0,58 s contra 0,19 s. Con la foto del estado, 432
+  archivos en un solo proceso tardan unos 0,9 s.
+
+#### Antes de la etapa 4: módulos, resoluciones y volcado del bytecode
+
+- **`mn/modulos.jb`** es el port de `modules.rs`: lee el archivo principal y lo que importa con `use`, renombra cada declaración de un módulo
+  a `ruta.nombre`, resuelve `alias.nombre` (también en tipos, padres y variantes de enumerados), avisa «es privado» y detecta ciclos, archivos
+  que faltan, alias repetidos y nombres que chocan. Renombra el árbol de `parser.jb` en el sitio (por eso `Nodo.tag` y `Nodo.attrs` pasaron a
+  `mut`) y las posiciones valen sobre todos los archivos juntos, cada uno desplazado a donde acabó el anterior (`analizaEn(texto, base)`).
+  `and23 --unido archivo.jb` y `and23 mn/modulos.jb archivo.jb` escriben el programa unido con posiciones y los avisos, o el mismo error. Se
+  compara sobre `examples/proyecto`, los archivos de Mn y 23 casos propios (`mn/casos_modulos`, uno por cada error del cargador).
+- **Resoluciones.** El verificador de Mn deja, como el de Rust, qué campo es cada acceso, qué método cada llamada virtual o de `super`, qué
+  llamadas son a un valor, qué última expresión de una lambda se descarta y qué llamadas a `Str`/`Int.parse` van al preludio, en tablas por
+  posición. `and23 --resuelve` y `and23 mn/checker.jb --resoluciones` las escriben ordenadas; el test las compara sobre los mismos 430 archivos
+  que el verificador. `FieldInfo.indice` y `Vista.campo` son lo único nuevo en los datos.
+- **`and23 --dump archivo.jb`** vuelca lo que el programa añade al módulo compilado: las tablas (cadenas, globales, métodos, clases con su
+  tabla virtual) y, por función, cada instrucción como `Nombre args` con su posición en caracteres; `--dump-preludio`, el módulo del preludio.
+  Es el texto con el que se comparará el compilador de la etapa 4.
 
 ### Enumerados, `match` e `if` como valor
 

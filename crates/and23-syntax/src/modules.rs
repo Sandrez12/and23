@@ -35,6 +35,26 @@ impl SourceMap {
         base
     }
 
+    /// Los archivos leídos, unidos con un salto de línea entre cada dos: el texto sobre el que valen las posiciones.
+    pub fn combined(&self) -> String {
+        self.files
+            .iter()
+            .map(|f| f.src.as_str())
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            )
+    }
+
+    /// Los avisos asociados a posiciones, por posición.
+    pub fn hints(&self) -> Vec<(usize, &str)> {
+        let mut list: Vec<(usize, &str)> =
+            self.hints.iter().map(|(p, h)| (*p, h.as_str())).collect();
+        list.sort();
+        list
+    }
+
     fn file_at(&self, offset: usize) -> Option<&SourceFile> {
         self.files.iter().rev().find(|f| f.base <= offset)
     }
