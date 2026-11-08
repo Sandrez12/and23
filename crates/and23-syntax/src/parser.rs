@@ -31,19 +31,19 @@ pub fn parse_tokens(tokens: Vec<Token>) -> Result<Program, Diagnostic> {
         }
     }
     Parser {
-        tokens,
+        tokens: std::sync::Arc::new(tokens),
         pos: 0,
         fn_depth: 0,
         loop_depth: 0,
         no_trailing: false,
         tmp: 0,
-        enums: tokens_enums,
+        enums: std::sync::Arc::new(tokens_enums),
     }
     .program()
 }
 
 struct Parser {
-    tokens: Vec<Token>,
+    tokens: std::sync::Arc<Vec<Token>>,
     pos: usize,
     /// Cuántas funciones envuelven a la sentencia actual (0 o 1).
     fn_depth: usize,
@@ -54,7 +54,7 @@ struct Parser {
     /// Contador para los nombres de las variables temporales que crea `match`.
     tmp: usize,
     /// Nombres de los enumerados declarados en este archivo.
-    enums: HashMap<String, Vec<String>>,
+    enums: std::sync::Arc<HashMap<String, Vec<String>>>,
 }
 
 /// Un patrón de un caso de `match`.

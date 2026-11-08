@@ -6,6 +6,9 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). L
 ## Sin publicar
 
 ### Añadido
+- **Fuzzing del lexer y el parser** (`crates/and23-syntax/tests/fuzz.rs`): un generador determinista muta los programas reales del repositorio
+  y exige que no haya pánicos ni cuelgues, que cada error apunte dentro del texto, y que `format` deje válido e idempotente todo programa
+  válido; más casos de anidamiento profundo. 20 000 entradas en cada `cargo test`; `AND23_FUZZ_ITERS=1000000` para una sesión larga.
 - **Enumerados, `match` e `if` como valor.** `enum Color { Rojo, Verde }` (con `nombre`, `orden` y `Color.todos`), `match` por valor,
   variante o tipo (`c: Circulo -> ...`) como sentencia y como expresión, con comprobación de que cubre todas las variantes de un enumerado
   del mismo archivo, e `if c { a } else { b }` como valor. Nuevas palabras clave: `enum` y `match`. Ver `examples/enumerados.jb`.
@@ -30,6 +33,8 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). L
 - `listaDe(arreglo)` (una `Lista` desde un arreglo literal) y `Dupla<A, B>` (dos valores juntos) en la biblioteca base.
 
 ### Cambiado
+- Cadenas con interpolaciones muy anidadas (`"${"${"${...`) ya no cuestan el cuadrado de la profundidad al analizarlas: el código de cada
+  interpolación se comparte con `Arc` en vez de copiarse al consumir cada token, y los enumerados del parser también.
 - Un `Fallo` de una tarea que nadie espera (`espera()`) ya no se pierde: al terminar el programa se avisa (`error: N tarea(s) fallaron y
   nadie las esperó: ...`) y el código de salida es 1; con `--prueba`, la prueba falla.
 - Los ids de método del compilador ya no dependen del orden de un `HashMap`: se asignan por posición en el fuente (antes el volcado del

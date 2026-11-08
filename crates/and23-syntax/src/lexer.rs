@@ -2,10 +2,12 @@ use crate::error::Diagnostic;
 use crate::span::Span;
 
 /// Trozo de una cadena: texto literal o los tokens de una interpolación (terminan en la `}` que la cierra).
+/// El código va en un `Arc` para que copiar un token (el parser lo hace al consumirlo) no copie todo lo anidado:
+/// con interpolaciones dentro de interpolaciones, copiarlo costaría el cuadrado de la profundidad.
 #[derive(Debug, Clone, PartialEq)]
 pub enum StrPart {
     Text(String),
-    Code(Vec<Token>),
+    Code(std::sync::Arc<Vec<Token>>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -270,6 +272,7 @@ fn shift_tokens(tokens: &mut [Token], base: usize) {
         if let TokenKind::Str(parts) = &mut token.kind {
             for part in parts {
                 if let StrPart::Code(code) = part {
+                    let code: &mut Vec<Token> = std::sync::Arc::make_mut(code);
                     shift_tokens(code, base);
                 }
             }
@@ -472,7 +475,7 @@ impl Lexer<'_> {
                         kind: TokenKind::RBrace,
                         span: Span::new(end, end + 1),
                     });
-                    parts.push(StrPart::Code(code));
+                    parts.push(StrPart::Code(std::sync::Arc::new(code)));
                 }
                 other => {
                     text.push(other);

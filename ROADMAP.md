@@ -22,7 +22,7 @@ Lo que más protege a un usuario y menos cuesta.
 - [x] **0.1 Un `Fallo` de tarea que nadie espera ya no se pierde.** (M) Hoy se descarta sin aviso. Decidir el comportamiento
   (propuesta: se imprime al terminar el programa con su traza y el código de salida es distinto de 0) y cubrirlo con tests.
   *Terminado cuando:* un programa con una tarea que falla sin esperarse termina con error visible; test nuevo.
-- [ ] **0.2 Fuzzing del lexer y el parser.** (M) `cargo-fuzz` o un generador propio con `proptest` sobre `and23-syntax`.
+- [x] **0.2 Fuzzing del lexer y el parser.** (M) `cargo-fuzz` o un generador propio con `proptest` sobre `and23-syntax`.
   *Terminado cuando:* 1 millón de entradas aleatorias o mutadas del corpus (`examples`, `mn/casos*`) no producen pánico ni
   cuelgue; los fallos hallados quedan como tests.
 - [ ] **0.3 Fuzzing del verificador, el compilador y la VM.** (M) Mismo método con programas mutados que sí parsean.
