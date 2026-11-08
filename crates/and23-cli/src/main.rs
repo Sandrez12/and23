@@ -1,8 +1,8 @@
-use and23_bytecode::{disassemble, dump_module, Compiler, DumpFrom};
+use and23_bytecode::{disassemble, dump_module, load_dump, Compiler, DumpFrom};
 use and23_eval::Interpreter;
 use and23_syntax::Diagnostic;
 use and23_types::Checker;
-use and23_vm::Session;
+use and23_vm::{Session, Vm};
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::process::ExitCode;
 
@@ -17,6 +17,7 @@ Uso:
   and23 --tokens <archivo.jb>   vuelca los tokens (para comparar con el lexer escrito en And23, mn/lexer.jb)
   and23 --ast <archivo.jb>      vuelca el árbol sintáctico (para comparar con el parser escrito en And23, mn/parser.jb)
   and23 --dump <archivo.jb>     vuelca el módulo compilado (para comparar con mn/compilador.jb); --dump-preludio, el del preludio
+  and23 --carga <preludio.txt> <programa.txt> [args...]   ejecuta módulos compilados por mn/compilador.jb (sus volcados)
   and23 --unido <archivo.jb>    vuelca el programa unido tras cargar `use` (para comparar con mn/modulos.jb)
   and23 --resuelve <archivo.jb> como --check, más lo que decidió el verificador para el compilador (campos, llamadas virtuales...)
   and23 --check <archivo.jb>    verifica los tipos (para comparar con el verificador escrito en And23, mn/checker.jb)
@@ -75,6 +76,9 @@ fn dispatch(args: &[String]) -> u8 {
         [flag, path] if flag == "--disasm" => disasm_file(path),
         [flag, path] if flag == "--dump" => dump_bytecode(Some(path)),
         [flag] if flag == "--dump-preludio" => dump_bytecode(None),
+        [flag, prelude, program, rest @ ..] if flag == "--carga" => {
+            run_dump(prelude, program, stress.with_args(rest))
+        }
         [flag, path] if flag == "--tree" => run_file_tree(path),
         [flag, path] if flag == "--prueba" => run_tests(path, stress),
         [path, rest @ ..] if !path.starts_with("--") => run_file(path, stress.with_args(rest)),
@@ -524,6 +528,65 @@ fn dump_bytecode(path: Option<&str>) -> u8 {
         ),
     }
     0
+}
+
+/// `and23 --carga preludio.txt programa.txt`: ejecuta el módulo que `mn/compilador.jb` escribió (el volcado del preludio
+/// y el del programa), sin pasar por el compilador de Rust: corre el `<script>` del preludio, el del programa y `main`.
+fn run_dump(prelude: &str, program: &str, options: Options) -> u8 {
+    let read = |p: &str| {
+        std::fs::read_to_string(p).map_err(|e| {
+            format!(
+                "error: no se pudo leer `{p}`: {e}
+"
+            )
+        })
+    };
+    let loaded = match read(prelude)
+        .and_then(|a| read(program).map(|b| (a, b)))
+        .and_then(|(a, b)| {
+            load_dump(&a, &b).map_err(|e| {
+                format!(
+                    "error: {e}
+"
+                )
+            })
+        }) {
+        Ok(loaded) => loaded,
+        Err(text) => return finish(Err(text)),
+    };
+    let mut vm = Vm::new(io::stdout());
+    vm.set_gc_stress(options.stress);
+    vm.set_args(options.args);
+    if let Some(depth) = options.depth {
+        vm = vm.with_max_depth(depth);
+    }
+    let main_arity_ok = loaded
+        .main
+        .map(|m| loaded.module.functions[m].arity == 0)
+        .unwrap_or(true);
+    let result = if !main_arity_ok {
+        Err("`main` no puede tener parámetros".to_string())
+    } else {
+        let steps = [
+            Some(loaded.prelude_script),
+            loaded.program_script,
+            loaded.main,
+        ];
+        steps
+            .into_iter()
+            .flatten()
+            .try_for_each(|entry| vm.run(&loaded.module, entry))
+            .map_err(|d| {
+                // Las posiciones del volcado son en caracteres del fuente unido, no hay fuente que mostrar.
+                format!(
+                    "error: {} @{}-{}
+",
+                    d.message, d.span.start, d.span.end
+                )
+            })
+    };
+    let _ = vm.out.flush();
+    finish(result)
 }
 
 fn finish(result: Result<(), String>) -> u8 {

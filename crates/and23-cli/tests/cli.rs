@@ -1550,3 +1550,109 @@ fn el_compilador_escrito_en_and23_coincide_con_el_de_rust() {
         }
     });
 }
+
+/// Mn, etapa 5: los módulos que compila `mn/compilador.jb` se ejecutan en la VM (`and23 --carga`) y se comportan
+/// como los de Rust. Los ejemplos dan la misma salida; el verificador de Mn compilado por Mn da los mismos
+/// resultados; y el compilador de Mn compilado por Mn llega a un punto fijo: compilándose a sí mismo (y al preludio)
+/// escribe exactamente lo mismo que el compilado por Rust.
+#[test]
+fn el_compilador_de_and23_compilado_por_el_mismo_llega_a_un_punto_fijo() {
+    let root = raiz_del_repo();
+    let dir = std::env::temp_dir().join(format!("and23-etapa5-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let run = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_and23"))
+            .args(args)
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{args:?}: {}", stderr(&out));
+        stdout(&out)
+    };
+    let write = |name: &str, text: &str| {
+        let path = dir.join(name);
+        std::fs::write(&path, text).unwrap();
+        path.to_string_lossy().into_owned()
+    };
+    // Primera generación: el compilador de Mn, ejecutado por la VM porque lo compiló Rust.
+    let prelude = write("preludio.txt", &run(&["mn/compilador.jb", "--preludio"]));
+    let gen1 = run(&["mn/compilador.jb", "mn/compilador.jb"]);
+    let compilador = write("compilador.txt", &gen1);
+
+    // Segunda generación: ese mismo compilador, ya compilado por Mn, compila el preludio y a sí mismo.
+    let pre2 = run(&["--carga", &prelude, &compilador, "--preludio"]);
+    assert_eq!(
+        pre2,
+        std::fs::read_to_string(&prelude).unwrap(),
+        "el preludio cambia"
+    );
+    let gen2 = run(&["--carga", &prelude, &compilador, "mn/compilador.jb"]);
+    assert_eq!(
+        gen2, gen1,
+        "el compilador compilado por sí mismo es distinto"
+    );
+
+    // Y compila otros archivos igual que Rust.
+    let archivos = [
+        "examples/clases.jb",
+        "examples/genericos.jb",
+        "examples/lambdas.jb",
+        "mn/lexer.jb",
+        "mn/parser.jb",
+        "mn/checker.jb",
+    ];
+    let mut args = vec!["--carga", prelude.as_str(), compilador.as_str()];
+    args.extend(archivos);
+    let por_mn = run(&args);
+    let mut esperado = String::new();
+    for a in archivos {
+        esperado.push_str(&run(&["--dump", a]));
+        esperado.push_str("---\n");
+    }
+    assert_eq!(
+        por_mn, esperado,
+        "el compilador compilado por Mn compila distinto"
+    );
+
+    // Los ejemplos (sin entrada) dan la misma salida ejecutados desde el volcado.
+    for nombre in [
+        "aritmetica",
+        "cadenas",
+        "clases",
+        "control",
+        "enumerados",
+        "excepciones",
+        "funciones",
+        "genericos",
+        "lambdas",
+        "notas",
+        "palabras",
+        "polimorfismo",
+        "tareas",
+    ] {
+        let fuente = format!("examples/{nombre}.jb");
+        let volcado = write(
+            &format!("{nombre}.txt"),
+            &run(&["mn/compilador.jb", &fuente]),
+        );
+        assert_eq!(
+            run(&["--carga", &prelude, &volcado]),
+            run(&[&fuente]),
+            "{nombre} se comporta distinto desde el volcado"
+        );
+    }
+
+    // El verificador de Mn, compilado por Mn, da lo mismo que ejecutado como programa de Rust.
+    let verificador = write("checker.txt", &run(&["mn/compilador.jb", "mn/checker.jb"]));
+    let casos = [
+        "examples/clases.jb",
+        "examples/enumerados.jb",
+        "mn/parser.jb",
+    ];
+    let mut con_mn = vec!["--carga", prelude.as_str(), verificador.as_str()];
+    con_mn.extend(casos);
+    let mut con_rust = vec!["mn/checker.jb"];
+    con_rust.extend(casos);
+    assert_eq!(run(&con_mn), run(&con_rust));
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -10,6 +10,8 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). L
   variante o tipo (`c: Circulo -> ...`) como sentencia y como expresión, con comprobación de que cubre todas las variantes de un enumerado
   del mismo archivo, e `if c { a } else { b }` como valor. Nuevas palabras clave: `enum` y `match`. Ver `examples/enumerados.jb`.
 - `and23 --tokens` muestra la posición de cada token (`@desde-hasta`) y la del error; `and23 --ast` hace lo mismo con los nodos.
+- **Mn, etapa 5.** `and23 --carga preludio.txt programa.txt` ejecuta en la VM los módulos que escribe `mn/compilador.jb`. El compilador de
+  And23, compilado por sí mismo, produce exactamente el mismo bytecode que compilado por Rust (punto fijo), y también el del preludio.
 - **Mn, etapa 4.** `mn/compilador.jb`, el compilador a bytecode de And23 escrito en And23 (port de `compiler.rs`), comparado con el de Rust
   (`and23 --dump`) sobre el preludio, los ejemplos, los casos del verificador y de los módulos y los propios archivos de Mn, él mismo incluido
   (unas 70 000 líneas de bytecode idénticas, con la posición de cada instrucción).

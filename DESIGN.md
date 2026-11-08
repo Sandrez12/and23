@@ -641,8 +641,22 @@ métodos, clases con su tabla virtual) y funciones con sus instrucciones y la po
   lambda, `construye` repite la función con las capturas nuevas, igual que `build`.
 - **Un fallo de Rust que apareció.** El compilador daba id a los métodos recorriendo `res.virtuals` (un `HashMap`), así que los ids, y el
   volcado, cambiaban entre ejecuciones. Ahora se recorren por posición.
-- **Lo que falta para compilarse a sí mismo.** El módulo que produce Mn es una estructura de And23, no algo que la VM cargue: hace falta
-  escribirlo en un formato (o construir el `Module` de la VM desde él) y ejecutarlo; esa es la siguiente etapa.
+- **Lo que faltaba para compilarse a sí mismo** lo resuelve la etapa 5.
+
+#### Etapa 5: ejecutar lo que compila Mn y compilarse a sí mismo
+
+El módulo que escribe `mn/compilador.jb` (el mismo volcado de la etapa 4) se carga de vuelta: `and23_bytecode::load_dump` lee el texto del
+preludio y el del programa (que continúa sus tablas) y reconstruye el `Module`; `and23 --carga preludio.txt programa.txt [args...]` ejecuta
+el `<script>` del preludio, el del programa y `main` en la VM, sin pasar por el compilador de Rust. No hay un formato nuevo: el volcado
+ya contenía todo (cadenas con el escape de Rust, tablas, clases con su tabla virtual, instrucciones y posiciones).
+
+- **Cómo se comprueba.** El test `el_compilador_de_and23_compilado_por_el_mismo_llega_a_un_punto_fijo`: (1) el compilador de Mn, compilado por
+  Rust, compila `mn/compilador.jb` (generación 1); (2) esa generación, ejecutada con `--carga`, compila otra vez el preludio y
+  `mn/compilador.jb` (generación 2) y los textos son idénticos, es decir, un punto fijo; (3) la generación 2 compila lexer, parser,
+  verificador y ejemplos igual que Rust; (4) 13 ejemplos dan la misma salida ejecutados desde el volcado; (5) el verificador de Mn
+  compilado por Mn da los mismos resultados.
+- **Límites.** Las posiciones de un error de ejecución con `--carga` salen en caracteres del fuente unido, sin línea ni columna (el volcado
+  no lleva el fuente). Los ejemplos que leen la entrada estándar o archivos no están en la comparación.
 
 #### Antes de la etapa 4: módulos, resoluciones y volcado del bytecode
 
