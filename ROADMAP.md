@@ -25,7 +25,7 @@ Lo que más protege a un usuario y menos cuesta.
 - [x] **0.2 Fuzzing del lexer y el parser.** (M) `cargo-fuzz` o un generador propio con `proptest` sobre `and23-syntax`.
   *Terminado cuando:* 1 millón de entradas aleatorias o mutadas del corpus (`examples`, `mn/casos*`) no producen pánico ni
   cuelgue; los fallos hallados quedan como tests.
-- [ ] **0.3 Fuzzing del verificador, el compilador y la VM.** (M) Mismo método con programas mutados que sí parsean.
+- [x] **0.3 Fuzzing del verificador, el compilador y la VM.** (M) Mismo método con programas mutados que sí parsean.
   *Terminado cuando:* sin pánicos del verificador ni del compilador, y la VM solo falla con `Diagnostic`, nunca con pánico.
 - [ ] **0.4 `--gc-stress` sobre todo el corpus en CI.** (S) Ejecutar los ejemplos y los casos de ejecución con GC en cada punto
   seguro. *Terminado cuando:* un job de CI lo hace y pasa.

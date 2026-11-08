@@ -6,6 +6,12 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). L
 ## Sin publicar
 
 ### Añadido
+- **Fuzzing del verificador, el compilador y la VM** (`crates/and23-vm/tests/fuzz.rs`): programas del repositorio mutados (con cambios que
+  conservan los tipos y otros que no) se analizan, verifican, compilan y ejecutan; nada puede entrar en pánico ni colgarse, y una de cada
+  ocho ejecuciones va con `--gc-stress`. El corpus excluye todo lo que toque disco, entorno o entrada. 3 000 programas en cada `cargo test`;
+  `AND23_FUZZ_ITERS=200000` para una sesión larga (no encontró fallos).
+- `Vm::with_step_limit(n)` / `Session::with_step_limit(n)`: tope de instrucciones que puede ejecutar una VM; al agotarse, el error es
+  «se superó el límite de instrucciones». Sin tope por defecto (sin diferencia medible de velocidad).
 - **Fuzzing del lexer y el parser** (`crates/and23-syntax/tests/fuzz.rs`): un generador determinista muta los programas reales del repositorio
   y exige que no haya pánicos ni cuelgues, que cada error apunte dentro del texto, y que `format` deje válido e idempotente todo programa
   válido; más casos de anidamiento profundo. 20 000 entradas en cada `cargo test`; `AND23_FUZZ_ITERS=1000000` para una sesión larga.

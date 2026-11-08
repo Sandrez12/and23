@@ -18,6 +18,8 @@ pub struct Vm<W: Write> {
     /// Objeto de cada cadena constante, creado la primera vez que se usa. Son raíces del GC.
     consts: Vec<Option<ObjRef>>,
     max_depth: usize,
+    /// Instrucciones que le quedan por ejecutar (sin tope: `u64::MAX`). Sirve para acotar programas no confiables.
+    steps_left: u64,
     native: NativeState,
 }
 
@@ -60,6 +62,7 @@ impl<W: Write> Vm<W> {
             heap: Heap::new(),
             consts: Vec::new(),
             max_depth: DEFAULT_MAX_DEPTH,
+            steps_left: u64::MAX,
             native: NativeState::new(),
         }
     }
@@ -67,6 +70,13 @@ impl<W: Write> Vm<W> {
     /// Argumentos del programa, los que lee `args()`.
     pub fn set_args(&mut self, args: Vec<String>) {
         self.native.args = args;
+    }
+
+    /// Tope de instrucciones que puede ejecutar esta VM en total (entre todas las llamadas a `run`): al agotarse,
+    /// el programa termina con el error «se superó el límite de instrucciones».
+    pub fn with_step_limit(mut self, steps: u64) -> Self {
+        self.steps_left = steps;
+        self
     }
 
     pub fn with_max_depth(mut self, max_depth: usize) -> Self {
@@ -118,6 +128,7 @@ impl<W: Write> Vm<W> {
             heap,
             consts,
             max_depth,
+            steps_left,
             native,
         } = self;
         let mut frames: Vec<Frame<'m>> = Vec::new();
@@ -244,6 +255,10 @@ impl<W: Write> Vm<W> {
             loop {
                 let op = function.code[ip];
                 ip += 1;
+                *steps_left -= 1;
+                if *steps_left == 0 {
+                    fail!("se superó el límite de instrucciones");
+                }
                 match op {
                     Op::Int(v) => stack.push(Value::Int(v)),
                     Op::Float(v) => stack.push(Value::Float(v)),

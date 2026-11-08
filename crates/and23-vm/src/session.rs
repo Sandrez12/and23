@@ -35,6 +35,12 @@ impl<W: Write> Session<W> {
         self
     }
 
+    /// Tope de instrucciones de toda la sesión (ver `Vm::with_step_limit`).
+    pub fn with_step_limit(mut self, steps: u64) -> Self {
+        self.vm = self.vm.with_step_limit(steps);
+        self
+    }
+
     /// Argumentos que el programa lee con `args()`.
     pub fn with_args(mut self, args: Vec<String>) -> Self {
         self.vm.set_args(args);
