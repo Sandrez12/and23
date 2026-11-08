@@ -399,10 +399,29 @@ fn agregaArchivo(ruta: Str, texto: Str) {
 
 // ---------------------------------------------------------------- M11: tareas y canales
 
+/// Un `Fallo` de una tarea y si alguien lo recibió (con `espera()`). Los que nadie vio se avisan al terminar el programa.
+thing FalloDeTarea(fix error: Fallo) {
+    mut visto = false
+}
+
+/// Los fallos de las tareas que terminaron mal, en orden. `_fallosPerdidos` los revisa y la vacía.
+fix _fallosDeTareas = Lista<FalloDeTarea>()
+
+/// Lo llama el programa `and23` al terminar: si alguna tarea falló y nadie la esperó, lanza un `Fallo` que lo cuenta.
+fn _fallosPerdidos() {
+    fix perdidos = Lista<Str>()
+    _fallosDeTareas.paraCada { f -> if !f.visto { perdidos.agrega(f.error.msg) } }
+    while !_fallosDeTareas.vacia() { _fallosDeTareas.quita() }
+    if !perdidos.vacia() {
+        fail Fallo("${perdidos.tam()} tarea(s) fallaron y nadie las esperó: ${une(perdidos, "; ")}")
+    }
+}
+
 /// Una tarea sin resultado (`lanza`). Guarda si terminó y, si falló, el `Fallo`.
 thing Tarea() {
     mut listo = false
     mut error: Fallo? = nil
+    mut aviso: FalloDeTarea? = nil
 
     fn terminada() -> Bool = listo
 
@@ -410,11 +429,18 @@ thing Tarea() {
     fn espera() {
         while !listo { _bloquea() }
         fix e = error
+        fix a = aviso
+        if a != nil { a.visto = true }
         if e != nil { fail e }
     }
 
     fn corre(f: () -> Unit) {
-        attempt { f() } rescue e: Fallo { error = e }
+        attempt { f() } rescue e: Fallo {
+            error = e
+            fix a = FalloDeTarea(e)
+            aviso = a
+            _fallosDeTareas.agrega(a)
+        }
         listo = true
         _avisa()
     }
@@ -425,18 +451,26 @@ thing TareaDe<T>() {
     mut listo = false
     mut resultado: [T] = []
     mut error: Fallo? = nil
+    mut aviso: FalloDeTarea? = nil
 
     fn terminada() -> Bool = listo
 
     fn espera() -> T {
         while !listo { _bloquea() }
         fix e = error
+        fix a = aviso
+        if a != nil { a.visto = true }
         if e != nil { fail e }
         return resultado[0]
     }
 
     fn corre(f: () -> T) {
-        attempt { resultado = [f()] } rescue e: Fallo { error = e }
+        attempt { resultado = [f()] } rescue e: Fallo {
+            error = e
+            fix a = FalloDeTarea(e)
+            aviso = a
+            _fallosDeTareas.agrega(a)
+        }
         listo = true
         _avisa()
     }

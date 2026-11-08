@@ -1431,10 +1431,16 @@ fn dump_vuelca_el_modulo_con_posiciones_en_caracteres() {
         out.contains("f/1 @19-20\n  0000 GetLocal 0 @38-39\n  0001 Int 2 @42-43\n  0002 Mul @38-43\n  0003 Return @38-43\n"),
         "{out}"
     );
-    assert!(
-        out.contains("<script>/0 @0-0\n  0000 Str 10 @5-8\n  0001 Str 11 @11-14\n  0002 Add @5-14\n  0003 Show @0-15\n"),
-        "{out}"
+    // Los números de las cadenas nuevas dependen del tamaño del preludio: se leen del propio volcado.
+    let primera: u32 = out
+        .lines()
+        .find_map(|l| l.strip_prefix("  ")?.strip_suffix(" \"ñ\"")?.parse().ok())
+        .expect("la cadena \"ñ\" está en la tabla");
+    let esperado = format!(
+        "<script>/0 @0-0\n  0000 Str {primera} @5-8\n  0001 Str {} @11-14\n  0002 Add @5-14\n  0003 Show @0-15\n",
+        primera + 1
     );
+    assert!(out.contains(&esperado), "{out}");
     // Un programa solo vuelca lo suyo: el preludio tiene su propio volcado.
     let prelude = Command::new(env!("CARGO_BIN_EXE_and23"))
         .arg("--dump-preludio")
@@ -1655,4 +1661,61 @@ fn el_compilador_de_and23_compilado_por_el_mismo_llega_a_un_punto_fijo() {
     con_rust.extend(casos);
     assert_eq!(run(&con_mn), run(&con_rust));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Mn, 0.1: el `Fallo` de una tarea que nadie espera no se pierde: se avisa al terminar y el código de salida es 1.
+#[test]
+fn el_fallo_de_una_tarea_que_nadie_espera_se_avisa_al_terminar() {
+    let out = run_source(
+        "tarea_perdida",
+        "fn main() {
+    fix a = lanza { fail Fallo(\"uno\") }
+    fix b = lanzaDe { fail Fallo(\"dos\")\n 3 }
+    fix c = lanza { fail Fallo(\"tres\") }
+    attempt { a.espera() } rescue e: Fallo { show(\"capturado ${e.msg}\") }
+    attempt { b.espera() } rescue e: Fallo { show(\"capturado ${e.msg}\") }
+    show(\"fin\")
+}",
+    );
+    assert_eq!(
+        stdout(&out),
+        "capturado uno\ncapturado dos\nfin\n",
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        stderr(&out),
+        "error: 1 tarea(s) fallaron y nadie las esperó: tres\n"
+    );
+}
+
+#[test]
+fn si_todas_las_tareas_que_fallan_se_esperan_no_hay_aviso() {
+    let out = run_source(
+        "tarea_vista",
+        "fn main() {
+    fix a = lanza { fail Fallo(\"uno\") }
+    attempt { a.espera() } rescue e: Fallo { show(e.msg) }
+}",
+    );
+    assert_eq!(stdout(&out), "uno\n");
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stderr(&out), "");
+}
+
+#[test]
+fn una_prueba_con_una_tarea_perdida_falla() {
+    let out = run_prueba(
+        "prueba \"huerfana\" {
+    lanza { fail Fallo(\"x\") }
+    cede()
+}
+prueba \"limpia\" { afirma(true) }\n",
+    );
+    let text = stdout(&out);
+    assert!(text.contains("prueba \"huerfana\" ... FALLÓ"), "{text}");
+    assert!(text.contains("nadie las esperó: x"), "{text}");
+    assert!(text.contains("prueba \"limpia\" ... ok"), "{text}");
+    assert_eq!(out.status.code(), Some(1));
 }

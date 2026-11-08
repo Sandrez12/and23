@@ -30,6 +30,8 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). L
 - `listaDe(arreglo)` (una `Lista` desde un arreglo literal) y `Dupla<A, B>` (dos valores juntos) en la biblioteca base.
 
 ### Cambiado
+- Un `Fallo` de una tarea que nadie espera (`espera()`) ya no se pierde: al terminar el programa se avisa (`error: N tarea(s) fallaron y
+  nadie las esperó: ...`) y el código de salida es 1; con `--prueba`, la prueba falla.
 - Los ids de método del compilador ya no dependen del orden de un `HashMap`: se asignan por posición en el fuente (antes el volcado del
   bytecode cambiaba de una ejecución a otra).
 - Un valor devuelto que es a veces `T` y a veces `nil` en una función o lambda sin tipo de retorno (y en un `if` como valor) da `T?`, en vez

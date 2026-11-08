@@ -91,6 +91,19 @@ impl<W: Write> Session<W> {
         self.vm.run(self.compiler.module(), index)
     }
 
+    /// Las tareas que fallaron y que nadie esperó con `espera()` (su `Fallo` se habría perdido): `Some(texto)` si hubo
+    /// alguna, y las olvida. Se llama al terminar el programa o cada prueba.
+    pub fn lost_task_failures(&mut self) -> Option<String> {
+        let d = self.run_function("_fallosPerdidos").err()?;
+        let prefix = "excepción sin capturar `Fallo`: ";
+        Some(
+            d.message
+                .strip_prefix(prefix)
+                .unwrap_or(&d.message)
+                .to_string(),
+        )
+    }
+
     /// Llama a `main()` si el programa la definió.
     pub fn run_main(&mut self) -> Result<(), Diagnostic> {
         let Some(index) = self.compiler.main_index() else {

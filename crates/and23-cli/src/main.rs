@@ -171,7 +171,14 @@ fn run_file(path: &str, options: Options) -> u8 {
     let result = session
         .run(&loaded.program, false)
         .and_then(|()| session.run_main())
-        .map_err(|d| sources.render(&d));
+        .map_err(|d| sources.render(&d))
+        .and_then(|()| match session.lost_task_failures() {
+            Some(text) => Err(format!(
+                "error: {text}
+"
+            )),
+            None => Ok(()),
+        });
     // La salida normal debe quedar escrita antes del mensaje de error.
     let _ = session.out().flush();
     finish(result)
@@ -403,9 +410,16 @@ fn run_tests(path: &str, options: Options) -> u8 {
     let mut failed = 0;
     for test in tests {
         match session.run_function(&test.func) {
-            Ok(()) => {
-                let _ = writeln!(session.out(), "prueba \"{}\" ... ok", test.name);
-            }
+            Ok(()) => match session.lost_task_failures() {
+                None => {
+                    let _ = writeln!(session.out(), "prueba \"{}\" ... ok", test.name);
+                }
+                Some(text) => {
+                    failed += 1;
+                    let _ = writeln!(session.out(), "prueba \"{}\" ... FALLÓ", test.name);
+                    let _ = writeln!(session.out(), "    error: {text}");
+                }
+            },
             Err(d) => {
                 failed += 1;
                 let _ = writeln!(session.out(), "prueba \"{}\" ... FALLÓ", test.name);
@@ -583,6 +597,25 @@ fn run_dump(prelude: &str, program: &str, options: Options) -> u8 {
 ",
                     d.message, d.span.start, d.span.end
                 )
+            })
+            .and_then(|()| {
+                // Como en `run_file`: una tarea que falló y nadie esperó es un error.
+                let lost = loaded
+                    .module
+                    .functions
+                    .iter()
+                    .position(|f| f.name == "_fallosPerdidos");
+                match lost.map(|i| vm.run(&loaded.module, i)) {
+                    Some(Err(d)) => {
+                        let text = d.message.strip_prefix("excepción sin capturar `Fallo`: ");
+                        Err(format!(
+                            "error: {}
+",
+                            text.unwrap_or(&d.message)
+                        ))
+                    }
+                    _ => Ok(()),
+                }
             })
     };
     let _ = vm.out.flush();
