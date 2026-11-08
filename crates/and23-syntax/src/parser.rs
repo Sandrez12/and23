@@ -6,17 +6,38 @@ use crate::ast::{
 use crate::error::Diagnostic;
 use crate::lexer::{StrPart, Token, TokenKind};
 use crate::span::Span;
+use std::collections::HashMap;
 
 /// Poder de enlace de los prefijos `-` y `!`: más fuerte que cualquier binario.
 const PREFIX_BP: u8 = 13;
 
 pub fn parse_tokens(tokens: Vec<Token>) -> Result<Program, Diagnostic> {
+    // Los enumerados del archivo y sus variantes, para reconocer `Color.Rojo` antes de haber visto la
+    // declaración y para comprobar que un `match` los cubre todos.
+    let mut tokens_enums: HashMap<String, Vec<String>> = HashMap::new();
+    for (i, w) in tokens.windows(3).enumerate() {
+        if let (TokenKind::Enum, TokenKind::Ident(name), TokenKind::LBrace) =
+            (&w[0].kind, &w[1].kind, &w[2].kind)
+        {
+            let variants = tokens[i + 3..]
+                .iter()
+                .take_while(|t| t.kind != TokenKind::RBrace)
+                .filter_map(|t| match &t.kind {
+                    TokenKind::Ident(v) => Some(v.clone()),
+                    _ => None,
+                })
+                .collect();
+            tokens_enums.insert(name.clone(), variants);
+        }
+    }
     Parser {
         tokens,
         pos: 0,
         fn_depth: 0,
         loop_depth: 0,
         no_trailing: false,
+        tmp: 0,
+        enums: tokens_enums,
     }
     .program()
 }
@@ -30,6 +51,39 @@ struct Parser {
     loop_depth: usize,
     /// Dentro de la condición de un `if`/`while` una `{` abre el cuerpo, no una lambda final.
     no_trailing: bool,
+    /// Contador para los nombres de las variables temporales que crea `match`.
+    tmp: usize,
+    /// Nombres de los enumerados declarados en este archivo.
+    enums: HashMap<String, Vec<String>>,
+}
+
+/// Un patrón de un caso de `match`.
+enum Pat {
+    /// `_`: coincide con todo.
+    Wild,
+    /// Una expresión (literal, constante, variante de enumerado): coincide si es igual (`==`).
+    Value(Expr),
+    /// `nombre: Tipo`: coincide si el valor es de ese tipo y lo liga a `nombre`.
+    Typed(String, Span, TypeRef),
+}
+
+struct Arm {
+    pats: Vec<Pat>,
+    body: Block,
+    span: Span,
+}
+
+/// `{ -> cuerpo }()`: ejecuta el cuerpo al instante; sus `return` dan el valor de la expresión.
+fn immediate(stmts: Vec<Stmt>, span: Span) -> Expr {
+    Expr::CallValue {
+        callee: Box::new(Expr::Lambda {
+            params: Vec::new(),
+            body: Block { stmts, span },
+            span,
+        }),
+        args: Vec::new(),
+        span,
+    }
 }
 
 /// Operador binario, su enlace izquierdo y su enlace derecho.
@@ -254,6 +308,7 @@ impl Parser {
                     TokenKind::Fn
                         | TokenKind::Thing
                         | TokenKind::Kind
+                        | TokenKind::Enum
                         | TokenKind::Fix
                         | TokenKind::Mut
                 );
@@ -264,6 +319,15 @@ impl Parser {
                         "una variable `mut` no se puede abrir: otro archivo no podría cambiarla; usa `open fix` o una función".into(),
                     ));
                 }
+            }
+            if self.peek().kind == TokenKind::Enum {
+                let (names, decls) = self.enum_decl()?;
+                if open {
+                    exports.extend(names);
+                }
+                stmts.extend(decls);
+                self.end_of_stmt(false)?;
+                continue;
             }
             let stmt = if self.peek().kind == TokenKind::Fn {
                 Stmt::Fn(Box::new(self.fn_decl()?))
@@ -286,6 +350,447 @@ impl Parser {
             stmts.push(stmt);
             self.end_of_stmt(false)?;
         }
+    }
+
+    // ------------------------------------------------------------ enumerados, match e if como valor
+    // Todo esto se traduce a construcciones que ya existen (clases, `if`, lambdas), así el verificador,
+    // el compilador y la VM no necesitan saber de ello.
+
+    /// `enum Color { Rojo, Verde }`: una clase `Color(nombre, orden)` y una constante global por variante,
+    /// con el nombre interno `Color.Rojo` (que `Color.Rojo` en el código usa), más `Color.todos`.
+    /// Devuelve los nombres que `open` hace públicos y las declaraciones.
+    fn enum_decl(&mut self) -> Result<(Vec<String>, Vec<Stmt>), Diagnostic> {
+        let kw = self.bump().span;
+        let (name, name_span) = self.expect_ident("el nombre del enumerado")?;
+        let open = self
+            .expect(TokenKind::LBrace, "`{` y las variantes del enumerado")?
+            .span;
+        let mut variants: Vec<(String, Span)> = Vec::new();
+        let close = loop {
+            self.skip_newlines();
+            match self.peek().kind.clone() {
+                TokenKind::RBrace => break self.bump().span,
+                TokenKind::Eof => {
+                    return Err(Diagnostic::new(
+                        open,
+                        "este enumerado no se cierra: falta `}`",
+                    ));
+                }
+                TokenKind::Ident(v) => {
+                    let span = self.bump().span;
+                    if v == "todos" || variants.iter().any(|(n, _)| *n == v) {
+                        return Err(Diagnostic::new(
+                            span,
+                            format!(
+                                "la variante `{v}` está repetida o es un nombre reservado del enumerado"
+                            ),
+                        ));
+                    }
+                    variants.push((v, span));
+                    match self.peek().kind {
+                        TokenKind::Comma => {
+                            self.bump();
+                        }
+                        TokenKind::Newline | TokenKind::RBrace => {}
+                        _ => {
+                            return Err(self.error_here(
+                                "se esperaba `,` o el fin de la línea después de la variante"
+                                    .into(),
+                            ));
+                        }
+                    }
+                }
+                _ => return Err(self.error_here("se esperaba el nombre de una variante".into())),
+            }
+        };
+        if variants.is_empty() {
+            return Err(Diagnostic::new(
+                kw.to(close),
+                "un enumerado necesita al menos una variante",
+            ));
+        }
+        let span = kw.to(close);
+        let ty = |n: &str| TypeRef {
+            name: n.to_string(),
+            args: Vec::new(),
+            span: name_span,
+        };
+        let param = |n: &str, t: &str| CtorParam {
+            name: n.to_string(),
+            name_span,
+            ty: ty(t),
+            mutable: Some(false),
+            span: name_span,
+        };
+        let mut decls = vec![Stmt::Thing(Box::new(ThingDecl {
+            name: name.clone(),
+            name_span,
+            type_params: Vec::new(),
+            params: vec![param("nombre", "Str"), param("orden", "Int")],
+            supers: Vec::new(),
+            fields: Vec::new(),
+            methods: Vec::new(),
+            span,
+        }))];
+        let mut names = vec![name.clone()];
+        let mut all = Vec::new();
+        for (i, (v, vspan)) in variants.iter().enumerate() {
+            let full = format!("{name}.{v}");
+            decls.push(Stmt::Let {
+                name: full.clone(),
+                name_span: *vspan,
+                mutable: false,
+                ty: None,
+                init: Expr::Call {
+                    name: name.clone(),
+                    type_args: Vec::new(),
+                    args: vec![Expr::Str(v.clone(), *vspan), Expr::Int(i as i64, *vspan)],
+                    span: *vspan,
+                },
+                span: *vspan,
+            });
+            all.push(Expr::Var(full.clone(), *vspan));
+            names.push(full);
+        }
+        let todos = format!("{name}.todos");
+        decls.push(Stmt::Let {
+            name: todos.clone(),
+            name_span,
+            mutable: false,
+            ty: None,
+            init: Expr::Call {
+                name: "_variantes".into(),
+                type_args: Vec::new(),
+                args: vec![Expr::Array { elems: all, span }],
+                span,
+            },
+            span,
+        });
+        names.push(todos);
+        Ok((names, decls))
+    }
+
+    fn fresh(&mut self) -> String {
+        self.tmp += 1;
+        format!("_m{}", self.tmp)
+    }
+
+    fn pattern(&mut self) -> Result<Pat, Diagnostic> {
+        if let TokenKind::Ident(n) = self.peek().kind.clone() {
+            if n == "_" && matches!(self.peek_at(1).kind, TokenKind::Arrow | TokenKind::Comma) {
+                self.bump();
+                return Ok(Pat::Wild);
+            }
+            if self.peek_at(1).kind == TokenKind::Colon {
+                let span = self.bump().span;
+                self.bump();
+                let ty = self.type_ref()?;
+                return Ok(Pat::Typed(n, span, ty));
+            }
+        }
+        Ok(Pat::Value(self.condition_expr()?))
+    }
+
+    /// `match valor { patrón, patrón -> cuerpo ... }`: devuelve el valor y los casos. En la forma de valor
+    /// (`expr_form`) cada cuerpo es una expresión; en la de sentencia, un bloque `{ ... }` o una sentencia.
+    fn match_arms(&mut self, expr_form: bool) -> Result<(Expr, Vec<Arm>, Span), Diagnostic> {
+        let scrut = self.condition_expr()?;
+        let open = self
+            .expect(TokenKind::LBrace, "`{` y los casos del `match`")?
+            .span;
+        let mut arms = Vec::new();
+        let close = loop {
+            self.skip_newlines();
+            match self.peek().kind {
+                TokenKind::RBrace => break self.bump().span,
+                TokenKind::Eof => {
+                    return Err(Diagnostic::new(
+                        open,
+                        "este `match` no se cierra: falta `}`",
+                    ));
+                }
+                _ => {}
+            }
+            let start = self.peek().span;
+            let mut pats = vec![self.pattern()?];
+            while self.peek().kind == TokenKind::Comma {
+                self.bump();
+                pats.push(self.pattern()?);
+            }
+            if pats.len() > 1 && pats.iter().any(|p| !matches!(p, Pat::Value(_))) {
+                return Err(Diagnostic::new(
+                    start,
+                    "varios patrones con `,` solo pueden ser valores (no `_` ni `nombre: Tipo`)",
+                ));
+            }
+            self.expect(TokenKind::Arrow, "`->` y el cuerpo del caso")?;
+            let body = if expr_form {
+                let value = self.expr(0)?;
+                let span = value.span();
+                Block {
+                    stmts: vec![Stmt::Return(Some(value), span)],
+                    span,
+                }
+            } else if self.peek().kind == TokenKind::LBrace {
+                self.block()?
+            } else {
+                let stmt = self.stmt()?;
+                let span = stmt.span();
+                Block {
+                    stmts: vec![stmt],
+                    span,
+                }
+            };
+            let span = start.to(body.span);
+            arms.push(Arm { pats, body, span });
+            // Como valor el separador es opcional: dentro de `${...}` no hay saltos de línea.
+            if !expr_form && self.peek().kind != TokenKind::RBrace {
+                self.end_of_stmt(true)?;
+            }
+        };
+        if arms.is_empty() {
+            return Err(Diagnostic::new(
+                open.to(close),
+                "un `match` necesita al menos un caso",
+            ));
+        }
+        Ok((scrut, arms, close))
+    }
+
+    /// Las sentencias que prueban cada caso en orden: `fix _mN = valor` y una cadena de `if`/`else`. Si
+    /// ningún caso coincide y no hay `_`, falla con un `Fallo`.
+    fn match_chain(
+        &mut self,
+        scrut: Expr,
+        arms: Vec<Arm>,
+        kw: Span,
+    ) -> Result<Vec<Stmt>, Diagnostic> {
+        self.check_covers(&arms, kw)?;
+        let tmp = self.fresh();
+        let var = |span| Expr::Var(tmp.clone(), span);
+        let last = arms.len() - 1;
+        let mut tail: Option<Block> = None;
+        let mut chain: Option<Stmt> = None;
+        for (i, arm) in arms.into_iter().enumerate().rev() {
+            let Arm {
+                pats,
+                mut body,
+                span,
+            } = arm;
+            if matches!(pats[0], Pat::Wild) {
+                if i != last {
+                    return Err(Diagnostic::new(
+                        span,
+                        "el caso `_` coincide con todo: debe ser el último del `match`",
+                    ));
+                }
+                tail = Some(body);
+                continue;
+            }
+            let mut cond: Option<Expr> = None;
+            for pat in pats {
+                let one = match pat {
+                    Pat::Value(e) => {
+                        let sp = e.span();
+                        Expr::Binary {
+                            op: BinOp::Eq,
+                            lhs: Box::new(var(sp)),
+                            rhs: Box::new(e),
+                            span: sp,
+                        }
+                    }
+                    Pat::Typed(name, name_span, ty) => {
+                        body.stmts.insert(
+                            0,
+                            Stmt::Let {
+                                name,
+                                name_span,
+                                mutable: false,
+                                ty: None,
+                                init: Expr::Cast {
+                                    expr: Box::new(var(name_span)),
+                                    ty: ty.clone(),
+                                    span: name_span,
+                                },
+                                span: name_span,
+                            },
+                        );
+                        Expr::Is {
+                            expr: Box::new(var(name_span)),
+                            ty,
+                            span: name_span,
+                        }
+                    }
+                    Pat::Wild => unreachable!("verificado arriba"),
+                };
+                cond = Some(match cond {
+                    None => one,
+                    Some(prev) => {
+                        let sp = prev.span().to(one.span());
+                        Expr::Binary {
+                            op: BinOp::Or,
+                            lhs: Box::new(prev),
+                            rhs: Box::new(one),
+                            span: sp,
+                        }
+                    }
+                });
+            }
+            let otherwise = match chain.take() {
+                Some(next) => Some(Block {
+                    span: next.span(),
+                    stmts: vec![next],
+                }),
+                None => tail.take().or_else(|| Some(self.no_match(kw))),
+            };
+            chain = Some(Stmt::If {
+                cond: cond.expect("al menos un patrón"),
+                then: body,
+                otherwise,
+                span,
+            });
+        }
+        let init_span = scrut.span();
+        let mut out = vec![Stmt::Let {
+            name: tmp.clone(),
+            name_span: init_span,
+            mutable: false,
+            ty: None,
+            init: scrut,
+            span: init_span,
+        }];
+        match (chain, tail) {
+            (Some(c), _) => out.push(c),
+            // Solo hay un `_`: su cuerpo se ejecuta siempre.
+            (None, Some(body)) => out.extend(body.stmts),
+            (None, None) => unreachable!("hay al menos un caso"),
+        }
+        Ok(out)
+    }
+
+    /// Un `match` sobre variantes de un enumerado de este archivo, sin `_`, tiene que nombrarlas todas.
+    fn check_covers(&self, arms: &[Arm], kw: Span) -> Result<(), Diagnostic> {
+        let mut owner: Option<&str> = None;
+        let mut seen: Vec<&str> = Vec::new();
+        for arm in arms {
+            for pat in &arm.pats {
+                match pat {
+                    Pat::Value(Expr::Var(full, _)) => {
+                        let Some((e, v)) = full.split_once('.') else {
+                            return Ok(());
+                        };
+                        if !self.enums.contains_key(e) || owner.is_some_and(|o| o != e) {
+                            return Ok(());
+                        }
+                        owner = Some(e);
+                        seen.push(v);
+                    }
+                    // `_`, un tipo o cualquier otro valor: no es un `match` solo de variantes.
+                    _ => return Ok(()),
+                }
+            }
+        }
+        let Some(owner) = owner else { return Ok(()) };
+        let missing: Vec<String> = self.enums[owner]
+            .iter()
+            .filter(|v| !seen.contains(&v.as_str()))
+            .map(|v| format!("`{owner}.{v}`"))
+            .collect();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        Err(Diagnostic::new(
+            kw,
+            format!(
+                "este `match` no cubre {}: añade esos casos o un caso `_`",
+                missing.join(", ")
+            ),
+        ))
+    }
+
+    /// `fail Fallo("...")` para cuando ningún caso de un `match` coincide.
+    fn no_match(&self, span: Span) -> Block {
+        Block {
+            stmts: vec![Stmt::Fail(
+                Expr::Call {
+                    name: "Fallo".into(),
+                    type_args: Vec::new(),
+                    args: vec![Expr::Str(
+                        "ningún caso del `match` coincide con el valor".into(),
+                        span,
+                    )],
+                    span,
+                },
+                span,
+            )],
+            span,
+        }
+    }
+
+    fn match_stmt(&mut self) -> Result<Stmt, Diagnostic> {
+        let kw = self.bump().span;
+        let (scrut, arms, close) = self.match_arms(false)?;
+        let span = kw.to(close);
+        let stmts = self.match_chain(scrut, arms, kw)?;
+        // Un bloque propio (`if true`) para que la variable temporal no se vea fuera. La rama `else` nunca
+        // se ejecuta; hace que el verificador vea que el `match` termina igual que sus casos.
+        Ok(Stmt::If {
+            cond: Expr::Bool(true, kw),
+            then: Block { stmts, span },
+            otherwise: Some(self.no_match(kw)),
+            span,
+        })
+    }
+
+    /// `match` usado como valor: se evalúa en una lambda que se llama al instante.
+    fn match_expr(&mut self, kw: Span) -> Result<Expr, Diagnostic> {
+        let (scrut, arms, close) = self.match_arms(true)?;
+        let span = kw.to(close);
+        let stmts = self.match_chain(scrut, arms, kw)?;
+        Ok(immediate(stmts, span))
+    }
+
+    /// `if cond { a } else { b }` usado como valor.
+    fn if_expr(&mut self, kw: Span) -> Result<Expr, Diagnostic> {
+        let cond = self.condition_expr()?;
+        let a = self.braced_expr()?;
+        self.skip_newlines();
+        if self.peek().kind != TokenKind::Else {
+            return Err(self.error_here(
+                "un `if` usado como valor necesita `else` (si no, ¿qué valor tiene?)".into(),
+            ));
+        }
+        self.bump();
+        let b = if self.peek().kind == TokenKind::If {
+            let inner = self.bump().span;
+            self.if_expr(inner)?
+        } else {
+            self.braced_expr()?
+        };
+        let span = kw.to(b.span());
+        let ret = |e: Expr| {
+            let s = e.span();
+            Block {
+                stmts: vec![Stmt::Return(Some(e), s)],
+                span: s,
+            }
+        };
+        let stmt = Stmt::If {
+            cond,
+            then: ret(a),
+            otherwise: Some(ret(b)),
+            span,
+        };
+        Ok(immediate(vec![stmt], span))
+    }
+
+    fn braced_expr(&mut self) -> Result<Expr, Diagnostic> {
+        self.expect(TokenKind::LBrace, "`{` y el valor")?;
+        self.skip_newlines();
+        let value = self.nested(|p| p.expr(0))?;
+        self.skip_newlines();
+        self.expect(TokenKind::RBrace, "`}` después del valor")?;
+        Ok(value)
     }
 
     fn block(&mut self) -> Result<Block, Diagnostic> {
@@ -475,6 +980,10 @@ impl Parser {
             TokenKind::Break | TokenKind::Continue => self.jump_stmt(),
             TokenKind::Fn => Err(self.error_here(
                 "las funciones solo se pueden declarar al nivel superior del archivo".into(),
+            )),
+            TokenKind::Match => self.match_stmt(),
+            TokenKind::Enum => Err(self.error_here(
+                "los enumerados solo se pueden declarar al nivel superior del archivo".into(),
             )),
             TokenKind::Attempt => self.attempt_stmt(),
             TokenKind::Fail => {
@@ -1151,6 +1660,8 @@ impl Parser {
                 inner
             }
             TokenKind::LBrace => self.lambda(token.span)?,
+            TokenKind::Match => self.match_expr(token.span)?,
+            TokenKind::If => self.if_expr(token.span)?,
             TokenKind::This => Expr::This(token.span),
             TokenKind::Nil => Expr::Nil(token.span),
             TokenKind::Super => {
@@ -1279,6 +1790,13 @@ impl Parser {
                             args,
                             span,
                         };
+                    } else if matches!(&lhs, Expr::Var(owner, _) if self.enums.contains_key(owner))
+                    {
+                        // `Color.Rojo`: la constante global de esa variante.
+                        let Expr::Var(owner, owner_span) = &lhs else {
+                            unreachable!("verificado arriba")
+                        };
+                        lhs = Expr::Var(format!("{owner}.{name}"), owner_span.to(name_span));
                     } else {
                         let span = lhs.span().to(name_span);
                         lhs = Expr::Field {
@@ -1365,8 +1883,12 @@ impl Parser {
                         fn_depth: self.fn_depth,
                         loop_depth: self.loop_depth,
                         no_trailing: false,
+                        tmp: self.tmp,
+                        enums: self.enums.clone(),
                     };
-                    let expr = inner.expr(0)?;
+                    let expr = inner.expr(0);
+                    self.tmp = inner.tmp;
+                    let expr = expr?;
                     if inner.peek().kind != TokenKind::RBrace {
                         return Err(inner.error_here(format!(
                             "la interpolación `${{...}}` admite una sola expresión, pero se encontró {}",

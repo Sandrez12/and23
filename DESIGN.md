@@ -129,7 +129,7 @@ Workspace de Rust en `crates/`:
 - Las anotaciones de tipo (`n: Int`, `-> Int`) son obligatorias en los parámetros y desde M2 se verifican.
 - Recursión limitada a 100 000 llamadas anidadas (configurable con `--max-depth`): más allá es un error con posición, no un cierre del proceso.
 - Desde M1b esos errores de nombres y aridad se informan al compilar, no al ejecutar.
-- Palabras clave: `fix mut fn if else while return break continue true false show` (desde M4 `thing this`, desde M5 `kind super is as` y desde M6 `nil attempt rescue fail`).
+- Palabras clave: `fix mut fn if else while return break continue true false show` (desde M4 `thing this`, desde M5 `kind super is as` desde M6 `nil attempt rescue fail` y, después de M11, `enum match`).
 
 ### Tipos (M2)
 
@@ -563,12 +563,37 @@ Plan: reescribir el compilador en And23 por etapas, comprobando cada una contra 
     una `Lista<Str>` en O(n) y el lexer trabaja sobre ella.
   - Crear un carácter desde su código: `desdeCodigo(n)` (para los escapes Unicode de las cadenas; nil si no es un punto de código válido).
   - `une(partes, sep)` era cuadrática (concatenaba de una en una; 8,8 s para 375 KB). Ahora es una nativa lineal.
-- **Huecos que siguen** (el lexer los rodea, pero el parser los notará): no hay posiciones (el lexer de Rust lleva el byte inicial y final de
-  cada token y el de And23 no, porque no hay forma de pasar de un índice de carácter a un byte); no hay enumerados ni `match`, así que el tipo de
-  un token es una cadena (`"Fix"`) y se compara con `==`; `if` no es una expresión (hay que escribir `if ... { return a }; return b`); los
-  decimales fuera de rango son un error y no `inf`.
-- **Siguiente.** Posiciones en los tokens, y entonces el parser. Antes conviene decidir si se añaden al lenguaje los enumerados y `match`
-  (cambiarían mucho cómo se escribe un AST) o se sigue con cadenas y clases.
+- **Huecos que quedaban, y cómo se cerraron:**
+  - Posiciones: cada token lleva `desde` y `hasta` (índices de carácter, `hasta` excluido) y el volcado los muestra como `@desde-hasta`.
+    Son posiciones de carácter y no de byte porque en And23 un texto se recorre por caracteres (el volcado de Rust las convierte; `--tokens`
+    quita la marca BOM como `leeArchivo`, así que las posiciones coinciden).
+  - Enumerados y `match`: ahora existen (sección siguiente).
+  - `if` como expresión: ahora existe.
+  - Decimales fuera de rango: dan `inf`, como en Rust.
+- **Siguiente.** El parser (AST con clases y `match`) y comprobarlo contra el de Rust.
+
+### Enumerados, `match` e `if` como valor
+
+Los tres se traducen en el parser a construcciones que ya existían, así el verificador, el compilador y la VM no cambiaron.
+
+- **`enum Color { Rojo, Verde }`** (solo en el nivel superior; variantes separadas por coma o por línea) declara una clase
+  `Color(fix nombre: Str, fix orden: Int)`, una constante global `Color.Rojo` por variante (un nombre interno que el código escribe
+  `Color.Rojo`) y `Color.todos: Lista<Color>`. Se comparan con `==` (identidad, y cada variante es una sola instancia). `open enum` abre
+  el tipo y todas sus variantes; desde otro archivo se escribe `Color.Rojo`, o `alias.Color.Rojo` con alias. El parser reconoce `Color.`
+  mirando los `enum` del propio archivo (aunque se declaren después de usarlos); el cargador de módulos resuelve los importados.
+- **`match valor { patrón, patrón -> cuerpo ... }`.** Patrones: una expresión (literal, variante, constante), que se compara con `==`;
+  `nombre: Tipo`, que prueba `is` y liga `nombre` con un `as`; y `_`, que debe ser el último caso. Varios valores con coma; los patrones de
+  tipo y `_` no se pueden combinar con coma. Como **sentencia** se traduce a `fix _mN = valor` y una cadena de `if`/`else` dentro de un
+  bloque propio, y cada cuerpo es una sentencia o un bloque (con `return`, `break` y `continue`). Como **valor** (`fix x = match ...`,
+  también en argumentos y en `${...}`) se traduce a una lambda que se llama al instante, y cada cuerpo es una expresión; en esa forma el
+  separador entre casos es opcional (dentro de `${}` no hay saltos de línea). Sin caso que coincida y sin `_`, falla con un `Fallo`.
+  Si todos los patrones son variantes de un enumerado del mismo archivo, falta `_` y no están todas, es un error de compilación que dice
+  cuáles faltan (para un enumerado importado esa comprobación no se hace).
+- **`if c { a } else { b }` como valor** (el `else` es obligatorio; admite `else if`). Una sentencia que empieza por `if` sigue siendo una
+  sentencia.
+- **Límites.** No hay guardas (`caso if cond ->`), ni desestructuración, ni variantes con datos: para eso se usan clases con `kind` y
+  `nombre: Tipo`. El `match` como valor cuesta una lambda por evaluación. `m.Color.Rojo` funciona, pero `Color` como nombre de variable local
+  tapa al enumerado.
 
 ## Fuentes de referencia
 

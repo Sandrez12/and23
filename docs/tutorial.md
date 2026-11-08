@@ -322,7 +322,68 @@ comentarios. `and23 fmt --check archivo.jb` no escribe nada y termina con error 
 
 Para VS Code hay una extensión con resaltado de sintaxis en `editors/vscode`.
 
-## 14. Dónde seguir
+## 14. Enumerados y `match`
+
+Un enumerado es un conjunto fijo de valores con nombre. Cada variante tiene `nombre` y `orden`, y `Dia.todos` es la
+`Lista` de todas:
+
+```jb
+enum Dia { Lunes, Martes, Sabado }
+
+fix hoy = Dia.Martes
+show(hoy.nombre)
+show(hoy.orden)
+show(Dia.todos.tam())
+show(hoy == Dia.Martes)
+```
+
+`match` elige un caso según el valor. Los patrones pueden ser valores (literales o variantes, varios separados con
+coma), `nombre: Tipo` (que comprueba el tipo y liga el valor) y `_` (todo lo demás, siempre el último):
+
+```jb
+enum Color { Rojo, Verde, Azul }
+
+fn frio(c: Color) -> Bool = match c {
+    Color.Azul -> true
+    Color.Rojo, Color.Verde -> false
+}
+
+kind Figura { fn area() -> Float }
+thing Circulo(fix r: Float) : Figura { fn area() -> Float = 3.0 * r * r }
+thing Cuadro(fix l: Float) : Figura { fn area() -> Float = l * l }
+
+fn describe(f: Figura) -> Str = match f {
+    c: Circulo -> "círculo de radio ${c.r}"
+    q: Cuadro -> "cuadro de lado ${q.l}"
+    _ -> "otra figura"
+}
+
+show(frio(Color.Azul))
+show(describe(Circulo(2.0)))
+
+fix n = 7
+match n {
+    0 -> show("cero")
+    1, 2, 3 -> show("pocos")
+    _ -> {
+        show("muchos")
+        show("de verdad")
+    }
+}
+```
+
+Como sentencia, cada caso es una sentencia o un bloque (y admite `return`, `break` y `continue`). Como valor, cada caso
+es una expresión. Si el `match` solo nombra variantes de un enumerado del mismo archivo y no tiene `_`, tiene que
+nombrarlas todas, o es un error. Si ningún caso coincide en cualquier otro `match`, falla con un `Fallo`.
+
+Un `if` también puede usarse como valor; entonces el `else` es obligatorio:
+
+```jb
+fn tam(n: Int) -> Str = if n < 10 { "chico" } else if n < 100 { "medio" } else { "grande" }
+show(tam(5) + " " + tam(500))
+```
+
+## 15. Dónde seguir
 
 - [`README.md`](../README.md): estado del proyecto y la lista de lo que funciona.
 - [`DESIGN.md`](../DESIGN.md): decisiones de diseño y límites conocidos de cada parte.

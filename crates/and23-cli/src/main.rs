@@ -172,9 +172,11 @@ fn dump_tokens(path: &str) -> u8 {
             return 1;
         }
     };
+    // Como `leeArchivo`, que quita la marca BOM: así las posiciones coinciden con las del lexer en And23.
+    let src = src.strip_prefix('\u{feff}').unwrap_or(&src).to_string();
     match and23_syntax::lexer::lex(&src) {
         Ok(tokens) => {
-            print!("{}", and23_syntax::lexer::dump(&tokens));
+            print!("{}", and23_syntax::lexer::dump(&tokens, &src));
             0
         }
         Err(d) => {

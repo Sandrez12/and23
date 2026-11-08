@@ -1,0 +1,29 @@
+// Enumerados, `match` e `if` como valor.
+
+enum Dia { Lunes, Martes, Sabado, Domingo }
+
+fn tipo(d: Dia) -> Str = match d {
+    Dia.Sabado, Dia.Domingo -> "fin de semana"
+    Dia.Lunes -> "arranque de la semana"
+    Dia.Martes -> "día laboral"
+}
+
+kind Figura { fn area() -> Float }
+thing Circulo(fix r: Float) : Figura { fn area() -> Float = 3.14 * r * r }
+thing Cuadro(fix l: Float) : Figura { fn area() -> Float = l * l }
+
+fn describe(f: Figura) -> Str = match f {
+    c: Circulo -> "círculo de radio ${c.r}"
+    q: Cuadro -> "cuadro de lado ${q.l}"
+    _ -> "figura desconocida"
+}
+
+fn tam(n: Int) -> Str = if n < 10 { "chico" } else if n < 100 { "medio" } else { "grande" }
+
+muestraDias()
+fn muestraDias() {
+    Dia.todos.paraCada { d -> show("${d.nombre} (${d.orden}): ${tipo(d)}") }
+}
+show(describe(Circulo(2.0)))
+show(describe(Cuadro(3.0)))
+show(tam(5) + ", " + tam(50) + ", " + tam(500))

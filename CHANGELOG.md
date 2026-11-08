@@ -6,6 +6,10 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). L
 ## Sin publicar
 
 ### Añadido
+- **Enumerados, `match` e `if` como valor.** `enum Color { Rojo, Verde }` (con `nombre`, `orden` y `Color.todos`), `match` por valor,
+  variante o tipo (`c: Circulo -> ...`) como sentencia y como expresión, con comprobación de que cubre todas las variantes de un enumerado
+  del mismo archivo, e `if c { a } else { b }` como valor. Nuevas palabras clave: `enum` y `match`. Ver `examples/enumerados.jb`.
+- `and23 --tokens` muestra la posición de cada token (`@desde-hasta`).
 - **Mn, etapa 1.** `mn/lexer.jb`, el lexer de And23 escrito en And23, comparado token por token con el de Rust (`and23 --tokens`).
 - Texto: `c.esLetra()`, `c.esAlfanumerico()`, `c.esDigito()`, `s.caracteres()` y `desdeCodigo(n)`.
 

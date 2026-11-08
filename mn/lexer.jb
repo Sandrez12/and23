@@ -5,8 +5,8 @@
 //
 //     and23 mn/lexer.jb archivo.jb
 //
-// Diferencias con el de Rust (ver DESIGN.md, «Mn»): no calcula posiciones (solo tokens) y un decimal fuera
-// de rango es un error en vez de `inf`.
+// Las posiciones (`@desde-hasta`) son índices de carácter, no de byte: en And23 un texto se recorre por
+// caracteres (ver DESIGN.md, «Mn»).
 
 thing ErrorLexico(m: Str) : Fallo(m)
 
@@ -14,13 +14,14 @@ thing ErrorLexico(m: Str) : Fallo(m)
 thing Parte(fix esCodigo: Bool, fix texto: Str, fix codigo: Lista<Token>)
 
 /// `tipo` es el nombre del token (`Fix`, `Plus`, `Int`...); `valor` el texto de los enteros, decimales e
-/// identificadores; `partes` solo se usa en las cadenas.
-thing Token(fix tipo: Str, fix valor: Str, fix partes: Lista<Parte>)
+/// identificadores; `partes` solo se usa en las cadenas. `desde` y `hasta` son su posición en el fuente, en
+/// caracteres (`hasta` excluido).
+thing Token(fix tipo: Str, fix valor: Str, fix partes: Lista<Parte>, fix desde: Int, fix hasta: Int)
 
 fix SIN_PARTES = Lista<Parte>()
 fix SIN_TOKENS = Lista<Token>()
 
-fn simple(tipo: Str) -> Token = Token(tipo, "", SIN_PARTES)
+fn simple(tipo: Str, desde: Int, hasta: Int) -> Token = Token(tipo, "", SIN_PARTES, desde, hasta)
 
 fn tabla(pares: Str) -> Mapa<Str, Str> {
     // "clave~Nombre clave~Nombre ..."
@@ -32,7 +33,7 @@ fn tabla(pares: Str) -> Mapa<Str, Str> {
     return m
 }
 
-fix PALABRAS = tabla("fix~Fix mut~Mut fn~Fn thing~Thing this~This kind~Kind super~Super is~Is as~As nil~Nil attempt~Attempt rescue~Rescue fail~Fail if~If else~Else while~While return~Return break~Break continue~Continue true~True false~False show~Show")
+fix PALABRAS = tabla("fix~Fix mut~Mut fn~Fn thing~Thing this~This kind~Kind super~Super is~Is as~As nil~Nil attempt~Attempt rescue~Rescue fail~Fail if~If else~Else while~While return~Return break~Break continue~Continue true~True false~False show~Show enum~Enum match~Match")
 
 // Operadores de dos caracteres y de uno.
 fix DOS = tabla("==~EqEq !=~NotEq <=~LtEq >=~GtEq &&~AndAnd ||~OrOr ->~Arrow +=~PlusEq -=~MinusEq *=~StarEq /=~SlashEq %=~PercentEq ?.~QDot ?:~Elvis")
@@ -62,7 +63,7 @@ thing Lexer(fix cs: Lista<Str>) {
             } else if c == "\u{feff}" && i == 0 {
                 i += 1
             } else if c == "\n" || c == ";" {
-                if !interp { tokens.agrega(simple("Newline")) }
+                if !interp { tokens.agrega(simple("Newline", i, i + 1)) }
                 i += 1
             } else if c == "/" && sig == "/" {
                 while i < cs.tam() && cs.obtiene(i) != "\n" { i += 1 }
@@ -79,12 +80,12 @@ thing Lexer(fix cs: Lista<Str>) {
                 fix dos = DOS.obtiene(c + sig)
                 fix uno = UNO.obtiene(c)
                 if dos != nil {
-                    tokens.agrega(simple(dos))
+                    tokens.agrega(simple(dos, i, i + 2))
                     i += 2
                 } else if uno != nil {
                     if uno == "LBrace" { profundidad += 1 }
                     if uno == "RBrace" && profundidad > 0 { profundidad -= 1 }
-                    tokens.agrega(simple(uno))
+                    tokens.agrega(simple(uno, i, i + 1))
                     i += 1
                 } else {
                     mut pista = ""
@@ -141,26 +142,29 @@ thing Lexer(fix cs: Lista<Str>) {
         i = j
         if esFloat {
             fix x = Float.parse(texto)
-            if x == nil { fail ErrorLexico("decimal fuera de rango") }
-            return Token("Float", "${x}", SIN_PARTES)
+            // Como en Rust, un decimal demasiado grande es infinito (los dígitos ya se comprobaron).
+            if x == nil { return Token("Float", "inf", SIN_PARTES, ini, j) }
+            return Token("Float", "${x}", SIN_PARTES, ini, j)
         }
         fix n = Int.parse(texto)
         if n == nil { fail ErrorLexico("entero fuera de rango (i64)") }
-        return Token("Int", "${n}", SIN_PARTES)
+        return Token("Int", "${n}", SIN_PARTES, ini, j)
     }
 
     fn identificador() -> Token {
         mut j = i
         while j < cs.tam() && (car(j).esAlfanumerico() || car(j) == "_") { j += 1 }
         fix nombre = texto(i, j)
+        fix ini = i
         i = j
         fix palabra = PALABRAS.obtiene(nombre)
-        if palabra != nil { return simple(palabra) }
-        return Token("Ident", nombre, SIN_PARTES)
+        if palabra != nil { return simple(palabra, ini, j) }
+        return Token("Ident", nombre, SIN_PARTES, ini, j)
     }
 
     /// Lee una cadena `"..."` con escapes e interpolaciones `${expr}`; la posición actual es la `"`.
     fn cadena() -> Token {
+        fix ini = i
         i += 1
         fix partes = Lista<Parte>()
         mut texto = ""
@@ -179,7 +183,7 @@ thing Lexer(fix cs: Lista<Str>) {
                 }
                 i += 2
                 fix codigo = corre(true)
-                codigo.agrega(simple("RBrace"))
+                codigo.agrega(simple("RBrace", i - 1, i))
                 partes.agrega(Parte(true, "", codigo))
             } else {
                 texto += c
@@ -187,7 +191,7 @@ thing Lexer(fix cs: Lista<Str>) {
             }
         }
         if texto != "" || partes.vacia() { partes.agrega(Parte(false, texto, SIN_TOKENS)) }
-        return Token("Str", "", partes)
+        return Token("Str", "", partes, ini, i)
     }
 
     /// El carácter que representa el escape que empieza en la posición actual (`\`); avanza la posición.
@@ -253,10 +257,11 @@ fn escapa(t: Str) -> Str {
 
 fn volcar(tokens: Lista<Token>, sangria: Str, salida: Lista<Str>) {
     tokens.paraCada { t ->
+        fix pos = "@${t.desde}-${t.hasta}"
         if t.tipo == "Int" || t.tipo == "Float" || t.tipo == "Ident" {
-            salida.agrega("${sangria}${t.tipo} ${t.valor}")
+            salida.agrega("${sangria}${t.tipo} ${t.valor} ${pos}")
         } else if t.tipo == "Str" {
-            salida.agrega("${sangria}Str")
+            salida.agrega("${sangria}Str ${pos}")
             t.partes.paraCada { p ->
                 if p.esCodigo {
                     salida.agrega("${sangria}  Code")
@@ -268,7 +273,7 @@ fn volcar(tokens: Lista<Token>, sangria: Str, salida: Lista<Str>) {
             }
             salida.agrega("${sangria}EndStr")
         } else {
-            salida.agrega("${sangria}${t.tipo}")
+            salida.agrega("${sangria}${t.tipo} ${pos}")
         }
     }
 }
@@ -280,8 +285,9 @@ fn main() {
         return
     }
     attempt {
-        fix tokens = Lexer(leeArchivo(a.obtiene(0)).caracteres()).corre(false)
-        tokens.agrega(simple("Eof"))
+        fix cs = leeArchivo(a.obtiene(0)).caracteres()
+        fix tokens = Lexer(cs).corre(false)
+        tokens.agrega(simple("Eof", cs.tam(), cs.tam()))
         fix salida = Lista<Str>()
         volcar(tokens, "", salida)
         show(une(salida, "\n"))

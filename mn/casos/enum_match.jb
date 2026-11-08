@@ -1,0 +1,4 @@
+enum E { A, B }
+match e { E.A -> show("a")
+ _ -> show("b") }
+fix m = match 1 { _ -> 2 }

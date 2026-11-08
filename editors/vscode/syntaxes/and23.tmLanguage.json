@@ -60,7 +60,7 @@
           }
         },
         {
-          "match": "\\b(thing|kind)\\s+([\\p{L}_][\\p{L}\\p{N}_]*)",
+          "match": "\\b(thing|kind|enum)\\s+([\\p{L}_][\\p{L}\\p{N}_]*)",
           "captures": {
             "1": { "name": "storage.type.class.and23" },
             "2": { "name": "entity.name.type.class.and23" }
@@ -80,7 +80,7 @@
       "patterns": [
         {
           "name": "keyword.control.and23",
-          "match": "\\b(if|else|while|return|break|continue|attempt|rescue|fail)\\b"
+          "match": "\\b(if|else|while|return|break|continue|attempt|rescue|fail|match)\\b"
         },
         {
           "name": "storage.modifier.and23",

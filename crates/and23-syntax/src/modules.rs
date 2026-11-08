@@ -739,10 +739,43 @@ impl Renamer {
                 name_span,
                 span,
             } => {
+                // `alias.Color.Rojo`: una variante de un enumerado de otro archivo.
+                if let Expr::Field {
+                    target: inner,
+                    name: owner,
+                    ..
+                } = &**target
+                {
+                    if let Expr::Var(alias, _) = &**inner {
+                        if !self.is_local(alias)
+                            && !self.scope.own.contains_key(alias)
+                            && !self.scope.imports.contains_key(alias)
+                        {
+                            let found =
+                                self.scope.aliases.get(alias).and_then(|a| {
+                                    a.exports.get(&format!("{owner}.{name}")).cloned()
+                                });
+                            if let Some(m) = found {
+                                *e = Expr::Var(m, *span);
+                                return;
+                            }
+                        }
+                    }
+                }
                 if let Expr::Var(alias, _) = &**target {
                     if let Some(m) = self.qualified(alias, name, *name_span) {
                         *e = Expr::Var(m, *span);
                         return;
+                    }
+                    // `Color.Rojo`: una variante de un enumerado (se declara como `Color.Rojo`).
+                    if !self.is_local(alias) {
+                        let full = format!("{alias}.{name}");
+                        if self.scope.own.contains_key(&full)
+                            || self.scope.imports.contains_key(&full)
+                        {
+                            *e = Expr::Var(self.resolve(&full, *span), *span);
+                            return;
+                        }
                     }
                 }
             }

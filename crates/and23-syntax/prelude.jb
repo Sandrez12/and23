@@ -627,3 +627,16 @@ fn _str_caracteres(s: Str) -> Lista<Str> = _listaDe(_caracteres(s))
 
 /// El carácter con ese punto de código Unicode, o nil si no es uno válido.
 fn desdeCodigo(n: Int) -> Str? = _desdeCodigo(n)
+
+// ---------------------------------------------------------------- enumerados
+
+/// La lista de las variantes de un enumerado (`Color.todos`).
+fn _variantes<T>(xs: [T]) -> Lista<T> {
+    fix l = Lista<T>()
+    mut i = 0
+    while i < len(xs) {
+        l.agrega(xs[i])
+        i += 1
+    }
+    return l
+}

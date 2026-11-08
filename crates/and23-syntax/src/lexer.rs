@@ -38,6 +38,8 @@ pub enum TokenKind {
     True,
     False,
     Show,
+    Enum,
+    Match,
     // Operadores.
     Plus,
     Minus,
@@ -122,6 +124,8 @@ impl TokenKind {
             T::True => "true",
             T::False => "false",
             T::Show => "show",
+            T::Enum => "enum",
+            T::Match => "match",
             T::Plus => "+",
             T::Minus => "-",
             T::Star => "*",
@@ -191,6 +195,8 @@ fn keyword(name: &str) -> Option<TokenKind> {
         "true" => T::True,
         "false" => T::False,
         "show" => T::Show,
+        "enum" => T::Enum,
+        "match" => T::Match,
         _ => return None,
     })
 }
@@ -545,38 +551,79 @@ fn escape_dump(text: &str) -> String {
     out
 }
 
-/// Volcado de los tokens en un formato de texto simple, sin posiciones: una línea por token y las
-/// cadenas con sus partes sangradas. Sirve para comparar este lexer con el escrito en And23 (`mn/lexer.jb`).
-pub fn dump(tokens: &[Token]) -> String {
+/// Volcado de los tokens en un formato de texto simple: una línea por token, con su posición `@desde-hasta`
+/// (en caracteres, no en bytes) y las cadenas con sus partes sangradas. Sirve para comparar este lexer con el
+/// escrito en And23 (`mn/lexer.jb`), que cuenta en caracteres.
+pub fn dump(tokens: &[Token], src: &str) -> String {
+    // índice de byte -> índice de carácter (los bytes que no empiezan un carácter no se consultan)
+    let mut chars_before = vec![0usize; src.len() + 1];
+    let mut n = 0;
+    for (b, c) in src.char_indices() {
+        chars_before[b] = n;
+        n += 1;
+        for k in 1..c.len_utf8() {
+            chars_before[b + k] = n;
+        }
+    }
+    chars_before[src.len()] = n;
     let mut out = String::new();
-    dump_into(tokens, 0, &mut out);
+    dump_into(tokens, 0, &chars_before, &mut out);
     out
 }
 
-fn dump_into(tokens: &[Token], indent: usize, out: &mut String) {
+fn dump_into(tokens: &[Token], indent: usize, at: &[usize], out: &mut String) {
     let pad = " ".repeat(indent);
     for token in tokens {
+        let pos = format!("@{}-{}", at[token.span.start], at[token.span.end]);
         match &token.kind {
-            TokenKind::Int(v) => out.push_str(&format!("{pad}Int {v}\n")),
-            TokenKind::Float(v) => out.push_str(&format!("{pad}Float {v:?}\n")),
-            TokenKind::Ident(name) => out.push_str(&format!("{pad}Ident {name}\n")),
+            TokenKind::Int(v) => out.push_str(&format!(
+                "{pad}Int {v} {pos}
+"
+            )),
+            TokenKind::Float(v) => out.push_str(&format!(
+                "{pad}Float {v:?} {pos}
+"
+            )),
+            TokenKind::Ident(name) => out.push_str(&format!(
+                "{pad}Ident {name} {pos}
+"
+            )),
             TokenKind::Str(parts) => {
-                out.push_str(&format!("{pad}Str\n"));
+                out.push_str(&format!(
+                    "{pad}Str {pos}
+"
+                ));
                 for part in parts {
                     match part {
                         StrPart::Text(text) => {
-                            out.push_str(&format!("{pad}  Text \"{}\"\n", escape_dump(text)));
+                            out.push_str(&format!(
+                                "{pad}  Text \"{}\"
+",
+                                escape_dump(text)
+                            ));
                         }
                         StrPart::Code(code) => {
-                            out.push_str(&format!("{pad}  Code\n"));
-                            dump_into(code, indent + 4, out);
-                            out.push_str(&format!("{pad}  EndCode\n"));
+                            out.push_str(&format!(
+                                "{pad}  Code
+"
+                            ));
+                            dump_into(code, indent + 4, at, out);
+                            out.push_str(&format!(
+                                "{pad}  EndCode
+"
+                            ));
                         }
                     }
                 }
-                out.push_str(&format!("{pad}EndStr\n"));
+                out.push_str(&format!(
+                    "{pad}EndStr
+"
+                ));
             }
-            other => out.push_str(&format!("{pad}{other:?}\n")),
+            other => out.push_str(&format!(
+                "{pad}{other:?} {pos}
+"
+            )),
         }
     }
 }
