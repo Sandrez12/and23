@@ -259,3 +259,64 @@ fn la_traza_de_una_recursion_infinita_se_resume() {
         .iter()
         .any(|(s, t)| s.is_none() && t.contains("llamadas más")));
 }
+
+// ---------------------------------------------------------------- texto para Mn
+
+#[test]
+fn se_clasifican_los_caracteres() {
+    let src = r#"
+show("a".esLetra())
+show("ñ".esLetra())
+show("日".esLetra())
+show("1".esLetra())
+show("".esLetra())
+show("_".esAlfanumerico())
+show("a1".esAlfanumerico())
+show("7".esDigito())
+show("٣".esDigito())
+show("12".esDigito())
+show("".esDigito())
+"#;
+    assert_eq!(
+        ok(src),
+        "true\ntrue\ntrue\nfalse\nfalse\nfalse\ntrue\ntrue\nfalse\ntrue\nfalse\n"
+    );
+}
+
+#[test]
+fn caracteres_trocea_por_caracter_y_desde_codigo_los_crea() {
+    let src = r#"
+show("añ😀".caracteres())
+show("".caracteres().tam())
+show(desdeCodigo(65))
+show(desdeCodigo(233))
+show(desdeCodigo(128512))
+show(desdeCodigo(55296))
+show(desdeCodigo(1114112))
+show(desdeCodigo(-1))
+"#;
+    assert_eq!(
+        ok(src),
+        "[\"a\", \"ñ\", \"😀\"]\n0\nA\né\n😀\nnil\nnil\nnil\n"
+    );
+}
+
+#[test]
+fn une_junta_muchas_partes() {
+    let src = r#"
+fix partes = Lista<Str>()
+mut i = 0
+while i < 3000 {
+    partes.agrega("p${i % 10}")
+    i += 1
+}
+fix todo = une(partes, ",")
+show(todo.largo())
+show(une(Lista<Str>(), "-") == "")
+fix dos = Lista<Str>()
+dos.agrega("a")
+dos.agrega("b")
+show(une(dos, ", "))
+"#;
+    assert_eq!(ok(src), "8999\ntrue\na, b\n");
+}

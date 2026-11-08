@@ -1,0 +1,4 @@
+show("a ${"b ${1 + 2} c"} d")
+show("${ xs.map { x -> x * 2 } }")
+show("")
+show("${1}${2}")

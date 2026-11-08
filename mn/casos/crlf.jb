@@ -1,0 +1,4 @@
+fix a = 1
+show(a)
+show("x
+y")

@@ -546,6 +546,30 @@ fix m = Mapa<Str, Int>()                                                // expl�
 - **Editor.** `editors/vscode` es una extensión sin código: una gramática TextMate (palabras clave, cadenas con `${}`, números con
   exponente, tipos, llamadas, operadores) y la configuración del lenguaje (comentarios, pares, sangría). No hay servidor de lenguaje.
 
+### Mn: auto-compilación (en curso)
+
+Plan: reescribir el compilador en And23 por etapas, comprobando cada una contra la de Rust. Etapa 1, el lexer.
+
+- **Etapa 1: `mn/lexer.jb`.** El lexer de And23 escrito en And23 (unas 330 líneas). Hace lo mismo que `lexer.rs` y vuelca los tokens con el
+  formato de `and23 --tokens archivo.jb` (una línea por token; las cadenas con sus partes sangradas; `Error mensaje` si el código no se puede
+  leer). `and23 mn/lexer.jb archivo.jb` y `and23 --tokens archivo.jb` tienen que dar exactamente lo mismo: el test
+  `el_lexer_escrito_en_and23_coincide_con_el_de_rust` lo exige sobre todos los ejemplos, el preludio, el propio `mn/lexer.jb` y 20 casos
+  límite de `mn/casos` (escapes, `${}` anidadas, Unicode, exponentes, CRLF, BOM, archivo vacío y cada error de lexer).
+- **Rendimiento.** 1,7 MB de código (el preludio repetido 100 veces, 423 101 tokens): 2,3 s el de And23 contra 0,16 s el de Rust, unas 14
+  veces más lento, con la misma salida.
+- **Huecos del lenguaje que apareció escribirlo, y qué se hizo:**
+  - Clasificar caracteres: no había forma. Ahora `c.esLetra()`, `c.esAlfanumerico()` (Unicode) y `c.esDigito()` (ASCII).
+  - Recorrer un texto: `s[i]` cuenta desde el principio cada vez (O(n)) y recorrer un archivo era cuadrático. Ahora `s.caracteres()` da
+    una `Lista<Str>` en O(n) y el lexer trabaja sobre ella.
+  - Crear un carácter desde su código: `desdeCodigo(n)` (para los escapes Unicode de las cadenas; nil si no es un punto de código válido).
+  - `une(partes, sep)` era cuadrática (concatenaba de una en una; 8,8 s para 375 KB). Ahora es una nativa lineal.
+- **Huecos que siguen** (el lexer los rodea, pero el parser los notará): no hay posiciones (el lexer de Rust lleva el byte inicial y final de
+  cada token y el de And23 no, porque no hay forma de pasar de un índice de carácter a un byte); no hay enumerados ni `match`, así que el tipo de
+  un token es una cadena (`"Fix"`) y se compara con `==`; `if` no es una expresión (hay que escribir `if ... { return a }; return b`); los
+  decimales fuera de rango son un error y no `inf`.
+- **Siguiente.** Posiciones en los tokens, y entonces el parser. Antes conviene decidir si se añaden al lenguaje los enumerados y `match`
+  (cambiarían mucho cómo se escribe un AST) o se sigue con cadenas y clases.
+
 ## Fuentes de referencia
 
 - Crafting Interpreters (VM de bytecode, GC): https://craftinginterpreters.com

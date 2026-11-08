@@ -3,6 +3,15 @@
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Las versiones siguen
 [SemVer](https://semver.org/lang/es/); mientras sea `0.x`, el lenguaje puede cambiar entre versiones.
 
+## Sin publicar
+
+### Añadido
+- **Mn, etapa 1.** `mn/lexer.jb`, el lexer de And23 escrito en And23, comparado token por token con el de Rust (`and23 --tokens`).
+- Texto: `c.esLetra()`, `c.esAlfanumerico()`, `c.esDigito()`, `s.caracteres()` y `desdeCodigo(n)`.
+
+### Cambiado
+- `une(partes, sep)` pasó de cuadrática a lineal.
+
 ## 0.3.0 - 2026-11-07
 
 ### Añadido

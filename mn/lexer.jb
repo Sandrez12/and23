@@ -1,0 +1,291 @@
+// Mn, paso 1: el lexer de And23 escrito en And23.
+//
+// Hace lo mismo que `crates/and23-syntax/src/lexer.rs` y vuelca los tokens con el mismo formato que
+// `and23 --tokens`, para poder comparar los dos sobre cualquier archivo:
+//
+//     and23 mn/lexer.jb archivo.jb
+//
+// Diferencias con el de Rust (ver DESIGN.md, «Mn»): no calcula posiciones (solo tokens) y un decimal fuera
+// de rango es un error en vez de `inf`.
+
+thing ErrorLexico(m: Str) : Fallo(m)
+
+/// Un trozo de cadena: texto literal, o los tokens de una interpolación `${...}`.
+thing Parte(fix esCodigo: Bool, fix texto: Str, fix codigo: Lista<Token>)
+
+/// `tipo` es el nombre del token (`Fix`, `Plus`, `Int`...); `valor` el texto de los enteros, decimales e
+/// identificadores; `partes` solo se usa en las cadenas.
+thing Token(fix tipo: Str, fix valor: Str, fix partes: Lista<Parte>)
+
+fix SIN_PARTES = Lista<Parte>()
+fix SIN_TOKENS = Lista<Token>()
+
+fn simple(tipo: Str) -> Token = Token(tipo, "", SIN_PARTES)
+
+fn tabla(pares: Str) -> Mapa<Str, Str> {
+    // "clave~Nombre clave~Nombre ..."
+    fix m = Mapa<Str, Str>()
+    pares.parte(" ").paraCada { par ->
+        fix i = par.indiceDe("~")
+        m.pone(par.trozo(0, i), par.trozo(i + 1, par.largo()))
+    }
+    return m
+}
+
+fix PALABRAS = tabla("fix~Fix mut~Mut fn~Fn thing~Thing this~This kind~Kind super~Super is~Is as~As nil~Nil attempt~Attempt rescue~Rescue fail~Fail if~If else~Else while~While return~Return break~Break continue~Continue true~True false~False show~Show")
+
+// Operadores de dos caracteres y de uno.
+fix DOS = tabla("==~EqEq !=~NotEq <=~LtEq >=~GtEq &&~AndAnd ||~OrOr ->~Arrow +=~PlusEq -=~MinusEq *=~StarEq /=~SlashEq %=~PercentEq ?.~QDot ?:~Elvis")
+fix UNO = tabla("+~Plus -~Minus *~Star /~Slash %~Percent =~Assign !~Bang <~Lt >~Gt (~LParen )~RParen {~LBrace }~RBrace [~LBracket ]~RBracket ,~Comma :~Colon .~Dot ?~Question")
+
+fn digitoHex(c: Str) -> Int = "0123456789abcdef".indiceDe(c.minus())
+
+thing Lexer(fix cs: Lista<Str>) {
+    mut i = 0
+
+    /// El carácter número `k`, o "" si no existe.
+    fn car(k: Int) -> Str {
+        if k >= 0 && k < cs.tam() { return cs.obtiene(k) }
+        return ""
+    }
+
+    /// Lee tokens desde la posición actual. Con `interp`, se detiene en la `}` que cierra una interpolación
+    /// y la consume; si no, lee hasta el final.
+    fn corre(interp: Bool) -> Lista<Token> {
+        fix tokens = Lista<Token>()
+        mut profundidad = 0
+        while i < cs.tam() {
+            fix c = cs.obtiene(i)
+            fix sig = car(i + 1)
+            if c == " " || c == "\t" || c == "\r" {
+                i += 1
+            } else if c == "\u{feff}" && i == 0 {
+                i += 1
+            } else if c == "\n" || c == ";" {
+                if !interp { tokens.agrega(simple("Newline")) }
+                i += 1
+            } else if c == "/" && sig == "/" {
+                while i < cs.tam() && cs.obtiene(i) != "\n" { i += 1 }
+            } else if c == "\"" {
+                tokens.agrega(cadena())
+            } else if c == "}" && interp && profundidad == 0 {
+                i += 1
+                return tokens
+            } else if c.esDigito() {
+                tokens.agrega(numero())
+            } else if c.esLetra() || c == "_" {
+                tokens.agrega(identificador())
+            } else {
+                fix dos = DOS.obtiene(c + sig)
+                fix uno = UNO.obtiene(c)
+                if dos != nil {
+                    tokens.agrega(simple(dos))
+                    i += 2
+                } else if uno != nil {
+                    if uno == "LBrace" { profundidad += 1 }
+                    if uno == "RBrace" && profundidad > 0 { profundidad -= 1 }
+                    tokens.agrega(simple(uno))
+                    i += 1
+                } else {
+                    mut pista = ""
+                    if c == "&" { pista = " (¿quisiste escribir `&&`?)" }
+                    if c == "|" { pista = " (¿quisiste escribir `||`?)" }
+                    fail ErrorLexico("carácter inesperado `${c}`${pista}")
+                }
+            }
+        }
+        if interp { fail ErrorLexico("esta interpolación no se cierra: falta `}`") }
+        return tokens
+    }
+
+    /// Los caracteres de la posición `desde` (incluida) a `hasta` (excluida), como una cadena.
+    fn texto(desde: Int, hasta: Int) -> Str {
+        mut r = ""
+        mut p = desde
+        while p < hasta {
+            r += cs.obtiene(p)
+            p += 1
+        }
+        return r
+    }
+
+    fn salteaDigitos(desde: Int) -> Int {
+        mut j = desde
+        while j < cs.tam() && (car(j).esDigito() || car(j) == "_") { j += 1 }
+        return j
+    }
+
+    fn numero() -> Token {
+        fix ini = i
+        mut j = salteaDigitos(i)
+        mut esFloat = false
+        if car(j) == "." && car(j + 1).esDigito() {
+            esFloat = true
+            j = salteaDigitos(j + 1)
+        }
+        // Exponente: `1e3`, `2.5E-4`, `1e+9` (solo si tras la `e` hay dígitos).
+        if car(j) == "e" || car(j) == "E" {
+            mut k = j + 1
+            if car(k) == "+" || car(k) == "-" { k += 1 }
+            if car(k).esDigito() {
+                esFloat = true
+                j = salteaDigitos(k)
+            }
+        }
+        mut texto = ""
+        mut p = ini
+        while p < j {
+            if cs.obtiene(p) != "_" { texto += cs.obtiene(p) }
+            p += 1
+        }
+        i = j
+        if esFloat {
+            fix x = Float.parse(texto)
+            if x == nil { fail ErrorLexico("decimal fuera de rango") }
+            return Token("Float", "${x}", SIN_PARTES)
+        }
+        fix n = Int.parse(texto)
+        if n == nil { fail ErrorLexico("entero fuera de rango (i64)") }
+        return Token("Int", "${n}", SIN_PARTES)
+    }
+
+    fn identificador() -> Token {
+        mut j = i
+        while j < cs.tam() && (car(j).esAlfanumerico() || car(j) == "_") { j += 1 }
+        fix nombre = texto(i, j)
+        i = j
+        fix palabra = PALABRAS.obtiene(nombre)
+        if palabra != nil { return simple(palabra) }
+        return Token("Ident", nombre, SIN_PARTES)
+    }
+
+    /// Lee una cadena `"..."` con escapes e interpolaciones `${expr}`; la posición actual es la `"`.
+    fn cadena() -> Token {
+        i += 1
+        fix partes = Lista<Parte>()
+        mut texto = ""
+        while true {
+            if i >= cs.tam() { fail ErrorLexico("esta cadena no se cierra: falta `\"`") }
+            fix c = cs.obtiene(i)
+            if c == "\"" {
+                i += 1
+                break
+            } else if c == "\\" {
+                texto += escape()
+            } else if c == "$" && car(i + 1) == "{" {
+                if texto != "" {
+                    partes.agrega(Parte(false, texto, SIN_TOKENS))
+                    texto = ""
+                }
+                i += 2
+                fix codigo = corre(true)
+                codigo.agrega(simple("RBrace"))
+                partes.agrega(Parte(true, "", codigo))
+            } else {
+                texto += c
+                i += 1
+            }
+        }
+        if texto != "" || partes.vacia() { partes.agrega(Parte(false, texto, SIN_TOKENS)) }
+        return Token("Str", "", partes)
+    }
+
+    /// El carácter que representa el escape que empieza en la posición actual (`\`); avanza la posición.
+    fn escape() -> Str {
+        fix e = car(i + 1)
+        if e == "n" { i += 2; return "\n" }
+        if e == "t" { i += 2; return "\t" }
+        if e == "r" { i += 2; return "\r" }
+        if e == "0" { i += 2; return "\u{0}" }
+        if e == "\\" { i += 2; return "\\" }
+        if e == "\"" { i += 2; return "\"" }
+        if e == "$" { i += 2; return "$" }
+        if e == "u" && car(i + 2) == "{" {
+            mut j = i + 3
+            mut valor = 0
+            mut valido = true
+            if car(j) == "}" { valido = false }
+            while j < cs.tam() && cs.obtiene(j) != "}" {
+                fix d = digitoHex(cs.obtiene(j))
+                if d < 0 || valor > 1114111 {
+                    valido = false
+                } else {
+                    valor = valor * 16 + d
+                }
+                j += 1
+            }
+            if j < cs.tam() && valido {
+                fix ch = desdeCodigo(valor)
+                if ch != nil {
+                    i = j + 1
+                    return ch
+                }
+            }
+        }
+        fail ErrorLexico("escape no válido en la cadena (usa \\n, \\t, \\r, \\0, \\\\, \\\", \\$ o \\u{...})")
+    }
+}
+
+// ---------------------------------------------------------------- volcado
+
+/// Escapa el texto de una parte igual que `and23 --tokens`.
+fn escapa(t: Str) -> Str {
+    mut r = ""
+    t.caracteres().paraCada { c ->
+        if c == "\\" {
+            r += "\\\\"
+        } else if c == "\"" {
+            r += "\\\""
+        } else if c == "\n" {
+            r += "\\n"
+        } else if c == "\r" {
+            r += "\\r"
+        } else if c == "\t" {
+            r += "\\t"
+        } else if c == "\u{0}" {
+            r += "\\0"
+        } else {
+            r += c
+        }
+    }
+    return r
+}
+
+fn volcar(tokens: Lista<Token>, sangria: Str, salida: Lista<Str>) {
+    tokens.paraCada { t ->
+        if t.tipo == "Int" || t.tipo == "Float" || t.tipo == "Ident" {
+            salida.agrega("${sangria}${t.tipo} ${t.valor}")
+        } else if t.tipo == "Str" {
+            salida.agrega("${sangria}Str")
+            t.partes.paraCada { p ->
+                if p.esCodigo {
+                    salida.agrega("${sangria}  Code")
+                    volcar(p.codigo, sangria + "    ", salida)
+                    salida.agrega("${sangria}  EndCode")
+                } else {
+                    salida.agrega("${sangria}  Text \"${escapa(p.texto)}\"")
+                }
+            }
+            salida.agrega("${sangria}EndStr")
+        } else {
+            salida.agrega("${sangria}${t.tipo}")
+        }
+    }
+}
+
+fn main() {
+    fix a = argumentos()
+    if a.tam() != 1 {
+        show("uso: and23 mn/lexer.jb archivo.jb")
+        return
+    }
+    attempt {
+        fix tokens = Lexer(leeArchivo(a.obtiene(0)).caracteres()).corre(false)
+        tokens.agrega(simple("Eof"))
+        fix salida = Lista<Str>()
+        volcar(tokens, "", salida)
+        show(une(salida, "\n"))
+    } rescue e: ErrorLexico {
+        show("Error ${e.msg}")
+    }
+}

@@ -93,6 +93,13 @@ natives! {
     "_listaDir"(Str) -> OptArrStr;
     "_creaDir"(Str) -> Bool;
     "_esDir"(Str) -> Bool;
+    // Texto para escribir un lexer en And23 (Mn).
+    "_esLetra"(Str) -> Bool;
+    "_esAlfanum"(Str) -> Bool;
+    "_esDigito"(Str) -> Bool;
+    "_caracteres"(Str) -> ArrStr;
+    "_desdeCodigo"(Int) -> OptStr;
+    "_une"(ArrStr, Str) -> Str;
     // M11: las atiende el planificador de la VM (desde `FIRST_SCHED_NATIVE`), no `natives::call`.
     "_lanza"(Fn0) -> Unit;
     "cede"() -> Unit;
@@ -102,7 +109,7 @@ natives! {
 }
 
 /// Id de la primera nativa que atiende el planificador de la VM: todas las siguientes también.
-pub const FIRST_SCHED_NATIVE: u32 = 33;
+pub const FIRST_SCHED_NATIVE: u32 = 39;
 
 /// Id y firma de la función nativa `name`.
 pub fn native(name: &str) -> Option<(u32, &'static Native)> {

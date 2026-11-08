@@ -6,6 +6,8 @@ Los archivos de código usan la extensión `.jb`. Los identificadores admiten Un
 
 > **Estado: M11.** Hoy verifica tipos y compila a bytecode programas con variables, `if`/`while`, funciones recursivas, cadenas con interpolación, arreglos, clases, herencia, interfaces, excepciones, tipos opcionales, genéricos, lambdas con closures, proyectos de varios archivos una biblioteca estándar inicial (texto, números y archivos) y tareas con canales, y los ejecuta en una VM de pila con recolector de basura (`fib(30)` en ~0,13 s, unas 9 veces más rápido que el intérprete de árbol anterior). Un programa mal tipado se rechaza con su línea y columna antes de ejecutar nada. El resto llega en los siguientes hitos (ver [`DESIGN.md`](DESIGN.md)).
 
+**Auto-compilación (Mn):** `mn/lexer.jb` es el lexer de And23 escrito en And23; un test lo compara con el de Rust. Ver «Mn» en [`DESIGN.md`](DESIGN.md).
+
 **Primeros pasos:** [`docs/tutorial.md`](docs/tutorial.md) recorre el lenguaje con ejemplos que se ejecutan tal cual. Los cambios de cada versión están en [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Cómo se ve

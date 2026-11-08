@@ -14,6 +14,7 @@ Uso:
   and23                abre el REPL (escribe :q o Ctrl+Z para salir)
   and23 --disasm <archivo.jb>   muestra el bytecode en vez de ejecutar
   and23 fmt [--check] <archivos.jb...>   da formato a los archivos (con --check solo avisa de los que cambiarían)
+  and23 --tokens <archivo.jb>   vuelca los tokens (para comparar con el lexer escrito en And23, mn/lexer.jb)
   and23 --prueba <archivo.jb>   ejecuta los bloques `prueba` del archivo y resume el resultado
   and23 --tree <archivo.jb>     usa el intérprete de árbol (referencia de M1a; sin cadenas)
   and23 --gc-stress ...         recolecta basura en cada punto seguro (prueba del GC)
@@ -61,6 +62,7 @@ fn dispatch(args: &[String]) -> u8 {
             0
         }
         [cmd, rest @ ..] if cmd == "fmt" => run_fmt(rest),
+        [flag, path] if flag == "--tokens" => dump_tokens(path),
         [flag, path] if flag == "--disasm" => disasm_file(path),
         [flag, path] if flag == "--tree" => run_file_tree(path),
         [flag, path] if flag == "--prueba" => run_tests(path, stress),
@@ -158,6 +160,28 @@ fn run_file(path: &str, options: Options) -> u8 {
     // La salida normal debe quedar escrita antes del mensaje de error.
     let _ = session.out().flush();
     finish(result)
+}
+
+/// `and23 --tokens archivo`: los tokens del archivo (sin cargar `use`), o `Error mensaje` si no se puede
+/// leer el código.
+fn dump_tokens(path: &str) -> u8 {
+    let src = match std::fs::read_to_string(path) {
+        Ok(src) => src,
+        Err(e) => {
+            eprintln!("error: no se pudo leer `{path}`: {e}");
+            return 1;
+        }
+    };
+    match and23_syntax::lexer::lex(&src) {
+        Ok(tokens) => {
+            print!("{}", and23_syntax::lexer::dump(&tokens));
+            0
+        }
+        Err(d) => {
+            println!("Error {}", d.message);
+            0
+        }
+    }
 }
 
 /// `and23 fmt [--check] archivos...`: reescribe cada archivo con el formato estándar. Con `--check` no

@@ -1,0 +1,7 @@
+// solo un comentario
+fix x = 1 // al final
+;;
+
+
+show(x); show(x)
+// sin salto final

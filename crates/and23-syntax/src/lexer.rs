@@ -528,6 +528,59 @@ impl Lexer<'_> {
     }
 }
 
+/// Texto de un trozo de cadena en el volcado: solo se escapan `\`, `"` y los caracteres de control comunes.
+fn escape_dump(text: &str) -> String {
+    let mut out = String::new();
+    for c in text.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\0' => out.push_str("\\0"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Volcado de los tokens en un formato de texto simple, sin posiciones: una línea por token y las
+/// cadenas con sus partes sangradas. Sirve para comparar este lexer con el escrito en And23 (`mn/lexer.jb`).
+pub fn dump(tokens: &[Token]) -> String {
+    let mut out = String::new();
+    dump_into(tokens, 0, &mut out);
+    out
+}
+
+fn dump_into(tokens: &[Token], indent: usize, out: &mut String) {
+    let pad = " ".repeat(indent);
+    for token in tokens {
+        match &token.kind {
+            TokenKind::Int(v) => out.push_str(&format!("{pad}Int {v}\n")),
+            TokenKind::Float(v) => out.push_str(&format!("{pad}Float {v:?}\n")),
+            TokenKind::Ident(name) => out.push_str(&format!("{pad}Ident {name}\n")),
+            TokenKind::Str(parts) => {
+                out.push_str(&format!("{pad}Str\n"));
+                for part in parts {
+                    match part {
+                        StrPart::Text(text) => {
+                            out.push_str(&format!("{pad}  Text \"{}\"\n", escape_dump(text)));
+                        }
+                        StrPart::Code(code) => {
+                            out.push_str(&format!("{pad}  Code\n"));
+                            dump_into(code, indent + 4, out);
+                            out.push_str(&format!("{pad}  EndCode\n"));
+                        }
+                    }
+                }
+                out.push_str(&format!("{pad}EndStr\n"));
+            }
+            other => out.push_str(&format!("{pad}{other:?}\n")),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

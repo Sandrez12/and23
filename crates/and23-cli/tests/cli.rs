@@ -1097,3 +1097,48 @@ fn fmt_sin_archivos_o_con_archivo_inexistente_es_un_error() {
     assert_eq!(missing.status.code(), Some(1));
     assert!(stderr(&missing).contains("no se pudo leer"));
 }
+
+fn jb_files(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+    for entry in std::fs::read_dir(dir).unwrap().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            jb_files(&path, out);
+        } else if path.extension().is_some_and(|e| e == "jb") {
+            out.push(path);
+        }
+    }
+}
+
+/// Mn, paso 1: el lexer escrito en And23 (`mn/lexer.jb`) tiene que producir exactamente los mismos
+/// tokens (y los mismos errores) que el de Rust en todos los ejemplos, el preludio, él mismo y los
+/// casos límite de `mn/casos`.
+#[test]
+fn el_lexer_escrito_en_and23_coincide_con_el_de_rust() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut files = vec![
+        root.join("crates/and23-syntax/prelude.jb"),
+        root.join("mn/lexer.jb"),
+    ];
+    jb_files(&root.join("examples"), &mut files);
+    jb_files(&root.join("mn/casos"), &mut files);
+    assert!(files.len() > 30, "{} archivos", files.len());
+    for file in files {
+        let rust = Command::new(env!("CARGO_BIN_EXE_and23"))
+            .arg("--tokens")
+            .arg(&file)
+            .output()
+            .unwrap();
+        let and23 = Command::new(env!("CARGO_BIN_EXE_and23"))
+            .arg("mn/lexer.jb")
+            .arg(&file)
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(and23.status.success(), "{file:?}: {}", stderr(&and23));
+        assert_eq!(
+            stdout(&and23),
+            stdout(&rust),
+            "tokens distintos en {file:?}"
+        );
+    }
+}

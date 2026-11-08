@@ -1,0 +1,3 @@
+fix ñandú = "acción 😀 日本語"
+fix año_2 = 1
+show(ñandú)

@@ -1,7 +1,7 @@
 //! Funciones nativas de la biblioteca estándar (M10). Los índices de texto son de caracteres,
 //! igual que `len`. Los ids siguen el orden de `and23_types::NATIVES`.
 
-use crate::heap::Heap;
+use crate::heap::{Heap, Object};
 use crate::value::Value;
 use std::io::{BufRead, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -308,6 +308,57 @@ pub fn call(
             });
         }
         32 => return Ok(Value::Bool(std::path::Path::new(text(heap, a(0))).is_dir())),
+        // _esLetra(s), _esAlfanum(s): no vacía y todos sus caracteres son letras (o letras y dígitos Unicode)
+        33 => {
+            let s = text(heap, a(0));
+            return Ok(Value::Bool(
+                !s.is_empty() && s.chars().all(char::is_alphabetic),
+            ));
+        }
+        34 => {
+            let s = text(heap, a(0));
+            return Ok(Value::Bool(
+                !s.is_empty() && s.chars().all(char::is_alphanumeric),
+            ));
+        }
+        // _esDigito(s): no vacía y todos sus caracteres son dígitos ASCII
+        35 => {
+            let s = text(heap, a(0));
+            return Ok(Value::Bool(
+                !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()),
+            ));
+        }
+        // _caracteres(s): un arreglo con cada carácter como cadena
+        36 => {
+            let chars: Vec<String> = text(heap, a(0)).chars().map(String::from).collect();
+            let items: Vec<Value> = chars.into_iter().map(|c| heap.alloc_str(c)).collect();
+            return Ok(heap.alloc_array(items));
+        }
+        // _desdeCodigo(n): el carácter con ese punto de código, o nil si no es válido
+        37 => {
+            return Ok(
+                match u32::try_from(int(a(0))).ok().and_then(char::from_u32) {
+                    Some(c) => heap.alloc_str(c.to_string()),
+                    None => Value::Nil,
+                },
+            );
+        }
+        // _une(partes, sep): une las cadenas de un arreglo en O(n)
+        38 => {
+            let Value::Obj(r) = a(0) else {
+                unreachable!("el verificador garantiza un arreglo")
+            };
+            let sep = text(heap, a(1)).to_string();
+            let Object::Array(items) = heap.get(r) else {
+                unreachable!("el verificador garantiza un arreglo")
+            };
+            let joined = items
+                .iter()
+                .map(|v| text(heap, *v))
+                .collect::<Vec<&str>>()
+                .join(&sep);
+            joined
+        }
         _ => return Err(format!("función nativa desconocida: {id}")),
     };
     Ok(heap.alloc_str(result))

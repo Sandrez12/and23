@@ -1,0 +1,1 @@
+show("a\nb\tc\rd\0e\\f\"g\$h\u{41}\u{1F600}\u{e9}")

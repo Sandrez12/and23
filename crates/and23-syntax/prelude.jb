@@ -343,16 +343,7 @@ fn _str_lineas(s: Str) -> Lista<Str> {
 }
 
 /// Une las cadenas de `partes` poniendo `sep` entre ellas.
-fn une(partes: Lista<Str>, sep: Str) -> Str {
-    mut texto = ""
-    mut i = 0
-    while i < partes.tam() {
-        if i > 0 { texto = texto + sep }
-        texto = texto + partes.obtiene(i)
-        i += 1
-    }
-    return texto
-}
+fn une(partes: Lista<Str>, sep: Str) -> Str = _une(partes.items, sep)
 
 // --- Números: `Int.parse(s)` y `Float.parse(s)` devuelven nil si el texto no es un número ---
 fn _int_parse(s: Str) -> Int? = _parseInt(_recorta(s))
@@ -618,3 +609,21 @@ fn afirma(condicion: Bool) {
 fn afirmaIgual<T>(real: T, esperado: T) {
     if real != esperado { fail FalloPrueba("se esperaba ${esperado}, pero fue ${real}") }
 }
+
+// ---------------------------------------------------------------- texto para el lexer de Mn
+
+/// ¿Es una letra Unicode (y solo letras)? `"ñ".esLetra()` es true; `"".esLetra()` es false.
+fn _str_esLetra(s: Str) -> Bool = _esLetra(s)
+
+/// ¿Letras o dígitos Unicode, y no está vacía?
+fn _str_esAlfanumerico(s: Str) -> Bool = _esAlfanum(s)
+
+/// ¿Solo dígitos ASCII (0-9), y no está vacía?
+fn _str_esDigito(s: Str) -> Bool = _esDigito(s)
+
+/// Cada carácter como una cadena, en una `Lista<Str>` (O(n): para recorrer un texto largo es mucho más
+/// rápido que `s[i]`, que cuenta desde el principio cada vez).
+fn _str_caracteres(s: Str) -> Lista<Str> = _listaDe(_caracteres(s))
+
+/// El carácter con ese punto de código Unicode, o nil si no es uno válido.
+fn desdeCodigo(n: Int) -> Str? = _desdeCodigo(n)
