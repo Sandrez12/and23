@@ -1,0 +1,1347 @@
+// Mn, etapa 4: el compilador a bytecode de And23 escrito en And23. Es el port de `crates/and23-bytecode/src/compiler.rs`:
+// recorre el árbol de `parser.jb` (ya unido por `modulos.jb` y verificado por `checker.jb`, que deja las resoluciones:
+// índices de campo, llamadas virtuales...) y produce el mismo módulo, instrucción por instrucción y con las mismas
+// posiciones.
+//
+// Uso (para compararlo con Rust):
+//   and23 mn/compilador.jb [--preludio] archivo.jb [archivo.jb...]
+// escribe, por archivo, lo mismo que `and23 --dump archivo.jb` (o `--dump-preludio`) seguido de una línea `---`.
+
+use "lexer.jb"
+use "parser.jb"
+use "checker.jb"
+use "modulos.jb"
+
+// ---------------------------------------------------------------- el módulo compilado
+
+/// Una instrucción: su nombre, hasta dos operandos enteros y, si no son enteros (`Float`, `Bool`), su texto.
+open thing Instr(fix nombre: Str, mut a: Int, fix b: Int, fix nargs: Int, fix extra: Str) {
+    fn texto() -> Str {
+        if extra != "" { return "${nombre} ${extra}" }
+        if nargs == 0 { return nombre }
+        if nargs == 1 { return "${nombre} ${a}" }
+        return "${nombre} ${a} ${b}"
+    }
+}
+
+open thing Func(fix nombre: Str, fix nr: Rango, fix aridad: Int, fix code: Lista<Instr>, fix spans: Lista<Rango>)
+
+open thing ClassDef(fix nombre: Str, fix campos: Lista<Str>, fix supers: Lista<Int>, fix vtable: Mapa<Int, Int>)
+
+/// Un error de compilación con su posición.
+open thing ErrorCompila(m: Str, fix donde: Rango) : Fallo(m)
+
+thing Glob(fix slot: Int, fix mutable: Bool)
+thing FInfo(fix indice: Int, fix aridad: Int)
+thing ClassEntry(fix ctor: Int, fix init: Int)
+
+/// Las tablas del compilador y del módulo en un momento dado.
+thing FotoC(fix globals: Mapa<Str, Glob>, fix funcs: Mapa<Str, FInfo>, fix strings: Mapa<Str, Int>, fix classes: Mapa<Str, ClassEntry>, fix types: Mapa<Str, Int>, fix methodIds: Mapa<Str, Int>, fix overridable: Mapa<Str, Bool>, fix nFunc: Int, fix nClases: Int, fix nMetodos: Int, fix nGlobales: Int, fix nCadenas: Int, fix prelude: Int)
+
+fn recorta<T>(l: Lista<T>, n: Int) {
+    while l.tam() > n { l.quita() }
+}
+
+/// El texto de una cadena entre comillas del árbol (`"a\nb"` → a, salto, b).
+fn desescapa(q: Str) -> Str {
+    fix cs = q.trozo(1, q.largo() - 1).caracteres()
+    mut r = ""
+    mut i = 0
+    while i < cs.tam() {
+        fix c = cs.obtiene(i)
+        i += 1
+        if c == "\\" && i < cs.tam() {
+            fix d = cs.obtiene(i)
+            i += 1
+            if d == "n" {
+                r += "\n"
+            } else if d == "r" {
+                r += "\r"
+            } else if d == "t" {
+                r += "\t"
+            } else if d == "0" {
+                r += "\u{0}"
+            } else {
+                r += d
+            }
+        } else {
+            r += c
+        }
+    }
+    return r
+}
+
+fn instr0(n: Str) -> Instr = Instr(n, 0, 0, 0, "")
+fn instr1(n: Str, a: Int) -> Instr = Instr(n, a, 0, 1, "")
+fn instr2(n: Str, a: Int, b: Int) -> Instr = Instr(n, a, b, 2, "")
+fn instrT(n: Str, extra: Str) -> Instr = Instr(n, 0, 0, 0, extra)
+
+/// El nombre de la instrucción de un operador binario (`+` → `Add`).
+fn nombreBinario(op: Str) -> Str {
+    match op {
+        "+" -> return "Add"
+        "-" -> return "Sub"
+        "*" -> return "Mul"
+        "/" -> return "Div"
+        "%" -> return "Rem"
+        "==" -> return "Eq"
+        "!=" -> return "Ne"
+        "<" -> return "Lt"
+        "<=" -> return "Le"
+        ">" -> return "Gt"
+        _ -> return "Ge"
+    }
+}
+
+fn yaDeclarada(nombre: Str, r: Rango) -> ErrorCompila = ErrorCompila("`${nombre}` ya está declarada en este ámbito", r)
+
+// ---------------------------------------------------------------- variables
+
+thing Local(fix nombre: Str, fix mutable: Bool, fix depth: Int, fix ord: Int, fix boxed: Bool)
+
+/// Dónde está una variable desde la función que se compila: `Local` o `Capture` y su número.
+thing Acceso(fix tipo: Str, fix n: Int)
+
+/// Una variable de una función de fuera que la lambda en curso usa.
+thing Captura(fix nombre: Str, fix mutable: Bool, fix boxed: Bool, fix desde: Acceso)
+
+/// Lo que una función envolvente guarda mientras se compila una lambda suya.
+thing Fuera(fix locals: Lista<Local>, fix captures: Lista<Captura>)
+
+/// Dónde se lee o escribe una variable: `Local`, `Capture` o `Global`.
+thing Lugar(fix tipo: Str, fix n: Int, fix boxed: Bool)
+
+thing Hallada(fix acceso: Acceso, fix mutable: Bool, fix boxed: Bool, fix ord: Int)
+
+thing Bucle(fix head: Int, fix locals: Int, fix breaks: Lista<Int>, fix tries: Int)
+
+// ---------------------------------------------------------------- el compilador de una función
+
+thing FnCompiler(fix c: Compilador, fix nombre: Str, fix nr: Rango) {
+    mut aridad = 0
+    mut code = Lista<Instr>()
+    mut spans = Lista<Rango>()
+    mut locals = Lista<Local>()
+    mut depth = 0
+    mut loops = Lista<Bucle>()
+    mut tries = 0
+    mut script = false
+    mut echo = false
+    mut captures = Lista<Captura>()
+    fix outer = Lista<Fuera>()
+    mut boxIds = Mapa<Int, Bool>()
+    fix needBox = Mapa<Int, Bool>()
+    mut mutCount = 0
+
+    fn finish(r: Rango) -> Func {
+        emit(instr0("Unit"), r)
+        emit(instr0("Return"), r)
+        return Func(nombre, nr, aridad, code, spans)
+    }
+
+    fn nuevoLocal(n: Str) {
+        locals.agrega(Local(n, false, 0, -1, false))
+    }
+
+    fn funcion(decl: Nodo) -> Func {
+        fix params = kid(decl, 1).kids
+        aridad = params.tam()
+        params.paraCada { p -> nuevoLocal(attr(p, 0)) }
+        bloque(kid(decl, 3))
+        return finish(rg(decl))
+    }
+
+    /// Método: `this` es el local 0 y los parámetros vienen después.
+    fn metodo(decl: Nodo) -> Func {
+        fix params = kid(decl, 1).kids
+        aridad = params.tam() + 1
+        nuevoLocal("this")
+        params.paraCada { p -> nuevoLocal(attr(p, 0)) }
+        bloque(kid(decl, 3))
+        return finish(rg(decl))
+    }
+
+    /// Constructor `Clase(params)`: reserva el objeto (campos en `()`), llama a `Clase.<init>` con él y los
+    /// parámetros, y lo devuelve.
+    fn constructor(decl: Nodo, clase: Int, total: Int, init: Int) -> Func {
+        fix params = kid(decl, 1).kids
+        aridad = params.tam()
+        fix r = rg(decl)
+        emit(instr2("Alloc", clase, total), r)
+        emit(instr0("Dup"), r)
+        mut i = 0
+        while i < params.tam() {
+            emit(instr1("GetLocal", i), r)
+            i += 1
+        }
+        emit(instr1("Call", init), r)
+        emit(instr0("Pop"), r)
+        emit(instr0("Return"), r)
+        return Func(nombre, nr, aridad, code, spans)
+    }
+
+    /// `Clase.<init>(this, params)`: llama al `init` del padre con los argumentos de `: Padre(...)`, guarda los
+    /// parámetros que son campos y evalúa los campos del cuerpo (que ven los parámetros y los campos anteriores
+    /// como locales). `offset` es la cantidad de campos heredados; `parentInit` es -1 si no hay padre.
+    fn init(decl: Nodo, offset: Int, parentInit: Int) -> Func {
+        fix params = kid(decl, 1).kids
+        aridad = params.tam() + 1
+        nuevoLocal("this")
+        params.paraCada { p -> nuevoLocal(attr(p, 0)) }
+        fix r = rg(decl)
+        mut padre: Nodo? = nil
+        kid(decl, 2).kids.paraCada { s -> if padre == nil && kid(s, 1).tag != "None" { padre = s } }
+        fix sup = padre
+        if parentInit >= 0 && sup != nil {
+            emit(instr1("GetLocal", 0), rg(sup))
+            kid(sup, 1).kids.paraCada { a -> expr(a) }
+            emit(instr1("Call", parentInit), rg(sup))
+            emit(instr0("Pop"), rg(sup))
+        }
+        mut next = offset
+        mut i = 0
+        while i < params.tam() {
+            fix p = params.obtiene(i)
+            if attr(p, 1) != "-" {
+                emit(instr1("GetLocal", 0), rg(p))
+                emit(instr1("GetLocal", i + 1), rg(p))
+                emit(instr1("SetField", next), rg(p))
+                next += 1
+            }
+            i += 1
+        }
+        fix campos = kid(decl, 3).kids
+        i = 0
+        while i < campos.tam() {
+            fix f = campos.obtiene(i)
+            i += 1
+            expr(kid(f, 1))
+            nuevoLocal(attr(f, 0))
+            fix slot = locals.tam() - 1
+            emit(instr1("GetLocal", 0), rg(f))
+            emit(instr1("GetLocal", slot), rg(f))
+            emit(instr1("SetField", next), rg(f))
+            next += 1
+        }
+        return finish(r)
+    }
+
+    fn topLevel(programa: Nodo) {
+        kid(programa, 3).kids.paraCada { s ->
+            if s.tag == "Fn" || s.tag == "Thing" || s.tag == "Kind" {
+                // Las registró `compile`.
+            } else if s.tag == "ExprStmt" {
+                expr(kid(s, 0))
+                emit(instr0(if echo { "Echo" } else { "Pop" }), rg(kid(s, 0)))
+            } else {
+                stmt(s)
+            }
+        }
+    }
+
+    fn emit(i: Instr, r: Rango) -> Int {
+        code.agrega(i)
+        spans.agrega(r)
+        return code.tam() - 1
+    }
+
+    fn here() -> Int = code.tam()
+
+    /// Completa un salto emitido antes con el destino actual.
+    fn patch(at: Int) {
+        code.obtiene(at).a = here()
+    }
+
+    fn popLocals(n: Int, r: Rango) {
+        if n == 1 {
+            emit(instr0("Pop"), r)
+        } else if n > 1 {
+            emit(instr1("PopN", n), r)
+        }
+    }
+
+    fn bloque(b: Nodo) {
+        depth += 1
+        b.kids.paraCada { s -> stmt(s) }
+        depth -= 1
+        mut keep = 0
+        while keep < locals.tam() && locals.obtiene(keep).depth <= depth { keep += 1 }
+        fix dropped = locals.tam() - keep
+        recorta(locals, keep)
+        popLocals(dropped, rg(b))
+    }
+
+    fn stmt(s: Nodo) {
+        fix t = s.tag
+        if t == "Show" {
+            expr(kid(s, 0))
+            emit(instr0("Show"), rg(s))
+        } else if t == "ExprStmt" {
+            expr(kid(s, 0))
+            emit(instr0("Pop"), rg(kid(s, 0)))
+        } else if t == "Let" {
+            declaraLet(s)
+        } else if t == "Assign" {
+            asigna(s)
+        } else if t == "IndexAssign" {
+            fix op = s.attrs
+            expr(kid(s, 0))
+            expr(kid(s, 1))
+            if op != "=" {
+                emit(instr0("Dup2"), rg(s))
+                emit(instr0("Index"), rg(s))
+                expr(kid(s, 2))
+                emit(instr0(nombreBinario(op.trozo(0, op.largo() - 1))), rg(s))
+            } else {
+                expr(kid(s, 2))
+            }
+            emit(instr0("SetIndex"), rg(s))
+        } else if t == "FieldAssign" {
+            fix op = attr(s, 1)
+            fix campo = indiceCampo(nombreR(s))
+            expr(kid(s, 0))
+            if op != "=" {
+                emit(instr0("Dup"), rg(s))
+                emit(instr1("GetField", campo), rg(s))
+                expr(kid(s, 1))
+                emit(instr0(nombreBinario(op.trozo(0, op.largo() - 1))), rg(s))
+            } else {
+                expr(kid(s, 1))
+            }
+            emit(instr1("SetField", campo), rg(s))
+        } else if t == "If" {
+            fix cond = kid(s, 0)
+            expr(cond)
+            fix aElse = emit(instr1("JumpIfFalse", 0), rg(cond))
+            bloque(kid(s, 1))
+            fix otro = kid(s, 2)
+            if otro.tag != "None" {
+                fix aFin = emit(instr1("Jump", 0), rg(kid(s, 1)))
+                patch(aElse)
+                bloque(otro)
+                patch(aFin)
+            } else {
+                patch(aElse)
+            }
+        } else if t == "While" {
+            fix head = here()
+            fix cond = kid(s, 0)
+            expr(cond)
+            fix salida = emit(instr1("JumpIfFalse", 0), rg(cond))
+            loops.agrega(Bucle(head, locals.tam(), Lista<Int>(), tries))
+            bloque(kid(s, 1))
+            emit(instr1("Jump", head), rg(kid(s, 1)))
+            patch(salida)
+            fix ctx = loops.quita()
+            ctx.breaks.paraCada { at -> patch(at) }
+        } else if t == "Return" {
+            if kid(s, 0).tag != "None" {
+                expr(kid(s, 0))
+            } else {
+                emit(instr0("Unit"), rg(s))
+            }
+            emit(instr0("Return"), rg(s))
+        } else if t == "Break" {
+            if !loops.vacia() {
+                fix ctx = loops.obtiene(loops.tam() - 1)
+                popLocals(locals.tam() - ctx.locals, rg(s))
+                mut k = tries - ctx.tries
+                while k > 0 {
+                    emit(instr0("EndTry"), rg(s))
+                    k -= 1
+                }
+                ctx.breaks.agrega(emit(instr1("Jump", 0), rg(s)))
+            }
+        } else if t == "Continue" {
+            if !loops.vacia() {
+                fix ctx = loops.obtiene(loops.tam() - 1)
+                popLocals(locals.tam() - ctx.locals, rg(s))
+                mut k = tries - ctx.tries
+                while k > 0 {
+                    emit(instr0("EndTry"), rg(s))
+                    k -= 1
+                }
+                emit(instr1("Jump", ctx.head), rg(s))
+            }
+        } else if t == "Fail" {
+            expr(kid(s, 0))
+            emit(instr0("Fail"), rg(s))
+        } else if t == "Attempt" {
+            intenta(s)
+        }
+    }
+
+    fn declaraLet(s: Nodo) {
+        fix nombre = attr(s, 0)
+        fix mutable = attr(s, 1) == "mut"
+        expr(kid(s, 1))
+        if script && depth == 0 {
+            fix g = c.tGlobals.obtiene(nombre)
+            if g == nil { fail ErrorCompila("mn: falta la global `${nombre}`", rg(s)) }
+            emit(instr1("DefGlobal", g.slot), rg(s))
+            return
+        }
+        if locals.alguno({ l -> l.depth == depth && l.nombre == nombre }) {
+            fail yaDeclarada(nombre, nombreR(s))
+        }
+        // El valor ya está en la cima de la pila: esa posición es el local. Una variable `mut` que una lambda
+        // captura vive en una celda para que todos vean los cambios.
+        mut ord = -1
+        mut boxed = false
+        if mutable {
+            ord = mutCount
+            mutCount += 1
+            boxed = boxIds.contiene(ord)
+        }
+        if boxed { emit(instr0("NewCell"), rg(s)) }
+        locals.agrega(Local(nombre, mutable, depth, ord, boxed))
+    }
+
+    fn asigna(s: Nodo) {
+        fix nombre = attr(s, 0)
+        fix op = attr(s, 1)
+        fix valor = kid(s, 0)
+        fix nr2 = nombreR(s)
+        if c.chk.resCampos.contiene(claveR(nr2)) {
+            // Campo de `this` por su nombre: `edad += 1`.
+            fix campo = c.chk.resCampos.obtiene(claveR(nr2)) ?: 0
+            cargaThis(nr2)
+            if op != "=" {
+                emit(instr0("Dup"), nr2)
+                emit(instr1("GetField", campo), nr2)
+                expr(valor)
+                emit(instr0(nombreBinario(op.trozo(0, op.largo() - 1))), rg(s))
+            } else {
+                expr(valor)
+            }
+            emit(instr1("SetField", campo), rg(s))
+            return
+        }
+        fix lugar = place(nombre, nr2)
+        if !lugar.mutable {
+            fail ErrorCompila("no se puede asignar a `${nombre}` porque es inmutable; decláralo con `mut`", nr2)
+        }
+        if op != "=" {
+            emiteCarga(lugar.lugar, nr2)
+            expr(valor)
+            emit(instr0(nombreBinario(op.trozo(0, op.largo() - 1))), rg(s))
+        } else {
+            expr(valor)
+        }
+        emiteGuarda(lugar.lugar, rg(s))
+    }
+
+    fn intenta(s: Nodo) {
+        fix tryAt = emit(instr1("Try", 0), rg(s))
+        tries += 1
+        bloque(kid(s, 0))
+        tries -= 1
+        emit(instr0("EndTry"), rg(s))
+        fix fines = Lista<Int>()
+        fines.agrega(emit(instr1("Jump", 0), rg(s)))
+        // Aquí cae una excepción: el objeto lanzado está en la cima de la pila.
+        patch(tryAt)
+        mut i = 1
+        while i < s.kids.tam() {
+            fix r = s.kids.obtiene(i)
+            i += 1
+            fix tipo = kid(r, 0)
+            fix ty = indiceTipo(tipo.attrs, rg(tipo))
+            emit(instr0("Dup"), rg(r))
+            emit(instr1("IsInstance", ty), rg(r))
+            fix siguiente = emit(instr1("JumpIfFalse", 0), rg(r))
+            // El objeto de la cima pasa a ser el local de la cláusula.
+            locals.agrega(Local(attr(r, 0), false, depth, -1, false))
+            bloque(kid(r, 1))
+            locals.quita()
+            emit(instr0("Pop"), rg(r))
+            fines.agrega(emit(instr1("Jump", 0), rg(r)))
+            patch(siguiente)
+        }
+        // Ninguna cláusula la quiso: sigue subiendo.
+        emit(instr0("Fail"), rg(s))
+        fines.paraCada { at -> patch(at) }
+    }
+
+    /// Índice de campo que el verificador resolvió para esta posición.
+    fn indiceCampo(r: Rango) -> Int {
+        fix i = c.chk.resCampos.obtiene(claveR(r))
+        if i == nil { fail ErrorCompila("error interno: campo sin resolver (¿faltó verificar tipos?)", r) }
+        return i
+    }
+
+    fn indiceTipo(nombre: Str, r: Rango) -> Int {
+        fix i = c.tTypes.obtiene(nombre)
+        if i == nil { fail ErrorCompila("el tipo `${nombre}` no existe", r) }
+        return i
+    }
+
+    fn idVirtual(r: Rango) -> Int {
+        fix n = c.chk.resVirtuales.obtiene(claveR(r))
+        if n == nil { fail ErrorCompila("error interno: método sin resolver (¿faltó verificar tipos?)", r) }
+        fix id = c.tMethodIds.obtiene(n)
+        if id == nil { fail ErrorCompila("error interno: método sin resolver (¿faltó verificar tipos?)", r) }
+        return id
+    }
+
+    fn indiceMetodo(r: Rango) -> Int {
+        fix clave = c.chk.resMetodos.obtiene(claveR(r))
+        if clave == nil { fail ErrorCompila("error interno: método sin resolver (¿faltó verificar tipos?)", r) }
+        fix f = c.tFuncs.obtiene(clave)
+        if f == nil { fail ErrorCompila("error interno: método sin resolver (¿faltó verificar tipos?)", r) }
+        return f.indice
+    }
+
+    /// Índice de la cadena constante `texto` (se reutilizan las repetidas).
+    fn cadena(texto: Str) -> Int {
+        fix i = c.tStrings.obtiene(texto)
+        if i != nil { return i }
+        fix nuevo = c.cadenas.tam()
+        c.cadenas.agrega(texto)
+        c.tStrings.pone(texto, nuevo)
+        return nuevo
+    }
+
+    // ------------------------------------------------------------ variables y capturas
+
+    /// Busca `nombre` en el nivel de función `nivel` (0 es la más externa; `outer.tam()` es la que se compila). Si
+    /// está en una función de fuera, cada lambda del camino lo captura.
+    fn find(nivel: Int, nombre: Str) -> Hallada? {
+        fix top = outer.tam()
+        fix ls = if nivel == top { locals } else { outer.obtiene(nivel).locals }
+        mut slot = ls.tam() - 1
+        while slot >= 0 {
+            if ls.obtiene(slot).nombre == nombre {
+                fix l = ls.obtiene(slot)
+                return Hallada(Acceso("Local", slot), l.mutable, l.boxed, l.ord)
+            }
+            slot -= 1
+        }
+        fix cs = if nivel == top { captures } else { outer.obtiene(nivel).captures }
+        mut k = 0
+        while k < cs.tam() {
+            if cs.obtiene(k).nombre == nombre {
+                fix cap = cs.obtiene(k)
+                return Hallada(Acceso("Capture", k), cap.mutable, cap.boxed, -1)
+            }
+            k += 1
+        }
+        if nivel == 0 { return nil }
+        fix arriba = find(nivel - 1, nombre)
+        if arriba == nil { return nil }
+        if arriba.mutable && !arriba.boxed && arriba.ord >= 0 { needBox.pone(arriba.ord, true) }
+        cs.agrega(Captura(nombre, arriba.mutable, arriba.boxed, arriba.acceso))
+        return Hallada(Acceso("Capture", cs.tam() - 1), arriba.mutable, arriba.boxed, -1)
+    }
+
+    /// Dónde está una variable y si es mutable: local, capturada por la lambda en curso o global.
+    fn place(nombre: Str, r: Rango) -> Ubicada {
+        fix top = outer.tam()
+        fix h = find(top, nombre)
+        if h != nil {
+            return Ubicada(Lugar(h.acceso.tipo, h.acceso.n, h.boxed), h.mutable)
+        }
+        fix g = c.tGlobals.obtiene(nombre)
+        if g != nil { return Ubicada(Lugar("Global", g.slot, false), g.mutable) }
+        fail ErrorCompila("la variable `${nombre}` no está definida", r)
+    }
+
+    fn emiteCarga(l: Lugar, r: Rango) {
+        if l.tipo == "Local" {
+            emit(instr1("GetLocal", l.n), r)
+            if l.boxed { emit(instr0("CellGet"), r) }
+        } else if l.tipo == "Capture" {
+            emit(instr1("GetCapture", l.n), r)
+            if l.boxed { emit(instr0("CellGet"), r) }
+        } else {
+            emit(instr1("GetGlobal", l.n), r)
+        }
+    }
+
+    /// Guarda la cima de la pila en la variable.
+    fn emiteGuarda(l: Lugar, r: Rango) {
+        if l.tipo == "Local" {
+            if l.boxed {
+                emit(instr1("GetLocal", l.n), r)
+                emit(instr0("CellSet"), r)
+            } else {
+                emit(instr1("SetLocal", l.n), r)
+            }
+        } else if l.tipo == "Capture" {
+            emit(instr1("GetCapture", l.n), r)
+            emit(instr0("CellSet"), r)
+        } else {
+            emit(instr1("SetGlobal", l.n), r)
+        }
+    }
+
+    /// Carga `this` (en una lambda de un método, capturado).
+    fn cargaThis(r: Rango) {
+        emiteCarga(place("this", r).lugar, r)
+    }
+
+    /// Una lambda: se compila como una función aparte cuyo local 0 es la propia lambda y cuyos valores capturados se
+    /// leen con `GetCapture`. Aquí se deja la lambda creada en la pila.
+    fn lambda(e: Nodo) {
+        fix params = kid(e, 0).kids
+        fix cuerpo = kid(e, 1)
+        fix r = rg(e)
+        fix codeG = code
+        fix spansG = spans
+        fix loopsG = loops
+        fix depthG = depth
+        fix triesG = tries
+        fix aridadG = aridad
+        code = Lista<Instr>()
+        spans = Lista<Rango>()
+        loops = Lista<Bucle>()
+        depth = 1
+        tries = 0
+        aridad = params.tam() + 1
+        outer.agrega(Fuera(locals, captures))
+        locals = Lista<Local>()
+        captures = Lista<Captura>()
+        nuevoLocal("<lambda>")
+        params.paraCada { p -> nuevoLocal(attr(p, 0)) }
+        mut fallo: Fallo? = nil
+        attempt {
+            cuerpoLambda(cuerpo, r)
+        } rescue er: Fallo {
+            fallo = er
+        }
+        fix capturas = captures
+        fix fuera = outer.quita()
+        locals = fuera.locals
+        captures = fuera.captures
+        fix codeL = code
+        fix spansL = spans
+        code = codeG
+        spans = spansG
+        loops = loopsG
+        depth = depthG
+        tries = triesG
+        fix aridadL = aridad
+        aridad = aridadG
+        fix f2 = fallo
+        if f2 != nil { fail f2 }
+        c.funciones.agrega(Func("${nombre}.<lambda>", r, aridadL, codeL, spansL))
+        fix func = c.funciones.tam() - 1
+        // Los valores capturados se leen tal cual (la celda, no su contenido) en la función de fuera.
+        capturas.paraCada { cap ->
+            if cap.desde.tipo == "Local" {
+                emit(instr1("GetLocal", cap.desde.n), r)
+            } else {
+                emit(instr1("GetCapture", cap.desde.n), r)
+            }
+        }
+        emit(instr2("Closure", func, capturas.tam()), r)
+    }
+
+    /// Las sentencias de la lambda; si la última es una expresión, es lo que devuelve.
+    fn cuerpoLambda(cuerpo: Nodo, r: Rango) {
+        fix n = cuerpo.kids.tam()
+        fix hayCola = n > 0 && cuerpo.kids.obtiene(n - 1).tag == "ExprStmt"
+        fix limite = if hayCola { n - 1 } else { n }
+        mut i = 0
+        while i < limite {
+            stmt(cuerpo.kids.obtiene(i))
+            i += 1
+        }
+        if hayCola {
+            fix cola = kid(cuerpo.kids.obtiene(n - 1), 0)
+            expr(cola)
+            if c.chk.resDescartes.contiene(claveR(rg(cola))) {
+                emit(instr0("Pop"), rg(cola))
+                emit(instr0("Unit"), rg(cola))
+            }
+            emit(instr0("Return"), r)
+        } else {
+            emit(instr0("Unit"), r)
+            emit(instr0("Return"), r)
+        }
+    }
+
+    /// Una función con nombre usada como valor: una lambda sin capturas que la llama.
+    fn referencia(nombreF: Str, r: Rango) {
+        fix f = c.tFuncs.obtiene(nombreF)
+        if f == nil { fail ErrorCompila("la variable `${nombreF}` no está definida", r) }
+        fix cd = Lista<Instr>()
+        fix sp = Lista<Rango>()
+        mut i = 0
+        while i < f.aridad {
+            cd.agrega(instr1("GetLocal", i + 1))
+            sp.agrega(r)
+            i += 1
+        }
+        cd.agrega(instr1("Call", f.indice))
+        sp.agrega(r)
+        cd.agrega(instr0("Return"))
+        sp.agrega(r)
+        c.funciones.agrega(Func("${nombreF}.<ref>", r, f.aridad + 1, cd, sp))
+        emit(instr2("Closure", c.funciones.tam() - 1, 0), r)
+    }
+
+    // ------------------------------------------------------------ expresiones
+
+    fn args(lista: Nodo) {
+        lista.kids.paraCada { a -> expr(a) }
+    }
+
+    fn expr(e: Nodo) {
+        fix t = e.tag
+        fix r = rg(e)
+        fix k = claveR(r)
+        if t == "Int" {
+            emit(instr1("Int", Int.parse(e.attrs) ?: 0), r)
+        } else if t == "Float" {
+            emit(instrT("Float", e.attrs), r)
+        } else if t == "Bool" {
+            emit(instrT("Bool", e.attrs), r)
+        } else if t == "Var" {
+            if c.chk.resCampos.contiene(k) {
+                fix campo = c.chk.resCampos.obtiene(k) ?: 0
+                cargaThis(r)
+                emit(instr1("GetField", campo), r)
+            } else {
+                mut ub: Ubicada? = nil
+                mut error: ErrorCompila? = nil
+                attempt {
+                    ub = place(e.attrs, r)
+                } rescue er: ErrorCompila {
+                    error = er
+                }
+                fix u = ub
+                fix er2 = error
+                if u != nil {
+                    emiteCarga(u.lugar, r)
+                } else if c.tFuncs.contiene(e.attrs) {
+                    referencia(e.attrs, r)
+                } else if er2 != nil {
+                    fail er2
+                }
+            }
+        } else if t == "Lambda" {
+            lambda(e)
+        } else if t == "CallValue" {
+            expr(kid(e, 0))
+            args(kid(e, 1))
+            emit(instr1("CallValue", kid(e, 1).kids.tam()), r)
+        } else if t == "This" {
+            cargaThis(r)
+        } else if t == "Nil" {
+            emit(instr0("Nil"), r)
+        } else if t == "Elvis" {
+            expr(kid(e, 0))
+            fix hecho = emit(instr1("JumpIfNotNil", 0), r)
+            emit(instr0("Pop"), r)
+            expr(kid(e, 1))
+            patch(hecho)
+        } else if t == "SafeField" {
+            fix campo = indiceCampo(r)
+            expr(kid(e, 0))
+            fix salto = emit(instr1("JumpIfNil", 0), r)
+            emit(instr1("GetField", campo), r)
+            patch(salto)
+        } else if t == "SafeCall" {
+            fix metodo = idVirtual(r)
+            expr(kid(e, 0))
+            fix salto = emit(instr1("JumpIfNil", 0), r)
+            args(kid(e, 1))
+            emit(instr2("CallMethod", metodo, kid(e, 1).kids.tam()), r)
+            patch(salto)
+        } else if t == "Field" {
+            fix campo = indiceCampo(r)
+            expr(kid(e, 0))
+            emit(instr1("GetField", campo), r)
+        } else if t == "MethodCall" {
+            llamadaMetodo(e, r, k)
+        } else if t == "SuperCall" {
+            fix indice = indiceMetodo(r)
+            cargaThis(r)
+            args(kid(e, 0))
+            emit(instr1("Call", indice), r)
+        } else if t == "Is" {
+            fix tipo = kid(e, 1)
+            fix id = indiceTipo(tipo.attrs, rg(tipo))
+            expr(kid(e, 0))
+            emit(instr1("IsInstance", id), r)
+        } else if t == "Cast" {
+            fix tipo = kid(e, 1)
+            fix id = indiceTipo(tipo.attrs, rg(tipo))
+            expr(kid(e, 0))
+            emit(instr1("Cast", id), r)
+        } else if t == "Str" {
+            emit(instr1("Str", cadena(desescapa(e.attrs))), r)
+        } else if t == "Interp" {
+            e.kids.paraCada { p ->
+                if p.tag == "Text" {
+                    emit(instr1("Str", cadena(desescapa(p.attrs))), r)
+                } else {
+                    expr(p)
+                }
+            }
+            emit(instr1("Interp", e.kids.tam()), r)
+        } else if t == "Array" {
+            e.kids.paraCada { x -> expr(x) }
+            emit(instr1("Array", e.kids.tam()), r)
+        } else if t == "Index" {
+            expr(kid(e, 0))
+            expr(kid(e, 1))
+            emit(instr0("Index"), r)
+        } else if t == "Unary" {
+            expr(kid(e, 0))
+            emit(instr0(e.attrs), r)
+        } else if t == "Binary" {
+            if e.attrs == "&&" || e.attrs == "||" {
+                fix esAnd = e.attrs == "&&"
+                expr(kid(e, 0))
+                fix salto = emit(instr1(if esAnd { "AndJump" } else { "OrJump" }, 0), r)
+                expr(kid(e, 1))
+                emit(instrT("CheckBool", "${esAnd}"), r)
+                patch(salto)
+            } else {
+                expr(kid(e, 0))
+                expr(kid(e, 1))
+                emit(instr0(nombreBinario(e.attrs)), r)
+            }
+        } else if t == "Call" {
+            llamada(e, r, k)
+        } else {
+            fail ErrorCompila("mn: expresión desconocida: ${t}", r)
+        }
+    }
+
+    fn llamadaMetodo(e: Nodo, r: Rango, k: Str) {
+        fix destino = kid(e, 0)
+        fix argumentos = kid(e, 2)
+        fix redir = c.chk.resRedirige.obtiene(k)
+        if redir != nil {
+            // `s.metodo(..)` sobre una cadena o `Int.parse(..)`: función del preludio.
+            fix partes = redir.parte(" ")
+            fix clave = partes.obtiene(0)
+            fix f = c.tFuncs.obtiene(clave)
+            if f == nil { fail ErrorCompila("la función `${clave}` no está definida", r) }
+            if partes.obtiene(1) == "true" { expr(destino) }
+            args(argumentos)
+            emit(instr1("Call", f.indice), r)
+        } else if c.chk.resLlamadasValor.contiene(k) {
+            // `obj.alClic(x)`: el campo guarda una función.
+            fix campo = indiceCampo(r)
+            expr(destino)
+            emit(instr1("GetField", campo), r)
+            args(argumentos)
+            emit(instr1("CallValue", argumentos.kids.tam()), r)
+        } else {
+            fix metodo = idVirtual(r)
+            expr(destino)
+            args(argumentos)
+            emit(instr2("CallMethod", metodo, argumentos.kids.tam()), r)
+        }
+    }
+
+    fn llamada(e: Nodo, r: Rango, k: Str) {
+        fix nombreL = e.attrs
+        fix argumentos = kid(e, 1)
+        fix nativa = NATIVAS.obtiene(nombreL)
+        if nativa != nil {
+            args(argumentos)
+            emit(instr1("Native", nativa.id), r)
+        } else if nombreL == "len" || nombreL == "push" || nombreL == "pop" || nombreL == "hash" {
+            args(argumentos)
+            emit(instr0(if nombreL == "len" { "Len" } else if nombreL == "push" { "Push" } else if nombreL == "pop" { "ArrayPop" } else { "Hash" }), r)
+        } else if c.chk.resLlamadasValor.contiene(k) {
+            // `f(x)` con `f` una variable, parámetro o campo que guarda una función.
+            if c.chk.resCampos.contiene(k) {
+                fix campo = c.chk.resCampos.obtiene(k) ?: 0
+                cargaThis(r)
+                emit(instr1("GetField", campo), r)
+            } else {
+                emiteCarga(place(nombreL, r).lugar, r)
+            }
+            args(argumentos)
+            emit(instr1("CallValue", argumentos.kids.tam()), r)
+        } else if c.chk.resVirtuales.contiene(k) {
+            // Método de la propia clase llamado por su nombre: `this` va primero.
+            fix metodo = idVirtual(r)
+            cargaThis(r)
+            args(argumentos)
+            emit(instr2("CallMethod", metodo, argumentos.kids.tam()), r)
+        } else if c.tClasses.contiene(nombreL) {
+            fix ctor = c.tClasses.obtiene(nombreL)
+            if ctor == nil { fail ErrorCompila("mn: falta la clase `${nombreL}`", r) }
+            args(argumentos)
+            emit(instr1("Call", ctor.ctor), r)
+        } else {
+            fix f = c.tFuncs.obtiene(nombreL)
+            if f == nil { fail ErrorCompila("la función `${nombreL}` no está definida", r) }
+            if f.aridad != argumentos.kids.tam() {
+                fail ErrorCompila("la función `${nombreL}` espera ${f.aridad} argumento(s), pero recibió ${argumentos.kids.tam()}", r)
+            }
+            args(argumentos)
+            emit(instr1("Call", f.indice), r)
+        }
+    }
+}
+
+/// Una variable encontrada: dónde está y si se puede asignar.
+thing Ubicada(fix lugar: Lugar, fix mutable: Bool)
+
+// ---------------------------------------------------------------- el compilador del programa
+
+/// Compilador con estado: cada llamada a `compila` añade funciones y globales al módulo.
+open thing Compilador(fix chk: Checker) {
+    fix funciones = Lista<Func>()
+    mut preludeFunciones = 0
+    fix clases = Lista<ClassDef>()
+    fix metodos = Lista<Str>()
+    fix globales = Lista<Str>()
+    fix cadenas = Lista<Str>()
+    mut tGlobals = Mapa<Str, Glob>()
+    mut tFuncs = Mapa<Str, FInfo>()
+    mut tStrings = Mapa<Str, Int>()
+    mut tClasses = Mapa<Str, ClassEntry>()
+    mut tTypes = Mapa<Str, Int>()
+    mut tMethodIds = Mapa<Str, Int>()
+    mut overridable = Mapa<Str, Bool>()
+
+    /// Marca las funciones definidas hasta ahora (el preludio) como redefinibles por el programa.
+    fn sellaPreludio() {
+        tFuncs.claves().paraCada { k -> overridable.pone(k, true) }
+        preludeFunciones = funciones.tam()
+    }
+
+    fn foto() -> FotoC = FotoC(copiaMapa(tGlobals), copiaMapa(tFuncs), copiaMapa(tStrings), copiaMapa(tClasses), copiaMapa(tTypes), copiaMapa(tMethodIds), copiaMapa(overridable), funciones.tam(), clases.tam(), metodos.tam(), globales.tam(), cadenas.tam(), preludeFunciones)
+
+    fn restaura(f: FotoC) {
+        tGlobals = copiaMapa(f.globals)
+        tFuncs = copiaMapa(f.funcs)
+        tStrings = copiaMapa(f.strings)
+        tClasses = copiaMapa(f.classes)
+        tTypes = copiaMapa(f.types)
+        tMethodIds = copiaMapa(f.methodIds)
+        overridable = copiaMapa(f.overridable)
+        recorta(funciones, f.nFunc)
+        recorta(clases, f.nClases)
+        recorta(metodos, f.nMetodos)
+        recorta(globales, f.nGlobales)
+        recorta(cadenas, f.nCadenas)
+        preludeFunciones = f.prelude
+    }
+
+    /// Compila el programa (la raíz `Program`) y devuelve el índice de la función "script". Si falla, el compilador
+    /// queda como estaba.
+    fn compila(programa: Nodo) -> Int {
+        fix f = foto()
+        attempt {
+            return compilaPrograma(programa)
+        } rescue e: Fallo {
+            restaura(f)
+            fail e
+        }
+    }
+
+    /// Reserva el índice de una función (su código se compila después).
+    fn declaraFuncion(clave: Str, nr: Rango, aridad: Int) -> Int {
+        if tFuncs.contiene(clave) && !overridable.quita(clave) {
+            fail ErrorCompila("la función `${clave}` ya está definida", nr)
+        }
+        fix indice = funciones.tam()
+        funciones.agrega(Func(clave, nr, aridad, Lista<Instr>(), Lista<Rango>()))
+        tFuncs.pone(clave, FInfo(indice, aridad))
+        return indice
+    }
+
+    /// Id del método `nombre` (se crea la primera vez).
+    fn idMetodo(nombre: Str) -> Int {
+        fix id = tMethodIds.obtiene(nombre)
+        if id != nil { return id }
+        fix nuevo = metodos.tam()
+        metodos.agrega(nombre)
+        tMethodIds.pone(nombre, nuevo)
+        return nuevo
+    }
+
+    /// Reserva el índice de una clase o interfaz (los datos se completan en `finaliza`).
+    fn declaraTipo(nombre: Str, nr: Rango) {
+        if tTypes.contiene(nombre) {
+            fail ErrorCompila("el tipo `${nombre}` ya está definido", nr)
+        }
+        fix indice = clases.tam()
+        fix supers = Lista<Int>()
+        supers.agrega(indice)
+        clases.agrega(ClassDef(nombre, Lista<Str>(), supers, Mapa<Int, Int>()))
+        tTypes.pone(nombre, indice)
+    }
+
+    fn finaliza(decl: Nodo, todos: Mapa<Str, Nodo>, hechos: Mapa<Str, Bool>) {
+        fix nombre = attr(decl, 0)
+        if hechos.contiene(nombre) { return }
+        hechos.pone(nombre, true)
+        fix campos = Lista<Str>()
+        fix supers = Lista<Int>()
+        fix vtable = Mapa<Int, Int>()
+        mut padre: Nodo? = nil
+        kid(decl, 2).kids.paraCada { s -> if padre == nil && kid(s, 1).tag != "None" { padre = s } }
+        fix p = padre
+        if p != nil {
+            fix pdecl = todos.obtiene(p.attrs)
+            if pdecl != nil { finaliza(pdecl, todos, hechos) }
+            fix idx = tTypes.obtiene(p.attrs)
+            if idx == nil { fail ErrorCompila("el tipo `${p.attrs}` no existe (¿faltó verificar tipos?)", nombreR(p)) }
+            fix clase = clases.obtiene(idx)
+            clase.campos.paraCada { x -> campos.agrega(x) }
+            clase.supers.paraCada { x -> supers.agrega(x) }
+            clase.vtable.claves().paraCada { m -> vtable.pone(m, clase.vtable.obtiene(m) ?: 0) }
+        }
+        fix index = tTypes.obtiene(nombre) ?: 0
+        kid(decl, 1).kids.paraCada { x -> if attr(x, 1) != "-" { campos.agrega(attr(x, 0)) } }
+        kid(decl, 3).kids.paraCada { x -> campos.agrega(attr(x, 0)) }
+        supers.agrega(index)
+        kid(decl, 2).kids.paraCada { s ->
+            if kid(s, 1).tag == "None" {
+                fix id = tTypes.obtiene(s.attrs)
+                if id == nil { fail ErrorCompila("el tipo `${s.attrs}` no existe (¿faltó verificar tipos?)", nombreR(s)) }
+                supers.agrega(id)
+            }
+        }
+        kid(decl, 4).kids.paraCada { m ->
+            fix id = idMetodo(attr(m, 0))
+            fix func = tFuncs.obtiene("${nombre}.${attr(m, 0)}")
+            if func == nil { fail ErrorCompila("mn: falta la función `${nombre}.${attr(m, 0)}`", nombreR(m)) }
+            vtable.pone(id, func.indice)
+        }
+        clases.pone(index, ClassDef(nombre, campos, supers, vtable))
+    }
+
+    fn compilaPrograma(programa: Nodo) -> Int {
+        fix stmts = kid(programa, 3).kids
+        // Las clases y funciones se registran antes de compilar: pueden usarse antes de su definición.
+        // En orden de posición, para que los ids de método no dependan del orden de las tablas.
+        chk.nombresVirtuales().paraCada { n -> idMetodo(n) }
+        stmts.paraCada { s -> if s.tag == "Kind" { declaraTipo(attr(s, 0), nombreR(s)) } }
+        fix cosas = Lista<Nodo>()
+        fix ctores = Lista<Int>()
+        fix inits = Lista<Int>()
+        fix metodosC = Lista<Nodo>()
+        fix metodosI = Lista<Int>()
+        fix metodosD = Lista<Nodo>()
+        stmts.paraCada { s ->
+            if s.tag == "Thing" {
+                fix nombre = attr(s, 0)
+                declaraTipo(nombre, nombreR(s))
+                fix nparams = kid(s, 1).kids.tam()
+                fix ctor = funciones.tam()
+                funciones.agrega(Func(nombre, nombreR(s), nparams, Lista<Instr>(), Lista<Rango>()))
+                fix init = declaraFuncion("${nombre}.<init>", nombreR(s), nparams + 1)
+                tClasses.pone(nombre, ClassEntry(ctor, init))
+                cosas.agrega(s)
+                ctores.agrega(ctor)
+                inits.agrega(init)
+                kid(s, 4).kids.paraCada { m ->
+                    fix indice = declaraFuncion("${nombre}.${attr(m, 0)}", nombreR(m), kid(m, 1).kids.tam() + 1)
+                    metodosC.agrega(s)
+                    metodosI.agrega(indice)
+                    metodosD.agrega(m)
+                }
+            }
+        }
+        // Campos, ancestros y tabla de métodos de cada clase, el padre antes que el hijo.
+        fix porNombre = Mapa<Str, Nodo>()
+        cosas.paraCada { s -> porNombre.pone(attr(s, 0), s) }
+        fix hechos = Mapa<Str, Bool>()
+        cosas.paraCada { s -> finaliza(s, porNombre, hechos) }
+        fix decls = Lista<Nodo>()
+        fix declsI = Lista<Int>()
+        stmts.paraCada { s ->
+            if s.tag == "Fn" {
+                fix nombre = attr(s, 0)
+                if tTypes.contiene(nombre) {
+                    fail ErrorCompila("la función `${nombre}` ya está definida", nombreR(s))
+                }
+                fix indice = declaraFuncion(nombre, nombreR(s), kid(s, 1).kids.tam())
+                decls.agrega(s)
+                declsI.agrega(indice)
+            }
+        }
+        // Lo mismo con las globales del nivel superior: una función puede nombrar una global declarada más abajo
+        // (fallará al ejecutar si todavía no tiene valor).
+        stmts.paraCada { s ->
+            if s.tag == "Let" {
+                fix nombre = attr(s, 0)
+                if tGlobals.contiene(nombre) { fail yaDeclarada(nombre, nombreR(s)) }
+                fix slot = globales.tam()
+                globales.agrega(nombre)
+                tGlobals.pone(nombre, Glob(slot, attr(s, 1) == "mut"))
+            }
+        }
+
+        mut i = 0
+        while i < decls.tam() {
+            fix d = decls.obtiene(i)
+            funciones.pone(declsI.obtiene(i), construye("fn", attr(d, 0), nombreR(d), d, 0, 0, 0))
+            i += 1
+        }
+        i = 0
+        while i < cosas.tam() {
+            fix th = cosas.obtiene(i)
+            fix nombre = attr(th, 0)
+            fix clase = tTypes.obtiene(nombre) ?: 0
+            fix total = clases.obtiene(clase).campos.tam()
+            mut offset = 0
+            mut initPadre = -1
+            mut padre: Nodo? = nil
+            kid(th, 2).kids.paraCada { s -> if padre == nil && kid(s, 1).tag != "None" { padre = s } }
+            fix p = padre
+            if p != nil {
+                fix pc = tTypes.obtiene(p.attrs) ?: 0
+                offset = clases.obtiene(pc).campos.tam()
+                fix pe = tClasses.obtiene(p.attrs)
+                if pe == nil { fail ErrorCompila("mn: falta la clase `${p.attrs}`", nombreR(p)) }
+                initPadre = pe.init
+            }
+            funciones.pone(ctores.obtiene(i), construye("ctor", nombre, nombreR(th), th, clase, total, inits.obtiene(i)))
+            funciones.pone(inits.obtiene(i), construye("init", "${nombre}.<init>", nombreR(th), th, offset, initPadre, 0))
+            i += 1
+        }
+        i = 0
+        while i < metodosD.tam() {
+            fix th = metodosC.obtiene(i)
+            fix m = metodosD.obtiene(i)
+            funciones.pone(metodosI.obtiene(i), construye("metodo", "${attr(th, 0)}.${attr(m, 0)}", nombreR(m), m, 0, 0, 0))
+            i += 1
+        }
+        funciones.agrega(construye("script", "<script>", Rango(0, 0), programa, 0, 0, 0))
+        return funciones.tam() - 1
+    }
+
+    /// Compila una función. Una variable `mut` que una lambda captura vive en una celda, y eso hay que saberlo al
+    /// declararla: si la primera pasada descubre capturas nuevas, se repite con ellas.
+    fn construye(tipo: Str, nombre: Str, nr: Rango, decl: Nodo, x: Int, y: Int, z: Int) -> Func {
+        fix marca = funciones.tam()
+        fix cajas = Mapa<Int, Bool>()
+        while true {
+            fix fc = FnCompiler(this, nombre, nr)
+            cajas.claves().paraCada { k -> fc.boxIds.pone(k, true) }
+            mut f: Func? = nil
+            if tipo == "fn" {
+                f = fc.funcion(decl)
+            } else if tipo == "metodo" {
+                f = fc.metodo(decl)
+            } else if tipo == "ctor" {
+                f = fc.constructor(decl, x, y, z)
+            } else if tipo == "init" {
+                f = fc.init(decl, x, y)
+            } else {
+                fc.script = true
+                fc.topLevel(decl)
+                f = fc.finish(Rango(0, 0))
+            }
+            fix hecha = f
+            mut nuevas = false
+            fc.needBox.claves().paraCada { k -> if !cajas.contiene(k) { nuevas = true } }
+            if !nuevas && hecha != nil { return hecha }
+            fc.needBox.claves().paraCada { k -> cajas.pone(k, true) }
+            // Las lambdas de la pasada descartada ya no sirven.
+            recorta(funciones, marca)
+        }
+        fail ErrorCompila("mn: construye no termina", nr)
+    }
+}
+
+// ---------------------------------------------------------------- el volcado
+
+fn hex(n: Int) -> Str {
+    fix digitos = "0123456789abcdef"
+    mut r = ""
+    mut x = n
+    while x > 0 {
+        r = digitos[x % 16] + r
+        x = x / 16
+    }
+    return if r == "" { "0" } else { r }
+}
+
+/// Los caracteres que `{:?}` de Rust escribe como `\u{...}`: controles, invisibles y marcas de formato.
+fn construyeEscapes() -> Mapa<Str, Str> {
+    fix m = Mapa<Str, Str>()
+    fix codigos = Lista<Int>()
+    mut i = 1
+    while i < 32 {
+        if i != 9 && i != 10 && i != 13 { codigos.agrega(i) }
+        i += 1
+    }
+    i = 127
+    while i < 160 {
+        codigos.agrega(i)
+        i += 1
+    }
+    codigos.agrega(173)
+    i = 8203
+    while i <= 8207 {
+        codigos.agrega(i)
+        i += 1
+    }
+    i = 8232
+    while i <= 8238 {
+        codigos.agrega(i)
+        i += 1
+    }
+    i = 8288
+    while i <= 8303 {
+        codigos.agrega(i)
+        i += 1
+    }
+    codigos.agrega(65279)
+    codigos.paraCada { n ->
+        fix ch = desdeCodigo(n)
+        if ch != nil { m.pone(ch, "\\u{${hex(n)}}") }
+    }
+    return m
+}
+
+fix ESCAPES = construyeEscapes()
+
+/// La cadena como `{:?}` de Rust.
+fn depura(s: Str) -> Str {
+    mut r = "\""
+    s.caracteres().paraCada { c ->
+        if c == "\"" {
+            r += "\\\""
+        } else if c == "\\" {
+            r += "\\\\"
+        } else if c == "\n" {
+            r += "\\n"
+        } else if c == "\r" {
+            r += "\\r"
+        } else if c == "\t" {
+            r += "\\t"
+        } else if c == "\u{0}" {
+            r += "\\0"
+        } else {
+            r += ESCAPES.obtiene(c) ?: c
+        }
+    }
+    return r + "\""
+}
+
+fn rellena4(n: Int) -> Str {
+    mut s = "${n}"
+    while s.largo() < 4 { s = "0" + s }
+    return s
+}
+
+/// Ordena enteros (inserción; las tablas de métodos son chicas).
+fn ordenaInts(l: Lista<Int>) -> Lista<Int> {
+    fix salida = Lista<Int>()
+    l.paraCada { c ->
+        mut i = salida.tam()
+        salida.agrega(c)
+        while i > 0 && salida.obtiene(i - 1) > c {
+            salida.pone(i, salida.obtiene(i - 1))
+            i -= 1
+        }
+        salida.pone(i, c)
+    }
+    return salida
+}
+
+/// El módulo a partir de `desde`, como `dump_module` de Rust.
+fn vuelcaModulo(c: Compilador, desde: FotoC) -> Lista<Str> {
+    fix s = Lista<Str>()
+    s.agrega("Modulo")
+    s.agrega("Cadenas ${c.cadenas.tam()}")
+    mut i = desde.nCadenas
+    while i < c.cadenas.tam() {
+        s.agrega("  ${i} ${depura(c.cadenas.obtiene(i))}")
+        i += 1
+    }
+    s.agrega("Globales ${c.globales.tam()}")
+    i = desde.nGlobales
+    while i < c.globales.tam() {
+        s.agrega("  ${i} ${c.globales.obtiene(i)}")
+        i += 1
+    }
+    s.agrega("Metodos ${c.metodos.tam()}")
+    i = desde.nMetodos
+    while i < c.metodos.tam() {
+        s.agrega("  ${i} ${c.metodos.obtiene(i)}")
+        i += 1
+    }
+    s.agrega("Clases ${c.clases.tam()}")
+    i = desde.nClases
+    while i < c.clases.tam() {
+        fix cl = c.clases.obtiene(i)
+        fix vt = Lista<Str>()
+        ordenaInts(cl.vtable.claves()).paraCada { m -> vt.agrega("${m}:${cl.vtable.obtiene(m) ?: 0}") }
+        fix sup = Lista<Str>()
+        cl.supers.paraCada { x -> sup.agrega("${x}") }
+        s.agrega("  ${i} ${cl.nombre} campos=[${une(cl.campos, ",")}] supers=[${une(sup, ",")}] vtable=[${une(vt, ",")}]")
+        i += 1
+    }
+    s.agrega("Funciones ${c.funciones.tam()}")
+    i = desde.nFunc
+    while i < c.funciones.tam() {
+        fix f = c.funciones.obtiene(i)
+        s.agrega("fn ${i} ${f.nombre}/${f.aridad} @${f.nr.a}-${f.nr.b}")
+        mut j = 0
+        while j < f.code.tam() {
+            fix r = f.spans.obtiene(j)
+            s.agrega("  ${rellena4(j)} ${f.code.obtiene(j).texto()} @${r.a}-${r.b}")
+            j += 1
+        }
+        i += 1
+    }
+    return s
+}
+
+fn main() {
+    fix todos = argumentos()
+    fix soloPreludio = !todos.vacia() && todos.obtiene(0) == "--preludio"
+    fix archivos = Lista<Str>()
+    mut k = if soloPreludio { 1 } else { 0 }
+    while k < todos.tam() {
+        archivos.agrega(todos.obtiene(k))
+        k += 1
+    }
+    if !soloPreludio && archivos.vacia() {
+        show("uso: and23 mn/compilador.jb [--preludio] archivo.jb [archivo.jb...]")
+        return
+    }
+    fix chk = Checker()
+    fix comp = Compilador(chk)
+    fix cero = comp.foto()
+    fix preludio = analiza("thing Fallo(fix msg: Str)\n" + leeArchivo("crates/and23-syntax/prelude.jb"))
+    chk.check(preludio)
+    comp.compila(preludio)
+    if soloPreludio {
+        show(une(vuelcaModulo(comp, cero), "\n"))
+        return
+    }
+    chk.sellaPreludio()
+    comp.sellaPreludio()
+    fix fotoChk = chk.foto()
+    fix fotoComp = comp.foto()
+    archivos.paraCada { ruta ->
+        chk.restaura(fotoChk)
+        comp.restaura(fotoComp)
+        attempt {
+            fix cargado = cargaModulos(ruta)
+            chk.check(cargado.programa)
+            comp.compila(cargado.programa)
+            show(une(vuelcaModulo(comp, fotoComp), "\n"))
+        } rescue e: ErrorLexico {
+            show("Error ${e.msg} @${e.desde}-${e.hasta}")
+        } rescue e: ErrorParse {
+            show("Error ${e.msg} @${e.donde.a}-${e.donde.b}")
+        } rescue e: ErrorCarga {
+            show("Error ${e.msg} @${e.donde.a}-${e.donde.b}")
+        } rescue e: ErrorTipo {
+            show("Error ${e.msg} @${e.donde.a}-${e.donde.b}")
+        } rescue e: ErrorCompila {
+            show("Error ${e.msg} @${e.donde.a}-${e.donde.b}")
+        } rescue e: ErrorLectura {
+            show(e.msg)
+        }
+        show("---")
+    }
+}

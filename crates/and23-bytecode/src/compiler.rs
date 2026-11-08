@@ -238,7 +238,10 @@ impl Compiler {
         echo: bool,
     ) -> Result<usize, Diagnostic> {
         // Las clases y funciones se registran antes de compilar: pueden usarse antes de su definición.
-        for name in res.virtuals.values() {
+        // En orden de posición, para que los ids de método no dependan del orden del `HashMap`.
+        let mut virtuals: Vec<(&Span, &String)> = res.virtuals.iter().collect();
+        virtuals.sort_by_key(|(span, _)| (span.start, span.end));
+        for (_, name) in virtuals {
             self.method_id(name);
         }
         for stmt in &program.stmts {

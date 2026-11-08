@@ -13,7 +13,7 @@
 use "lexer.jb"
 use "parser.jb"
 
-thing ErrorTipo(m: Str, fix donde: Rango) : Fallo(m)
+open thing ErrorTipo(m: Str, fix donde: Rango) : Fallo(m)
 
 // ---------------------------------------------------------------- tipos
 
@@ -221,7 +221,7 @@ fix NATIVAS_TEXTO = "_trozo:Str,Int,Int:Str _busca:Str,Str,Int:Int _mayus:Str:St
 
 thing Nativa(fix id: Int, fix params: Lista<Str>, fix ret: Str)
 
-fix NATIVAS = cargaNativas()
+open fix NATIVAS = cargaNativas()
 
 fn cargaNativas() -> Mapa<Str, Nativa> {
     fix m = Mapa<Str, Nativa>()
@@ -261,18 +261,18 @@ fix RESERVADOS = tabla("Int~1 Float~1 Bool~1 Str~1 Unit~1 Array~1 Fn~1")
 
 // ---------------------------------------------------------------- árbol
 
-fn kid(n: Nodo, i: Int) -> Nodo = n.kids.obtiene(i)
+open fn kid(n: Nodo, i: Int) -> Nodo = n.kids.obtiene(i)
 
-fn esNada(n: Nodo) -> Bool = n.tag == "None"
+open fn esNada(n: Nodo) -> Bool = n.tag == "None"
 
-fn attr(n: Nodo, i: Int) -> Str = n.attrs.parte(" ").obtiene(i)
+open fn attr(n: Nodo, i: Int) -> Str = n.attrs.parte(" ").obtiene(i)
 
-fn nombreR(n: Nodo) -> Rango = Rango(n.nd, n.nh)
+open fn nombreR(n: Nodo) -> Rango = Rango(n.nd, n.nh)
 
 fn err(msg: Str, r: Rango) -> ErrorTipo = ErrorTipo(msg, r)
 
 /// La clave de una posición en las tablas de resoluciones.
-fn claveR(r: Rango) -> Str = "${r.a}-${r.b}"
+open fn claveR(r: Rango) -> Str = "${r.a}-${r.b}"
 
 // ---------------------------------------------------------------- análisis de asignaciones
 
@@ -527,7 +527,7 @@ fn nilTest(lhs: Nodo, rhs: Nodo) -> Str? {
 // ---------------------------------------------------------------- el verificador
 
 /// Una decisión del verificador con su posición y su orden (para escribirlas ordenadas).
-thing Reg(fix a: Int, fix b: Int, fix orden: Int, fix texto: Str)
+open thing Reg(fix a: Int, fix b: Int, fix orden: Int, fix texto: Str)
 
 /// Un `Reg` de la clave `desde-hasta`.
 fn reg(clave: Str, orden: Int, nombre: Str, extra: Str) -> Reg {
@@ -544,7 +544,7 @@ fn antes(x: Reg, y: Reg) -> Bool {
 }
 
 /// Ordena por posición y, a igual posición, por orden (mezcla).
-fn ordenaRegs(l: Lista<Reg>) -> Lista<Reg> {
+open fn ordenaRegs(l: Lista<Reg>) -> Lista<Reg> {
     if l.tam() <= 1 { return l }
     fix mitad = l.tam() / 2
     fix izq = Lista<Reg>()
@@ -583,7 +583,7 @@ fn ordenaRegs(l: Lista<Reg>) -> Lista<Reg> {
 thing Foto(fix funcs: Mapa<Str, Sig>, fix classes: Mapa<Str, ClassInfo>, fix kinds: Mapa<Str, KindInfo>, fix globals: Mapa<Str, VarE>, fix overridable: Mapa<Str, Bool>, fix fnAssigned: Mapa<Str, Bool>)
 
 /// Una copia de un `Mapa` (los valores son los mismos objetos).
-fn copiaMapa<V>(m: Mapa<Str, V>) -> Mapa<Str, V> {
+open fn copiaMapa<V>(m: Mapa<Str, V>) -> Mapa<Str, V> {
     fix otra = Mapa<Str, V>()
     fix ks = m.claves()
     fix vs = m.valores()
@@ -596,7 +596,7 @@ fn copiaMapa<V>(m: Mapa<Str, V>) -> Mapa<Str, V> {
 }
 
 /// El estado del verificador: recuerda las funciones, clases y globales de lo ya verificado (el preludio).
-thing Checker() {
+open thing Checker() {
     mut funcs = Mapa<Str, Sig>()
     mut classes = Mapa<Str, ClassInfo>()
     mut kinds = Mapa<Str, KindInfo>()
@@ -670,6 +670,18 @@ thing Checker() {
         resLlamadasValor.claves().paraCada { k -> regs.agrega(reg(k, 3, "llamadaValor", "")) }
         resDescartes.claves().paraCada { k -> regs.agrega(reg(k, 4, "descarta", "")) }
         resRedirige.claves().paraCada { k -> regs.agrega(reg(k, 5, "redirige", resRedirige.obtiene(k) ?: "")) }
+        fix salida = Lista<Str>()
+        ordenaRegs(regs).paraCada { r -> salida.agrega(r.texto) }
+        return salida
+    }
+
+    /// Los nombres de los métodos virtuales resueltos, en orden de posición (el compilador les da id en ese orden).
+    fn nombresVirtuales() -> Lista<Str> {
+        fix regs = Lista<Reg>()
+        resVirtuales.claves().paraCada { k ->
+            fix p = k.parte("-")
+            regs.agrega(Reg(Int.parse(p.obtiene(0)) ?: 0, Int.parse(p.obtiene(1)) ?: 0, 0, resVirtuales.obtiene(k) ?: ""))
+        }
         fix salida = Lista<Str>()
         ordenaRegs(regs).paraCada { r -> salida.agrega(r.texto) }
         return salida

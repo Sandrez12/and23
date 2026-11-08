@@ -16,7 +16,7 @@ Uso:
   and23 fmt [--check] <archivos.jb...>   da formato a los archivos (con --check solo avisa de los que cambiarían)
   and23 --tokens <archivo.jb>   vuelca los tokens (para comparar con el lexer escrito en And23, mn/lexer.jb)
   and23 --ast <archivo.jb>      vuelca el árbol sintáctico (para comparar con el parser escrito en And23, mn/parser.jb)
-  and23 --dump <archivo.jb>     vuelca el módulo compilado (para comparar con el compilador escrito en And23); --dump-preludio, el del preludio
+  and23 --dump <archivo.jb>     vuelca el módulo compilado (para comparar con mn/compilador.jb); --dump-preludio, el del preludio
   and23 --unido <archivo.jb>    vuelca el programa unido tras cargar `use` (para comparar con mn/modulos.jb)
   and23 --resuelve <archivo.jb> como --check, más lo que decidió el verificador para el compilador (campos, llamadas virtuales...)
   and23 --check <archivo.jb>    verifica los tipos (para comparar con el verificador escrito en And23, mn/checker.jb)
@@ -493,20 +493,37 @@ fn dump_bytecode(path: Option<&str>) -> u8 {
         print!("{text}");
         return 0;
     };
-    let result = load_program(path).and_then(|loaded| {
-        let from = DumpFrom::of(compiler.module());
-        let program_src = loaded.sources.combined();
-        let res = checker
-            .check(&loaded.program)
-            .map_err(|d| loaded.sources.render(&d))?;
-        compiler
-            .compile(&loaded.program, &res, false)
-            .map_err(|d| loaded.sources.render(&d))?;
-        let at = |b: usize| program_src[..b.min(program_src.len())].chars().count();
-        print!("{}", dump_module(compiler.module(), from, &prelude_at, &at));
-        Ok(())
-    });
-    finish(result)
+    let loaded = match and23_syntax::modules::load(path, |p| std::fs::read_to_string(p)) {
+        Ok(loaded) => loaded,
+        Err(and23_syntax::modules::Failure::Io(text)) => return finish(Err(text)),
+        Err(and23_syntax::modules::Failure::Diag(d, sources)) => {
+            let src = sources.combined();
+            let at = |b: usize| src[..b.min(src.len())].chars().count();
+            println!(
+                "Error {} @{}-{}",
+                d.message,
+                at(d.span.start),
+                at(d.span.end)
+            );
+            return 0;
+        }
+    };
+    let from = DumpFrom::of(compiler.module());
+    let program_src = loaded.sources.combined();
+    let at = |b: usize| program_src[..b.min(program_src.len())].chars().count();
+    let compiled = checker
+        .check(&loaded.program)
+        .and_then(|res| compiler.compile(&loaded.program, &res, false));
+    match compiled {
+        Ok(_) => print!("{}", dump_module(compiler.module(), from, &prelude_at, &at)),
+        Err(d) => println!(
+            "Error {} @{}-{}",
+            d.message,
+            at(d.span.start),
+            at(d.span.end)
+        ),
+    }
+    0
 }
 
 fn finish(result: Result<(), String>) -> u8 {

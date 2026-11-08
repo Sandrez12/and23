@@ -626,6 +626,24 @@ argumentos, lambdas con tipos del contexto, herencia e interfaces). Recorre el �
   0,04 s con el de Rust, que incluye arrancar el proceso. Verificar sus 4 200 líneas: 0,58 s contra 0,19 s. Con la foto del estado, 432
   archivos en un solo proceso tardan unos 0,9 s.
 
+#### Etapa 4: `mn/compilador.jb`
+
+El compilador a bytecode escrito en And23 (unas 1 000 líneas contra unas 1 600 de `compiler.rs` sin los tests). Toma el árbol unido por
+`modulos.jb` y las resoluciones del verificador (`Checker.resCampos`, `resVirtuales`...) y construye el mismo módulo: tablas (cadenas, globales,
+métodos, clases con su tabla virtual) y funciones con sus instrucciones y la posición de cada una.
+
+- **Cómo se compara.** `and23 mn/compilador.jb [--preludio] a.jb b.jb...` escribe, por archivo, lo mismo que `and23 --dump` (o `--dump-preludio`)
+  más una línea `---`; el test `el_compilador_escrito_en_and23_coincide_con_el_de_rust` lo exige sobre el preludio entero, los ejemplos, los
+  casos del verificador y de los módulos (también sus errores) y los cinco archivos de `mn/`, `compilador.jb` incluido. Como el verificador, el
+  compilador tiene `foto()`/`restaura(foto)` para compilar muchos archivos sobre el preludio en un solo proceso.
+- **Datos.** `Instr(nombre, a, b, nargs, extra)` en vez de un `enum` de instrucciones (un salto se completa cambiando `a`); `Func`, `ClassDef`
+  y las tablas son clases y `Mapa`s. Las variables `mut` capturadas por una lambda viven en celdas, y como eso se descubre al compilar la
+  lambda, `construye` repite la función con las capturas nuevas, igual que `build`.
+- **Un fallo de Rust que apareció.** El compilador daba id a los métodos recorriendo `res.virtuals` (un `HashMap`), así que los ids, y el
+  volcado, cambiaban entre ejecuciones. Ahora se recorren por posición.
+- **Lo que falta para compilarse a sí mismo.** El módulo que produce Mn es una estructura de And23, no algo que la VM cargue: hace falta
+  escribirlo en un formato (o construir el `Module` de la VM desde él) y ejecutarlo; esa es la siguiente etapa.
+
 #### Antes de la etapa 4: módulos, resoluciones y volcado del bytecode
 
 - **`mn/modulos.jb`** es el port de `modules.rs`: lee el archivo principal y lo que importa con `use`, renombra cada declaración de un módulo

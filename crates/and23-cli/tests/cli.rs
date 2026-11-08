@@ -1459,3 +1459,94 @@ fn run_dump(src: &str) -> String {
     assert!(out.status.success(), "{}", stderr(&out));
     stdout(&out)
 }
+
+/// Mn, etapa 4: el compilador escrito en And23 (`mn/compilador.jb`) produce el mismo módulo que el de Rust
+/// (`and23 --dump`): tablas, funciones, instrucciones y posiciones, o el mismo error. Cubre el preludio, los
+/// ejemplos, los casos del verificador y de los módulos, y los propios archivos de Mn (él mismo incluido).
+#[test]
+fn el_compilador_escrito_en_and23_coincide_con_el_de_rust() {
+    let root = raiz_del_repo();
+    // El preludio entero.
+    let rust = Command::new(env!("CARGO_BIN_EXE_and23"))
+        .arg("--dump-preludio")
+        .output()
+        .unwrap();
+    let and23 = Command::new(env!("CARGO_BIN_EXE_and23"))
+        .args(["mn/compilador.jb", "--preludio"])
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    assert!(and23.status.success(), "{}", stderr(&and23));
+    assert_eq!(
+        stdout(&and23).trim_end(),
+        stdout(&rust).trim_end(),
+        "el preludio compila distinto"
+    );
+    let mut files = Vec::new();
+    jb_files(&root.join("examples"), &mut files);
+    jb_files(&root.join("mn/casos_checker"), &mut files);
+    jb_files(&root.join("mn/casos_modulos"), &mut files);
+    files.retain(|f| {
+        let path = f.to_string_lossy().replace('\\', "/");
+        // Los programas de varios archivos se cargan por su principal.
+        !path.contains("/casos_modulos/") || f.file_name().is_some_and(|n| n == "main.jb")
+    });
+    files.retain(|f| {
+        let path = f.to_string_lossy().replace('\\', "/");
+        !path.contains("/examples/proyecto/") || f.file_name().is_some_and(|n| n == "main.jb")
+    });
+    for name in [
+        "lexer.jb",
+        "parser.jb",
+        "checker.jb",
+        "modulos.jb",
+        "compilador.jb",
+    ] {
+        files.push(root.join("mn").join(name));
+    }
+    assert!(files.len() > 300, "{} archivos", files.len());
+    let rel = |f: &PathBuf| {
+        f.strip_prefix(&root)
+            .unwrap_or(f)
+            .to_string_lossy()
+            .replace('\\', "/")
+    };
+    let hilos = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
+    let trozo = files.len().div_ceil(hilos);
+    std::thread::scope(|scope| {
+        for parte in files.chunks(trozo) {
+            let (root, rel) = (&root, &rel);
+            scope.spawn(move || {
+                let nombres: Vec<String> = parte.iter().map(rel).collect();
+                let and23 = Command::new(env!("CARGO_BIN_EXE_and23"))
+                    .arg("mn/compilador.jb")
+                    .args(&nombres)
+                    .current_dir(root)
+                    .output()
+                    .unwrap();
+                assert!(and23.status.success(), "{}", stderr(&and23));
+                let mut esperado = String::new();
+                for nombre in &nombres {
+                    let rust = Command::new(env!("CARGO_BIN_EXE_and23"))
+                        .arg("--dump")
+                        .arg(nombre)
+                        .current_dir(root)
+                        .output()
+                        .unwrap();
+                    esperado.push_str(&stdout(&rust));
+                    esperado.push_str("---\n");
+                }
+                let obtenido = stdout(&and23);
+                if obtenido != esperado {
+                    let (a, b) = (obtenido.lines(), esperado.lines());
+                    let linea = a.zip(b).position(|(x, y)| x != y).unwrap_or(0);
+                    panic!(
+                        "el compilador de And23 difiere en el grupo {nombres:?} (línea {linea}):\n{:?}\n{:?}",
+                        obtenido.lines().nth(linea),
+                        esperado.lines().nth(linea)
+                    );
+                }
+            });
+        }
+    });
+}

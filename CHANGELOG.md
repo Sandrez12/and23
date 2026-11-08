@@ -10,6 +10,9 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). L
   variante o tipo (`c: Circulo -> ...`) como sentencia y como expresión, con comprobación de que cubre todas las variantes de un enumerado
   del mismo archivo, e `if c { a } else { b }` como valor. Nuevas palabras clave: `enum` y `match`. Ver `examples/enumerados.jb`.
 - `and23 --tokens` muestra la posición de cada token (`@desde-hasta`) y la del error; `and23 --ast` hace lo mismo con los nodos.
+- **Mn, etapa 4.** `mn/compilador.jb`, el compilador a bytecode de And23 escrito en And23 (port de `compiler.rs`), comparado con el de Rust
+  (`and23 --dump`) sobre el preludio, los ejemplos, los casos del verificador y de los módulos y los propios archivos de Mn, él mismo incluido
+  (unas 70 000 líneas de bytecode idénticas, con la posición de cada instrucción).
 - **Mn, etapa 3.** `mn/checker.jb`, el verificador de tipos de And23 escrito en And23, comparado con el de Rust (`and23 --check`) sobre el
   preludio, los ejemplos, los archivos de `mn`, 297 programas de los tests del verificador y 108 casos propios; y se verifica a sí mismo.
 - **Mn, etapa 2.** `mn/parser.jb`, el parser de And23 escrito en And23, comparado árbol por árbol con el de Rust (`and23 --ast`) sobre el
@@ -25,6 +28,8 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). L
 - `listaDe(arreglo)` (una `Lista` desde un arreglo literal) y `Dupla<A, B>` (dos valores juntos) en la biblioteca base.
 
 ### Cambiado
+- Los ids de método del compilador ya no dependen del orden de un `HashMap`: se asignan por posición en el fuente (antes el volcado del
+  bytecode cambiaba de una ejecución a otra).
 - Un valor devuelto que es a veces `T` y a veces `nil` en una función o lambda sin tipo de retorno (y en un `if` como valor) da `T?`, en vez
   de pedir anotar el tipo.
 - Los campos `fix` de `this` se estrechan tras comprobar `!= nil` (los `mut` siguen sin estrecharse).
