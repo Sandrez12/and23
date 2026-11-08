@@ -1,3 +1,4 @@
 * text=auto eol=lf
 *.jb text eol=lf
 *.rs text eol=lf
+mn/casos/crlf.jb -text
