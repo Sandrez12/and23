@@ -1,0 +1,37 @@
+fn main() {
+    // recursión simple
+    fix fact: (Int) -> Int = { n ->
+        if n <= 1 { return 1 }
+        return n * fact(n - 1)
+    }
+    show(fact(10))
+    // se captura también otra variable local
+    fix base = 100
+    fix suma: (Int) -> Int = { n ->
+        if n == 0 { return base }
+        return n + suma(n - 1)
+    }
+    show(suma(4))
+    // lambda anidada dentro de la lambda que se llama a sí misma
+    fix cuenta: (Int) -> Int = { n ->
+        if n == 0 { return 0 }
+        fix paso: () -> Int = { -> 1 + cuenta(n - 1) }
+        return paso()
+    }
+    show(cuenta(5))
+    // mut: se puede reasignar después
+    mut g: (Int) -> Int = { n -> if n <= 0 { return 0 } else { return g(n - 1) + 1 } }
+    show(g(3))
+    g = { n -> n * 2 }
+    show(g(21))
+    // una lambda con tipo anotado que no se llama a sí misma sigue igual
+    fix doble: (Int) -> Int = { n -> n * 2 }
+    show(doble(4))
+    // pasa la lambda recursiva a una función
+    fix l = Lista<Int>()
+    l.agrega(3)
+    l.agrega(4)
+    fix ts = Lista<Int>()
+    l.paraCada { x -> ts.agrega(fact(x)) }
+    show(ts)
+}

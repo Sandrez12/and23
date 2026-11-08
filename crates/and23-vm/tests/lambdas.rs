@@ -510,7 +510,7 @@ show(fact(10))
         "3628800
 "
     );
-    // Dentro de una función la variable aún no existe cuando se crea la lambda.
+    // Dentro de una función también (paso 2.1 de 1.0): la variable se declara antes de comprobar la lambda.
     let local = r#"
 fn main() {
     fix fact: (Int) -> Int = { n -> if n <= 1 { return 1 }
@@ -518,7 +518,18 @@ fn main() {
     show(fact(5))
 }
 "#;
-    assert!(err(local).contains("`fact` no está definida"));
+    assert_eq!(ok(local), "120\n");
+    // Sin el tipo anotado no se puede: el error explica qué hacer.
+    let sin_tipo = r#"
+fn main() {
+    fix fact = { n: Int -> if n <= 1 { return 1 }
+        return n * fact(n - 1) }
+    show(fact(5))
+}
+"#;
+    assert!(
+        err(sin_tipo).contains("`fact` no está definida (para que una lambda se llame a sí misma")
+    );
 }
 
 #[test]

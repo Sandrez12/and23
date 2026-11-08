@@ -1,0 +1,6 @@
+// Dos lambdas locales que se llaman entre sí: la primera aún no ve a la segunda.
+fn main() {
+    fix par: (Int) -> Bool = { n -> if n == 0 { return true } else { return impar(n - 1) } }
+    fix impar: (Int) -> Bool = { n -> if n == 0 { return false } else { return par(n - 1) } }
+    show(par(4))
+}

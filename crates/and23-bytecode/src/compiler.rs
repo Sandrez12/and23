@@ -805,10 +805,19 @@ impl<'a> FnCompiler<'a> {
                 name,
                 name_span,
                 mutable,
+                ty,
                 init,
                 span,
-                ..
             } => {
+                // `fix f: (Int) -> Int = { ... f(x) ... }` dentro de una función o un bloque: la lambda se captura a sí
+                // misma. El verificador ya declaró `f` antes de la lambda; aquí `f` se registra antes de compilarla y, si la
+                // lambda la captura, vive en una celda que se rellena con la lambda ya creada.
+                let recursive = !(self.script && self.depth == 0)
+                    && matches!(init, Expr::Lambda { .. })
+                    && ty.as_ref().is_some_and(|t| t.name == "Fn");
+                if recursive {
+                    return self.recursive_let(name, *name_span, *mutable, init, *span);
+                }
                 self.expr(init)?;
                 if self.script && self.depth == 0 {
                     let (slot, _) = self.tables.globals[name];
@@ -1039,6 +1048,53 @@ impl<'a> FnCompiler<'a> {
             }
             // Las registró `compile_program`.
             Stmt::Fn(_) | Stmt::Thing(_) | Stmt::Kind(_) => {}
+        }
+        Ok(())
+    }
+
+    /// Un `let` local cuya lambda puede llamarse a sí misma. La variable se registra antes de compilar la lambda, en la posición
+    /// de pila donde quedará su valor. Si la lambda no la captura, el resultado es el de un `let` normal. Si la captura, la
+    /// variable es una celda (como una `mut` capturada, con la repetición de `build`): `Nil`, `NewCell`, la lambda (que captura
+    /// la celda) y `CellSet`.
+    fn recursive_let(
+        &mut self,
+        name: &str,
+        name_span: Span,
+        mutable: bool,
+        init: &Expr,
+        span: Span,
+    ) -> Result<(), Diagnostic> {
+        if self
+            .locals
+            .iter()
+            .any(|local| local.depth == self.depth && local.name == name)
+        {
+            return Err(already_declared(name, name_span));
+        }
+        let ord = self.mut_count;
+        self.mut_count += 1;
+        let boxed = self.box_ids.contains(&ord);
+        let slot = self.locals.len() as u32;
+        if boxed {
+            self.emit(Op::Nil, span);
+            self.emit(Op::NewCell, span);
+        }
+        // `mutable: true` hace que `find` pida la celda si una lambda captura la variable (la asignación a una `fix` ya la
+        // rechazó el verificador).
+        self.locals.push(Local {
+            name: name.to_string(),
+            mutable: true,
+            depth: self.depth,
+            ord: Some(ord),
+            boxed,
+        });
+        self.expr(init)?;
+        if boxed {
+            self.emit(Op::GetLocal(slot), span);
+            self.emit(Op::CellSet, span);
+        } else {
+            // El valor de la lambda queda en la posición de la variable; la que se registró era la de un `let` normal.
+            self.locals[slot as usize].mutable = mutable;
         }
         Ok(())
     }

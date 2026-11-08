@@ -1780,3 +1780,47 @@ fn partir_un_texto_grande_no_es_cuadratico() {
         inicio.elapsed()
     );
 }
+
+/// Paso 2.1: una lambda local con el tipo anotado puede llamarse a sí misma (en funciones, bloques y métodos), también
+/// capturando otras variables, anidada, con `mut`, y con el recolector en cada punto seguro.
+#[test]
+fn una_lambda_local_puede_llamarse_a_si_misma() {
+    let fuente =
+        std::fs::read_to_string(raiz_del_repo().join("mn/casos_checker/x_lambda_rec_varias.jb"))
+            .unwrap();
+    for stress in [false, true] {
+        let path =
+            std::env::temp_dir().join(format!("and23_lrec_{stress}_{}.jb", std::process::id()));
+        std::fs::write(&path, &fuente).unwrap();
+        let mut cmd = and23();
+        if stress {
+            cmd.arg("--gc-stress");
+        }
+        let out = cmd.arg(&path).output().unwrap();
+        std::fs::remove_file(&path).ok();
+        assert!(out.status.success(), "{}", stderr(&out));
+        assert_eq!(
+            stdout(&out),
+            "3628800\n110\n5\n3\n42\n8\n[6, 24]\n",
+            "stress={stress}"
+        );
+    }
+    let metodo =
+        std::fs::read_to_string(raiz_del_repo().join("mn/casos_checker/x_lambda_rec_metodo.jb"))
+            .unwrap();
+    assert_eq!(stdout(&run_source("lrec_metodo", &metodo)), "20\n");
+}
+
+#[test]
+fn una_lambda_sin_tipo_anotado_no_puede_llamarse_a_si_misma_y_el_error_lo_explica() {
+    let out = run_source(
+        "lrec_sin_tipo",
+        "fn main() {\n    fix f = { n: Int -> if n <= 0 { return 0 } else { return f(n - 1) } }\n    show(f(1))\n}\n",
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("la función `f` no está definida (para que una lambda se llame a sí misma, anota su tipo: `fix f: (Int) -> Int = { ... }`)"),
+        "{}",
+        stderr(&out)
+    );
+}

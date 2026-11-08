@@ -388,8 +388,14 @@ fix m = Mapa<Str, Int>()                                                // expl�
 - **Verificación de lambdas:** una llamada genérica mira cada lambda dos veces (al deducir y al comprobar), y el cuerpo contiene a su vez
   llamadas con lambdas. Para que no costara 2^profundidad, el verificador recuerda el tipo de cada lambda ya verificada, con clave: su
   posición, los tipos esperados y los tipos de todas las variables a la vista. 40 niveles anidados verifican al instante.
-- **Límites conocidos de M8:** una lambda no puede referirse a sí misma por su nombre dentro de una función (solo vale en el nivel superior y con el tipo anotado,
-  `fix f: (Int) -> Int = { ... f(x) ... }`, donde `f` es global); no hay `it` implícito ni sintaxis `::nombre`; los métodos y constructores no se pasan como
+- **Lambdas que se llaman a sí mismas (paso 2.1 de 1.0).** `fix f: (Int) -> Int = { n -> ... f(n - 1) ... }` vale en el nivel superior (donde
+  `f` es global) y también dentro de funciones, métodos y bloques. Hace falta el tipo anotado (el de función) y que el valor sea una lambda;
+  sin él, el error añade «anota su tipo». El verificador declara la variable antes de comprobar la lambda; el compilador la registra antes de
+  compilarla y, si la lambda se captura a sí misma, la guarda en una celda (la misma maquinaria que una `mut` capturada, con la repetición de
+  `build`): `Nil`, `NewCell`, la lambda y `CellSet`. Si no se captura, el bytecode es el de un `let` normal. Una lambda local no ve a otra
+  declarada después (la recursión mutua entre dos locales sigue sin ser posible; en el nivel superior sí). Cambio compatible salvo un caso:
+  una lambda que llamaba a una función exterior del mismo nombre que su variable ahora se llama a sí misma.
+- **Límites conocidos de M8:** no hay `it` implícito ni sintaxis `::nombre`; los métodos y constructores no se pasan como
   valores (envuélvelos en una lambda); no hay lambdas genéricas ni cotas en las interfaces; `ordena` es una inserción estable O(n²).
 
 ### Módulos (M9)
@@ -734,7 +740,7 @@ las palabras reservadas, `len`, `push`, `pop` y `hash` son funciones integradas,
 
 | Límite | Veredicto | Paso |
 |---|---|---|
-| Lambda que se llama a sí misma dentro de una función | **Antes de 1.0** | 2.1 |
+| Lambda que se llama a sí misma dentro de una función | **Antes de 1.0** | 2.1, hecho |
 | `Mapa` sin orden de inserción | **Antes de 1.0** | 2.2 |
 | Sin formato de decimales | **Antes de 1.0** | 2.3 |
 | `ordena` en O(n²) | **Antes de 1.0** | 2.4 |

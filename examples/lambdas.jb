@@ -89,6 +89,13 @@ fn main() {
     show(caja.mapea { x -> x + 1 }.valor)
     show(caja.mapea { x -> "valor ${x}" }.valor)
 
+    // Una lambda que se llama a sí misma: hay que anotar el tipo de la variable
+    fix factorial: (Int) -> Int = { n ->
+        if n <= 1 { return 1 }
+        return n * factorial(n - 1)
+    }
+    show(factorial(10))
+
     // Una excepción atraviesa las lambdas
     attempt {
         numeros.paraCada { n -> if n == 3 { fail Fallo("paré en ${n}") } }

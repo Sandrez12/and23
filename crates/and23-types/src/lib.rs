@@ -1523,6 +1523,15 @@ impl<'p> Pass<'p> {
                         return self.expr_as(ctx, init, &expected);
                     }
                 }
+                // Lo mismo dentro de una función o un bloque: una variable local con tipo de función anotado y una lambda
+                // como valor se declara antes de comprobar la lambda, que así puede llamarse a sí misma.
+                if let (Some(ty), false, Expr::Lambda { .. }) = (ty, ctx.scopes.is_empty(), init) {
+                    let expected = self.resolve(ty)?;
+                    if matches!(expected, Type::Fn(..)) {
+                        self.declare(ctx, name, (expected.clone(), *mutable), *name_span)?;
+                        return self.expr_as(ctx, init, &expected);
+                    }
+                }
                 let declared = match ty {
                     Some(ty) => {
                         let expected = self.resolve(ty)?;
@@ -1530,7 +1539,17 @@ impl<'p> Pass<'p> {
                         expected
                     }
                     None => {
-                        let found = self.expr(ctx, init)?;
+                        let found = self.expr(ctx, init).map_err(|mut d| {
+                            // Una lambda sin tipo anotado no puede llamarse a sí misma: avisa cómo hacerlo.
+                            let is_itself = d.message == format!("la función `{name}` no está definida")
+                                || d.message == format!("la variable `{name}` no está definida");
+                            if is_itself && matches!(init, Expr::Lambda { .. }) {
+                                d.message.push_str(&format!(
+                                    " (para que una lambda se llame a sí misma, anota su tipo: `fix {name}: (Int) -> Int = {{ ... }}`)"
+                                ));
+                            }
+                            d
+                        })?;
                         no_nil(&found, init.span())?;
                         found
                     }

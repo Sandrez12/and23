@@ -371,9 +371,42 @@ thing FnCompiler(fix c: Compilador, fix nombre: Str, fix nr: Rango) {
         }
     }
 
+    /// Un `let` local cuya lambda puede llamarse a sí misma (`fix f: (Int) -> Int = { ... f(x) ... }`). La variable se registra
+    /// antes de compilar la lambda, en la posición de pila donde quedará su valor. Si la lambda no la captura, el resultado es el
+    /// de un `let` normal. Si la captura, la variable es una celda (como una `mut` capturada, con la repetición de `construye`):
+    /// `Nil`, `NewCell`, la lambda (que captura la celda) y `CellSet`.
+    fn letRecursivo(s: Nodo, nombre: Str, mutable: Bool) {
+        if locals.alguno({ l -> l.depth == depth && l.nombre == nombre }) {
+            fail yaDeclarada(nombre, nombreR(s))
+        }
+        fix ord = mutCount
+        mutCount += 1
+        fix boxed = boxIds.contiene(ord)
+        fix slot = locals.tam()
+        if boxed {
+            emit(instr0("Nil"), rg(s))
+            emit(instr0("NewCell"), rg(s))
+        }
+        // `mutable: true` hace que `find` pida la celda si una lambda captura la variable (la asignación a una `fix` ya
+        // la rechazó el verificador).
+        locals.agrega(Local(nombre, true, depth, ord, boxed))
+        expr(kid(s, 1))
+        if boxed {
+            emit(instr1("GetLocal", slot), rg(s))
+            emit(instr0("CellSet"), rg(s))
+        } else {
+            locals.pone(slot, Local(nombre, mutable, depth, ord, false))
+        }
+    }
+
     fn declaraLet(s: Nodo) {
         fix nombre = attr(s, 0)
         fix mutable = attr(s, 1) == "mut"
+        fix tyNodo = kid(s, 0)
+        if !(script && depth == 0) && kid(s, 1).tag == "Lambda" && !esNada(tyNodo) && tyNodo.attrs == "Fn" {
+            letRecursivo(s, nombre, mutable)
+            return
+        }
         expr(kid(s, 1))
         if script && depth == 0 {
             fix g = c.tGlobals.obtiene(nombre)

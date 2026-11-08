@@ -1,0 +1,4 @@
+fn main() {
+    fix f: (Int) -> Int = { n -> n }
+    fix f: (Int) -> Int = { n -> f(n) }
+}

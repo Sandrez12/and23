@@ -51,7 +51,7 @@ Se deciden **antes** de tocar el lenguaje, porque cada una condiciona la Fase 2.
 
 **Hacer antes de 1.0** (los que un usuario encuentra a la primera semana):
 
-- [ ] **2.1 Lambdas que se llaman a sí mismas dentro de una función.** (M)
+- [x] **2.1 Lambdas que se llaman a sí mismas dentro de una función.** (M)
 - [ ] **2.2 `Mapa` con orden de inserción.** (M) Hoy el orden al recorrer no es predecible.
 - [ ] **2.3 Formato de decimales** (`formato(x, 2)` o equivalente). (S)
 - [ ] **2.4 `ordena` en O(n log n).** (S) Hoy es O(n²).
@@ -60,6 +60,8 @@ Se deciden **antes** de tocar el lenguaje, porque cada una condiciona la Fase 2.
 - [ ] **2.7 Pasar métodos y constructores como valores.** (M) Hoy hay que envolverlos en una lambda.
 - [x] **2.8 Retirar el intérprete de árbol** (`--tree` y el crate `and23-eval`). (M) Decidido en 1.4: los tests de `diferencial.rs` pasan a
   salidas esperadas escritas a mano.
+- [ ] **2.9 `if`/`else` como último valor de una lambda.** (M) Hoy `{ n -> if n <= 1 { 1 } else { 2 } }` da «la lambda debe devolver un valor de tipo Int»
+  y hay que escribir `return` en cada rama. Descubierto al hacer el 2.1; la lambda tiene que aceptar un `if` con `else` (y un `match`) como su valor final.
 
 **Documentar como límite de 1.0, posponer a 1.x** (si no hay razón para cambiarlo):
 herencia múltiple de clases, métodos por defecto en interfaces, cotas múltiples, varianza y comodines, guardas y

@@ -1,0 +1,4 @@
+fn main() {
+    fix f: (Int) -> Int = { n -> if n <= 0 { return 0 } else { return f(n - 1) } }
+    f = { n -> n }
+}

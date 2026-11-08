@@ -1,0 +1,12 @@
+thing Cuenta(fix tope: Int) {
+    fn hasta() -> Int {
+        mut total = 0
+        fix suma: (Int) -> Int = { n ->
+            if n > tope { return 0 }
+            total += n
+            return n + suma(n + 1)
+        }
+        return suma(1) + total
+    }
+}
+show(Cuenta(4).hasta())

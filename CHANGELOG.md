@@ -44,6 +44,10 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). L
   de la etapa 4.
 - `listaDe(arreglo)` (una `Lista` desde un arreglo literal) y `Dupla<A, B>` (dos valores juntos) en la biblioteca base.
 
+### Cambiado (lenguaje)
+- **Una lambda local puede llamarse a sí misma:** `fix f: (Int) -> Int = { n -> ... f(n - 1) ... }` ya vale dentro de funciones, métodos y bloques
+  (antes solo en el nivel superior). Hace falta anotar el tipo de función; sin él, el error explica cómo. Ver `examples/lambdas.jb`.
+
 ### Eliminado
 - El intérprete de árbol (`and23 --tree` y el crate `and23-eval`): era la referencia de M1a y no conocía la biblioteca, las tareas ni las cadenas. Sus
   salidas esperadas quedaron fijas en `crates/and23-vm/tests/semantica.rs` (antes `diferencial.rs`).

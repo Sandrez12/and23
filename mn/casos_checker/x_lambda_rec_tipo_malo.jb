@@ -1,0 +1,4 @@
+fn main() {
+    fix f: (Int) -> Int = { n -> if n <= 0 { return "cero" } else { return f(n - 1) } }
+    show(f(2))
+}

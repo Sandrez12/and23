@@ -1670,13 +1670,33 @@ open thing Checker() {
                         return
                     }
                 }
+                // Lo mismo dentro de una función o un bloque: una variable local con tipo de función anotado y una lambda
+                // como valor se declara antes de comprobar la lambda, que así puede llamarse a sí misma.
+                if !esNada(tyNodo) && !ctx.scopes.vacia() && init.tag == "Lambda" {
+                    fix esperado = resolve(tyNodo)
+                    if esperado.k == "Fn" {
+                        declare(ctx, nombre, esperado, mutab, nombreR(s))
+                        exprAs(ctx, init, esperado)
+                        return
+                    }
+                }
                 mut declarado = T_UNIT
                 if !esNada(tyNodo) {
                     fix esperado = resolve(tyNodo)
                     exprAs(ctx, init, esperado)
                     declarado = esperado
                 } else {
-                    fix hallado = expr(ctx, init)
+                    mut hallado = T_UNIT
+                    attempt {
+                        hallado = expr(ctx, init)
+                    } rescue e: ErrorTipo {
+                        // Una lambda sin tipo anotado no puede llamarse a sí misma: avisa cómo hacerlo.
+                        fix esElla = e.msg == "la función `${nombre}` no está definida" || e.msg == "la variable `${nombre}` no está definida"
+                        if esElla && init.tag == "Lambda" {
+                            fail err(e.msg + " (para que una lambda se llame a sí misma, anota su tipo: `fix ${nombre}: (Int) -> Int = { ... }`)", e.donde)
+                        }
+                        fail e
+                    }
                     noNil(hallado, rg(init))
                     declarado = hallado
                 }
