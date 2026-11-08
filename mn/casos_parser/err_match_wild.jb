@@ -1,0 +1,2 @@
+match 1 { _ -> show(1)
+ 2 -> show(2) }

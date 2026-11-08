@@ -1,0 +1,6 @@
+show("")
+show("a${1}b${f(2)}c")
+show("${a}${b}")
+show("${ { x -> x }(1) }")
+show("n ${"anidada ${1 + 2}"}")
+show("tab\t nl\n \u{e9} \$")

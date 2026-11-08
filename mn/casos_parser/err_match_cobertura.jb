@@ -1,0 +1,3 @@
+enum C { A, B, D }
+match C.A { C.A -> show(1)
+ C.B -> show(2) }

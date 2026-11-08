@@ -1,0 +1,1 @@
+fix x = if true { 1 } else 2

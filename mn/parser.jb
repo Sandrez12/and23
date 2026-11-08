@@ -1,0 +1,1285 @@
+// Mn, paso 2: el parser de And23 escrito en And23.
+//
+// Hace lo mismo que `crates/and23-syntax/src/parser.rs`, incluidas las traducciones de `enum`, `match`,
+// `if` como valor y `prueba`, y vuelca el árbol con el mismo formato que `and23 --ast`:
+//
+//     and23 mn/parser.jb archivo.jb
+//
+// El árbol es uniforme: un `Nodo` tiene una etiqueta, unos atributos (texto) y unos hijos. Es el mismo
+// formato del volcado, así que construirlo y mostrarlo es lo mismo. Más adelante un AST con clases
+// ganaría seguridad de tipos; por ahora lo importante es comparar con el parser de Rust.
+//
+// No lleva posiciones, y los errores solo comparan su mensaje.
+
+use "lexer.jb"
+
+thing ErrorParse(m: Str) : Fallo(m)
+
+thing Nodo(fix tag: Str, fix attrs: Str, fix kids: Lista<Nodo>)
+
+fn hoja(tag: Str, attrs: Str) -> Nodo = Nodo(tag, attrs, Lista<Nodo>())
+
+fn vacio(tag: Str) -> Nodo = Nodo(tag, "", Lista<Nodo>())
+
+fn nada() -> Nodo = hoja("None", "")
+
+fn con(tag: Str, attrs: Str, kids: Lista<Nodo>) -> Nodo = Nodo(tag, attrs, kids)
+
+fn uno(tag: Str, attrs: Str, a: Nodo) -> Nodo {
+    fix k = Lista<Nodo>()
+    k.agrega(a)
+    return Nodo(tag, attrs, k)
+}
+
+fn dos(tag: Str, attrs: Str, a: Nodo, b: Nodo) -> Nodo {
+    fix k = Lista<Nodo>()
+    k.agrega(a)
+    k.agrega(b)
+    return Nodo(tag, attrs, k)
+}
+
+fn tres(tag: Str, attrs: Str, a: Nodo, b: Nodo, c: Nodo) -> Nodo {
+    fix k = Lista<Nodo>()
+    k.agrega(a)
+    k.agrega(b)
+    k.agrega(c)
+    return Nodo(tag, attrs, k)
+}
+
+fn cuatro(tag: Str, attrs: Str, a: Nodo, b: Nodo, c: Nodo, d: Nodo) -> Nodo {
+    fix k = Lista<Nodo>()
+    k.agrega(a)
+    k.agrega(b)
+    k.agrega(c)
+    k.agrega(d)
+    return Nodo(tag, attrs, k)
+}
+
+fn comillas(s: Str) -> Str = "\"${escapa(s)}\""
+
+fn listaDe1(a: Nodo) -> Lista<Nodo> {
+    fix k = Lista<Nodo>()
+    k.agrega(a)
+    return k
+}
+
+/// `{ -> cuerpo }()`: ejecuta el cuerpo al instante; sus `return` dan el valor de la expresión.
+fn inmediata(stmts: Lista<Nodo>) -> Nodo {
+    fix lambda = dos("Lambda", "", vacio("LParams"), con("Block", "", stmts))
+    return dos("CallValue", "", lambda, vacio("Args"))
+}
+
+// ---------------------------------------------------------------- tablas
+
+fix BIN = tabla("OrOr~|| AndAnd~&& EqEq~== NotEq~!= Lt~< LtEq~<= Gt~> GtEq~>= Plus~+ Minus~- Star~* Slash~/ Percent~%")
+fix ASIGNA = tabla("Assign~= PlusEq~+= MinusEq~-= StarEq~*= SlashEq~/= PercentEq~%=")
+
+/// Enlace izquierdo de un operador binario (el derecho es uno más); 0 si el token no es un operador.
+fn bpIzq(t: Str) -> Int = match t {
+    "OrOr" -> 1
+    "AndAnd" -> 3
+    "EqEq", "NotEq" -> 5
+    "Lt", "LtEq", "Gt", "GtEq" -> 7
+    "Plus", "Minus" -> 9
+    "Star", "Slash", "Percent" -> 11
+    _ -> 0
+}
+
+/// Cómo se nombra un token en los mensajes de error.
+fn describe(t: Token) -> Str {
+    match t.tipo {
+        "Int" -> return "el entero `${t.valor}`"
+        "Float" -> {
+            mut v = t.valor
+            if v.largo() > 2 && v.trozo(v.largo() - 2, v.largo()) == ".0" { v = v.trozo(0, v.largo() - 2) }
+            return "el decimal `${v}`"
+        }
+        "Ident" -> return "el identificador `${t.valor}`"
+        "Str" -> return "una cadena"
+        "Newline" -> return "el fin de la línea"
+        "Eof" -> return "el fin del programa"
+        _ -> return "`${TEXTOS.obtiene(t.tipo) ?: t.tipo}`"
+    }
+}
+
+// ---------------------------------------------------------------- casos de match
+
+/// Un patrón: `_` (clase "Wild"), una expresión (clase "Value") o `nombre: Tipo` (clase "Typed").
+thing Pat(fix clase: Str, fix valor: Nodo, fix nombre: Str, fix ty: Nodo)
+
+thing Caso(fix pats: Lista<Pat>, fix cuerpo: Lista<Nodo>)
+
+thing Casos(fix scrut: Nodo, fix casos: Lista<Caso>)
+
+thing Contador() {
+    mut n = 0
+}
+
+thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont: Contador, mut fnDepth: Int, mut loopDepth: Int) {
+    mut pos = 0
+    mut noTrailing = false
+
+    // ------------------------------------------------------------ utilidades
+
+    fn peek() -> Token = toks.obtiene(pos)
+
+    fn peekAt(k: Int) -> Token = toks.obtiene(minimo(pos + k, toks.tam() - 1))
+
+    fn tipo() -> Str = toks.obtiene(pos).tipo
+
+    /// Consume el token actual; el `Eof` final no se consume nunca.
+    fn bump() -> Token {
+        fix t = toks.obtiene(pos)
+        if pos < toks.tam() - 1 { pos += 1 }
+        return t
+    }
+
+    fn skipNewlines() {
+        while tipo() == "Newline" { bump() }
+    }
+
+    fn expect(t: Str, que: Str) -> Token {
+        if tipo() == t { return bump() }
+        fail ErrorParse("se esperaba ${que}, pero se encontró ${describe(peek())}")
+    }
+
+    fn expectIdent(que: Str) -> Str {
+        if tipo() == "Ident" { return bump().valor }
+        fail ErrorParse("se esperaba ${que}, pero se encontró ${describe(peek())}")
+    }
+
+    /// Tras una sentencia debe venir un salto de línea, o el cierre del bloque / fin del archivo.
+    fn finSentencia(enBloque: Bool) {
+        fix t = tipo()
+        if t == "Newline" { return }
+        if t == "Eof" && !enBloque { return }
+        if t == "RBrace" && enBloque { return }
+        if t == "Eof" { fail ErrorParse("se esperaba `}` para cerrar el bloque") }
+        fail ErrorParse("se esperaba el fin de la sentencia, pero se encontró ${describe(peek())}")
+    }
+
+    /// Nombre de tipo o de clase, posiblemente cualificado por el alias de un `use`: `util.Persona`.
+    fn identCualificado(que: Str) -> Str {
+        mut nombre = expectIdent(que)
+        if tipo() == "Dot" && peekAt(1).tipo == "Ident" {
+            bump()
+            nombre = nombre + "." + bump().valor
+        }
+        return nombre
+    }
+
+    fn esPalabra(k: Int, w: Str) -> Bool = peekAt(k).tipo == "Ident" && peekAt(k).valor == w
+
+    fn puedeTrail() -> Bool = !noTrailing && tipo() == "LBrace"
+
+    /// Analiza una expresión con las lambdas finales permitidas (dentro de paréntesis y corchetes).
+    fn exprAnidada() -> Nodo {
+        fix guardado = noTrailing
+        noTrailing = false
+        fix e = expr(0)
+        noTrailing = guardado
+        return e
+    }
+
+    /// Condición de `if`/`while`: una `{` tras ella abre el cuerpo, no es una lambda final.
+    fn condicion() -> Nodo {
+        fix guardado = noTrailing
+        noTrailing = true
+        fix e = expr(0)
+        noTrailing = guardado
+        return e
+    }
+
+    // ------------------------------------------------------------ programa
+
+    fn usoDecl() -> Nodo {
+        bump()
+        if tipo() != "Str" { fail ErrorParse("se esperaba la ruta entre comillas después de `use`") }
+        fix partes = bump().partes
+        if partes.tam() != 1 || partes.obtiene(0).esCodigo || partes.obtiene(0).texto == "" {
+            fail ErrorParse("la ruta de `use` es un texto fijo, sin `\${}` y no vacío")
+        }
+        mut alias = "-"
+        if esPalabra(0, "como") {
+            bump()
+            alias = expectIdent("el alias después de `como`")
+        }
+        return hoja("Use", "${comillas(partes.obtiene(0).texto)} ${alias}")
+    }
+
+    /// `prueba "nombre" { ... }`: una función `_prueba_N` con el cuerpo; deja el registro en `tests`.
+    fn pruebaDecl(indice: Int, tests: Lista<Nodo>) -> Nodo {
+        bump()
+        if tipo() != "Str" { fail ErrorParse("se esperaba el nombre de la prueba entre comillas") }
+        fix partes = bump().partes
+        if partes.tam() != 1 || partes.obtiene(0).esCodigo || partes.obtiene(0).texto == "" {
+            fail ErrorParse("el nombre de una prueba es un texto fijo, sin `\${}` y no vacío")
+        }
+        fnDepth += 1
+        fix cuerpo = bloque()
+        fnDepth -= 1
+        fix func = "_prueba_${indice}"
+        tests.agrega(hoja("Test", "${comillas(partes.obtiene(0).texto)} ${func}"))
+        return cuatro("Fn", "${func} false", vacio("TypeParams"), vacio("Params"), nada(), cuerpo)
+    }
+
+    fn programa() -> Nodo {
+        fix usos = Lista<Nodo>()
+        fix exports = Lista<Str>()
+        fix tests = Lista<Nodo>()
+        fix stmts = Lista<Nodo>()
+        while true {
+            skipNewlines()
+            if tipo() == "Eof" { break }
+            if esPalabra(0, "prueba") && peekAt(1).tipo == "Str" {
+                stmts.agrega(pruebaDecl(tests.tam(), tests))
+                finSentencia(false)
+                continue
+            }
+            if esPalabra(0, "use") && peekAt(1).tipo == "Str" {
+                usos.agrega(usoDecl())
+                finSentencia(false)
+                continue
+            }
+            fix abrir = esPalabra(0, "open") && (peekAt(1).tipo == "Fn" || peekAt(1).tipo == "Thing" || peekAt(1).tipo == "Kind" || peekAt(1).tipo == "Enum" || peekAt(1).tipo == "Fix" || peekAt(1).tipo == "Mut")
+            if abrir {
+                bump()
+                if tipo() == "Mut" {
+                    fail ErrorParse("una variable `mut` no se puede abrir: otro archivo no podría cambiarla; usa `open fix` o una función")
+                }
+            }
+            if tipo() == "Enum" {
+                fix decls = enumDecl(abrir, exports)
+                decls.paraCada { d -> stmts.agrega(d) }
+                finSentencia(false)
+                continue
+            }
+            fix s = if tipo() == "Fn" { fnDecl() } else if tipo() == "Thing" { thingDecl() } else if tipo() == "Kind" { kindDecl() } else { stmt() }
+            if abrir && (s.tag == "Fn" || s.tag == "Thing" || s.tag == "Kind" || s.tag == "Let") {
+                exports.agrega(s.attrs.parte(" ").obtiene(0))
+            }
+            stmts.agrega(s)
+            finSentencia(false)
+        }
+        fix raiz = Lista<Nodo>()
+        raiz.agrega(con("Uses", "", usos))
+        raiz.agrega(hoja("Exports", une(exports, " ")))
+        raiz.agrega(con("Tests", "", tests))
+        raiz.agrega(con("Stmts", "", stmts))
+        return con("Program", "", raiz)
+    }
+
+    // ------------------------------------------------------------ enumerados, match e if como valor
+
+    /// `enum Color { Rojo, Verde }`: una clase `Color(nombre, orden)`, una constante por variante
+    /// (`Color.Rojo`) y `Color.todos`. Con `abrir`, anota los nombres públicos en `exports`.
+    fn enumDecl(abrir: Bool, exports: Lista<Str>) -> Lista<Nodo> {
+        bump()
+        fix nombre = expectIdent("el nombre del enumerado")
+        expect("LBrace", "`{` y las variantes del enumerado")
+        fix variantes = Lista<Str>()
+        while true {
+            skipNewlines()
+            fix t = tipo()
+            if t == "RBrace" {
+                bump()
+                break
+            } else if t == "Eof" {
+                fail ErrorParse("este enumerado no se cierra: falta `}`")
+            } else if t == "Ident" {
+                fix v = bump().valor
+                if v == "todos" || variantes.contiene(v) {
+                    fail ErrorParse("la variante `${v}` está repetida o es un nombre reservado del enumerado")
+                }
+                variantes.agrega(v)
+                if tipo() == "Comma" {
+                    bump()
+                } else if tipo() != "Newline" && tipo() != "RBrace" {
+                    fail ErrorParse("se esperaba `,` o el fin de la línea después de la variante")
+                }
+            } else {
+                fail ErrorParse("se esperaba el nombre de una variante")
+            }
+        }
+        if variantes.vacia() { fail ErrorParse("un enumerado necesita al menos una variante") }
+        fix decls = Lista<Nodo>()
+        fix params = Lista<Nodo>()
+        params.agrega(uno("CtorParam", "nombre fix", hoja("Type", "Str")))
+        params.agrega(uno("CtorParam", "orden fix", hoja("Type", "Int")))
+        fix hijos = Lista<Nodo>()
+        hijos.agrega(vacio("TypeParams"))
+        hijos.agrega(con("CtorParams", "", params))
+        hijos.agrega(vacio("Supers"))
+        hijos.agrega(vacio("Fields"))
+        hijos.agrega(vacio("Methods"))
+        decls.agrega(con("Thing", nombre, hijos))
+        if abrir { exports.agrega(nombre) }
+        fix todas = Lista<Nodo>()
+        mut i = 0
+        while i < variantes.tam() {
+            fix v = variantes.obtiene(i)
+            fix completo = "${nombre}.${v}"
+            fix args = Lista<Nodo>()
+            args.agrega(hoja("Str", comillas(v)))
+            args.agrega(hoja("Int", "${i}"))
+            fix llamada = dos("Call", nombre, vacio("TArgs"), con("Args", "", args))
+            decls.agrega(dos("Let", "${completo} fix", nada(), llamada))
+            todas.agrega(hoja("Var", completo))
+            if abrir { exports.agrega(completo) }
+            i += 1
+        }
+        fix lista = dos("Call", "_variantes", vacio("TArgs"), uno("Args", "", con("Array", "", todas)))
+        decls.agrega(dos("Let", "${nombre}.todos fix", nada(), lista))
+        if abrir { exports.agrega("${nombre}.todos") }
+        return decls
+    }
+
+    fn fresco() -> Str {
+        cont.n += 1
+        return "_m${cont.n}"
+    }
+
+    fn patron() -> Pat {
+        if tipo() == "Ident" {
+            fix n = peek().valor
+            if n == "_" && (peekAt(1).tipo == "Arrow" || peekAt(1).tipo == "Comma") {
+                bump()
+                return Pat("Wild", nada(), "", nada())
+            }
+            if peekAt(1).tipo == "Colon" {
+                bump()
+                bump()
+                return Pat("Typed", nada(), n, typeRef())
+            }
+        }
+        return Pat("Value", condicion(), "", nada())
+    }
+
+    /// `match valor { patrón, patrón -> cuerpo ... }`. En la forma de valor cada cuerpo es una expresión; en la
+    /// de sentencia, un bloque `{ ... }` o una sentencia.
+    fn casos(esValor: Bool) -> Casos {
+        fix scrut = condicion()
+        expect("LBrace", "`{` y los casos del `match`")
+        fix lista = Lista<Caso>()
+        while true {
+            skipNewlines()
+            if tipo() == "RBrace" {
+                bump()
+                break
+            }
+            if tipo() == "Eof" { fail ErrorParse("este `match` no se cierra: falta `}`") }
+            fix pats = Lista<Pat>()
+            pats.agrega(patron())
+            while tipo() == "Comma" {
+                bump()
+                pats.agrega(patron())
+            }
+            if pats.tam() > 1 && pats.alguno({ p -> p.clase != "Value" }) {
+                fail ErrorParse("varios patrones con `,` solo pueden ser valores (no `_` ni `nombre: Tipo`)")
+            }
+            expect("Arrow", "`->` y el cuerpo del caso")
+            mut cuerpo = Lista<Nodo>()
+            if esValor {
+                cuerpo.agrega(uno("Return", "", expr(0)))
+            } else if tipo() == "LBrace" {
+                cuerpo = bloque().kids
+            } else {
+                cuerpo.agrega(stmt())
+            }
+            lista.agrega(Caso(pats, cuerpo))
+            // Como valor el separador es opcional: dentro de `${...}` no hay saltos de línea.
+            if !esValor && tipo() != "RBrace" { finSentencia(true) }
+        }
+        if lista.vacia() { fail ErrorParse("un `match` necesita al menos un caso") }
+        return Casos(scrut, lista)
+    }
+
+    /// Un `match` sobre variantes de un enumerado de este archivo, sin `_`, tiene que nombrarlas todas.
+    fn cubre(lista: Lista<Caso>) {
+        mut dueno = ""
+        fix vistas = Lista<Str>()
+        mut i = 0
+        while i < lista.tam() {
+            fix pats = lista.obtiene(i).pats
+            mut j = 0
+            while j < pats.tam() {
+                fix p = pats.obtiene(j)
+                if p.clase != "Value" || p.valor.tag != "Var" { return }
+                fix completo = p.valor.attrs
+                fix punto = completo.indiceDe(".")
+                if punto < 0 { return }
+                fix e = completo.trozo(0, punto)
+                if !enums.contiene(e) || (dueno != "" && dueno != e) { return }
+                dueno = e
+                vistas.agrega(completo.trozo(punto + 1, completo.largo()))
+                j += 1
+            }
+            i += 1
+        }
+        if dueno == "" { return }
+        fix faltan = Lista<Str>()
+        enums.obtiene(dueno)?.paraCada { v -> if !vistas.contiene(v) { faltan.agrega("`${dueno}.${v}`") } }
+        if faltan.vacia() { return }
+        fail ErrorParse("este `match` no cubre ${une(faltan, ", ")}: añade esos casos o un caso `_`")
+    }
+
+    /// `fail Fallo("...")` para cuando ningún caso de un `match` coincide.
+    fn sinCaso() -> Lista<Nodo> {
+        fix msg = hoja("Str", comillas("ningún caso del `match` coincide con el valor"))
+        fix llamada = dos("Call", "Fallo", vacio("TArgs"), uno("Args", "", msg))
+        return listaDe1(uno("Fail", "", llamada))
+    }
+
+    /// Las sentencias que prueban cada caso en orden: `fix _mN = valor` y una cadena de `if`/`else`.
+    fn cadena(c: Casos) -> Lista<Nodo> {
+        cubre(c.casos)
+        fix tmp = fresco()
+        fix ultimo = c.casos.tam() - 1
+        mut cola: Lista<Nodo>? = nil
+        mut cadenaIf: Nodo? = nil
+        mut i = ultimo
+        while i >= 0 {
+            fix caso = c.casos.obtiene(i)
+            fix cuerpo = caso.cuerpo
+            if caso.pats.obtiene(0).clase == "Wild" {
+                if i != ultimo { fail ErrorParse("el caso `_` coincide con todo: debe ser el último del `match`") }
+                cola = cuerpo
+                i -= 1
+                continue
+            }
+            mut cond: Nodo? = nil
+            caso.pats.paraCada { p ->
+                mut uno1 = nada()
+                if p.clase == "Value" {
+                    uno1 = dos("Binary", "==", hoja("Var", tmp), p.valor)
+                } else {
+                    cuerpo.inserta(0, dos("Let", "${p.nombre} fix", nada(), dos("Cast", "", hoja("Var", tmp), p.ty)))
+                    uno1 = dos("Is", "", hoja("Var", tmp), p.ty)
+                }
+                fix previa = cond
+                if previa == nil {
+                    cond = uno1
+                } else {
+                    cond = dos("Binary", "||", previa, uno1)
+                }
+            }
+            mut otro: Nodo = nada()
+            fix siguiente = cadenaIf
+            fix colaActual = cola
+            if siguiente != nil {
+                otro = con("Block", "", listaDe1(siguiente))
+            } else if colaActual != nil {
+                otro = con("Block", "", colaActual)
+                cola = nil
+            } else {
+                otro = con("Block", "", sinCaso())
+            }
+            cadenaIf = tres("If", "", cond ?: nada(), con("Block", "", cuerpo), otro)
+            i -= 1
+        }
+        fix salida = Lista<Nodo>()
+        salida.agrega(dos("Let", "${tmp} fix", nada(), c.scrut))
+        fix final = cadenaIf
+        if final != nil {
+            salida.agrega(final)
+        } else {
+            fix soloCola = cola
+            if soloCola != nil { soloCola.paraCada { s -> salida.agrega(s) } }
+        }
+        return salida
+    }
+
+    fn matchStmt() -> Nodo {
+        bump()
+        fix c = casos(false)
+        fix stmts = cadena(c)
+        return tres("If", "", hoja("Bool", "true"), con("Block", "", stmts), con("Block", "", sinCaso()))
+    }
+
+    fn matchExpr() -> Nodo {
+        fix c = casos(true)
+        return inmediata(cadena(c))
+    }
+
+    /// `if cond { a } else { b }` usado como valor.
+    fn ifExpr() -> Nodo {
+        fix cond = condicion()
+        fix a = exprEntreLlaves()
+        skipNewlines()
+        if tipo() != "Else" { fail ErrorParse("un `if` usado como valor necesita `else` (si no, ¿qué valor tiene?)") }
+        bump()
+        mut b = nada()
+        if tipo() == "If" {
+            bump()
+            b = ifExpr()
+        } else {
+            b = exprEntreLlaves()
+        }
+        fix si = tres("If", "", cond, con("Block", "", listaDe1(uno("Return", "", a))), con("Block", "", listaDe1(uno("Return", "", b))))
+        return inmediata(listaDe1(si))
+    }
+
+    fn exprEntreLlaves() -> Nodo {
+        expect("LBrace", "`{` y el valor")
+        skipNewlines()
+        fix v = exprAnidada()
+        skipNewlines()
+        expect("RBrace", "`}` después del valor")
+        return v
+    }
+
+    // ------------------------------------------------------------ bloques y tipos
+
+    fn bloque() -> Nodo {
+        expect("LBrace", "`{`")
+        return bloqueResto()
+    }
+
+    /// El resto de un bloque cuyo `{` ya se consumió.
+    fn bloqueResto() -> Nodo {
+        fix stmts = Lista<Nodo>()
+        while true {
+            skipNewlines()
+            if tipo() == "RBrace" {
+                bump()
+                return con("Block", "", stmts)
+            }
+            if tipo() == "Eof" { fail ErrorParse("este bloque no se cierra: falta `}`") }
+            stmts.agrega(stmt())
+            if tipo() == "Eof" { fail ErrorParse("este bloque no se cierra: falta `}`") }
+            finSentencia(true)
+        }
+        return con("Block", "", stmts)
+    }
+
+    /// Parámetros de tipo `<T, U: Cota>` tras el nombre de una declaración (opcionales).
+    fn typeParams() -> Nodo {
+        fix lista = Lista<Nodo>()
+        if tipo() != "Lt" { return con("TypeParams", "", lista) }
+        bump()
+        fix nombres = Lista<Str>()
+        while true {
+            fix nombre = expectIdent("el nombre del parámetro de tipo")
+            if nombres.contiene(nombre) { fail ErrorParse("el parámetro de tipo `${nombre}` está repetido") }
+            nombres.agrega(nombre)
+            mut cota = nada()
+            if tipo() == "Colon" {
+                bump()
+                cota = typeRef()
+            }
+            lista.agrega(uno("TypeParam", nombre, cota))
+            if tipo() == "Comma" {
+                bump()
+            } else {
+                break
+            }
+        }
+        expect("Gt", "`>` para cerrar los parámetros de tipo")
+        return con("TypeParams", "", lista)
+    }
+
+    /// `<A, B>` seguido de `(` o de una lambda final, o nada: así `a < b` no se confunde con argumentos de tipo.
+    fn tryTypeArgs() -> Lista<Nodo>? {
+        if tipo() != "Lt" { return nil }
+        bump()
+        fix args = Lista<Nodo>()
+        while true {
+            mut ok = true
+            attempt {
+                args.agrega(typeRef())
+            } rescue e: ErrorParse {
+                ok = false
+            }
+            if !ok { return nil }
+            if tipo() == "Comma" {
+                bump()
+            } else if tipo() == "Gt" {
+                bump()
+                break
+            } else {
+                return nil
+            }
+        }
+        if tipo() == "LParen" || puedeTrail() { return args }
+        return nil
+    }
+
+    fn typeRef() -> Nodo {
+        mut t = baseTypeRef()
+        // `T?`; con varios (`T??`) el verificador explica que no tiene sentido.
+        while tipo() == "Question" {
+            bump()
+            t = uno("Type", "Nullable", t)
+        }
+        return t
+    }
+
+    fn baseTypeRef() -> Nodo {
+        // `(Int, Str) -> Bool` (tipo de función) o `(T)` (agrupación, para `((Int) -> Int)?`).
+        if tipo() == "LParen" {
+            bump()
+            fix items = Lista<Nodo>()
+            if tipo() != "RParen" {
+                while true {
+                    items.agrega(typeRef())
+                    if tipo() == "Comma" {
+                        bump()
+                    } else {
+                        break
+                    }
+                }
+            }
+            expect("RParen", "`,` o `)` en el tipo")
+            if tipo() == "Arrow" {
+                bump()
+                items.agrega(typeRef())
+                return con("Type", "Fn", items)
+            }
+            if items.tam() == 1 { return items.obtiene(0) }
+            fail ErrorParse("un tipo de función necesita `->` y el tipo que devuelve, por ejemplo `(Int) -> Int`")
+        }
+        if tipo() == "LBracket" {
+            bump()
+            fix elem = typeRef()
+            expect("RBracket", "`]` para cerrar el tipo")
+            return uno("Type", "Array", elem)
+        }
+        fix nombre = identCualificado("un nombre de tipo")
+        // `Lista<Int>`, `Mapa<Str, [Int]>`
+        if tipo() == "Lt" {
+            bump()
+            fix args = Lista<Nodo>()
+            while true {
+                args.agrega(typeRef())
+                if tipo() == "Comma" {
+                    bump()
+                } else {
+                    break
+                }
+            }
+            expect("Gt", "`>` para cerrar los argumentos de tipo")
+            return con("Type", nombre, args)
+        }
+        return hoja("Type", nombre)
+    }
+
+    // ------------------------------------------------------------ sentencias
+
+    fn stmt() -> Nodo {
+        fix t = tipo()
+        match t {
+            "Fix", "Mut" -> return letStmt()
+            "If" -> return ifStmt()
+            "While" -> return whileStmt()
+            "Return" -> return returnStmt()
+            "Show" -> return showStmt()
+            "Break", "Continue" -> return jumpStmt()
+            "Fn" -> fail ErrorParse("las funciones solo se pueden declarar al nivel superior del archivo")
+            "Match" -> return matchStmt()
+            "Enum" -> fail ErrorParse("los enumerados solo se pueden declarar al nivel superior del archivo")
+            "Attempt" -> return attemptStmt()
+            "Fail" -> {
+                bump()
+                return uno("Fail", "", expr(0))
+            }
+            "Rescue" -> fail ErrorParse("`rescue` solo puede ir después de un bloque `attempt { ... }`")
+            "Thing" -> fail ErrorParse("las clases solo se pueden declarar al nivel superior del archivo")
+            "Kind" -> fail ErrorParse("las interfaces solo se pueden declarar al nivel superior del archivo")
+            "Else" -> fail ErrorParse("`else` debe ir en la misma línea que la `}` del `if`")
+            _ -> {
+                if t == "Ident" && ASIGNA.obtiene(peekAt(1).tipo) != nil { return assignStmt() }
+                fix e = expr(0)
+                fix op = ASIGNA.obtiene(tipo())
+                if e.tag == "Index" && op != nil {
+                    bump()
+                    fix valor = expr(0)
+                    return tres("IndexAssign", op, e.kids.obtiene(0), e.kids.obtiene(1), valor)
+                }
+                if e.tag == "Field" && op != nil {
+                    bump()
+                    fix valor = expr(0)
+                    return dos("FieldAssign", "${e.attrs} ${op}", e.kids.obtiene(0), valor)
+                }
+                return uno("ExprStmt", "", e)
+            }
+        }
+        fail ErrorParse("sentencia no válida")
+    }
+
+    /// `thing Nombre(params) { campos y métodos }`; el cuerpo es opcional.
+    fn thingDecl() -> Nodo {
+        bump()
+        fix nombre = expectIdent("el nombre de la clase")
+        fix tparams = typeParams()
+        expect("LParen", "`(` con los parámetros del constructor")
+        fix params = Lista<Nodo>()
+        fix nombres = Lista<Str>()
+        if tipo() != "RParen" {
+            while true {
+                mut mutab = "-"
+                if tipo() == "Fix" {
+                    bump()
+                    mutab = "fix"
+                } else if tipo() == "Mut" {
+                    bump()
+                    mutab = "mut"
+                }
+                fix pnombre = expectIdent("el nombre del parámetro")
+                if nombres.contiene(pnombre) { fail ErrorParse("el parámetro `${pnombre}` está repetido") }
+                nombres.agrega(pnombre)
+                expect("Colon", "`:` y el tipo del parámetro")
+                params.agrega(uno("CtorParam", "${pnombre} ${mutab}", typeRef()))
+                if tipo() == "Comma" {
+                    bump()
+                } else {
+                    break
+                }
+            }
+        }
+        expect("RParen", "`,` o `)`")
+        fix supers = Lista<Nodo>()
+        if tipo() == "Colon" {
+            bump()
+            while true {
+                fix snombre = identCualificado("el nombre de una clase o interfaz")
+                fix targs = Lista<Nodo>()
+                if tipo() == "Lt" {
+                    bump()
+                    while true {
+                        targs.agrega(typeRef())
+                        if tipo() == "Comma" {
+                            bump()
+                        } else {
+                            break
+                        }
+                    }
+                    expect("Gt", "`>` para cerrar los argumentos de tipo")
+                }
+                mut args = nada()
+                if tipo() == "LParen" { args = con("Args", "", callArgs()) }
+                supers.agrega(dos("Super", snombre, con("TArgs", "", targs), args))
+                if tipo() == "Comma" {
+                    bump()
+                } else {
+                    break
+                }
+            }
+        }
+        fix campos = Lista<Nodo>()
+        fix metodos = Lista<Nodo>()
+        if tipo() == "LBrace" {
+            bump()
+            while true {
+                skipNewlines()
+                fix t = tipo()
+                if t == "RBrace" {
+                    bump()
+                    break
+                } else if t == "Eof" {
+                    fail ErrorParse("esta clase no se cierra: falta `}`")
+                } else if t == "Fix" || t == "Mut" {
+                    fix l = letStmt()
+                    campos.agrega(Nodo("FieldDecl", l.attrs, l.kids))
+                } else if t == "Fn" {
+                    metodos.agrega(fnDecl())
+                } else {
+                    fail ErrorParse("dentro de una clase se esperaba un campo (`fix`/`mut`) o un método (`fn`), pero se encontró ${describe(peek())}")
+                }
+                if tipo() == "Eof" { fail ErrorParse("esta clase no se cierra: falta `}`") }
+                finSentencia(true)
+            }
+        }
+        fix hijos = Lista<Nodo>()
+        hijos.agrega(tparams)
+        hijos.agrega(con("CtorParams", "", params))
+        hijos.agrega(con("Supers", "", supers))
+        hijos.agrega(con("Fields", "", campos))
+        hijos.agrega(con("Methods", "", metodos))
+        return con("Thing", nombre, hijos)
+    }
+
+    /// `kind Nombre { fn m(params) -> T ... }`: solo firmas.
+    fn kindDecl() -> Nodo {
+        bump()
+        fix nombre = expectIdent("el nombre de la interfaz")
+        fix tparams = typeParams()
+        expect("LBrace", "`{`")
+        fix metodos = Lista<Nodo>()
+        while true {
+            skipNewlines()
+            fix t = tipo()
+            if t == "RBrace" {
+                bump()
+                break
+            } else if t == "Eof" {
+                fail ErrorParse("esta interfaz no se cierra: falta `}`")
+            } else if t == "Fn" {
+                bump()
+                fix mnombre = expectIdent("el nombre del método")
+                fix params = parametros()
+                mut ret = nada()
+                if tipo() == "Arrow" {
+                    bump()
+                    ret = typeRef()
+                }
+                if tipo() == "LBrace" || tipo() == "Assign" {
+                    fail ErrorParse("los métodos de una interfaz no llevan cuerpo; lo implementan las clases")
+                }
+                metodos.agrega(dos("KMethod", mnombre, params, ret))
+            } else {
+                fail ErrorParse("dentro de una interfaz se esperaba un método (`fn`), pero se encontró ${describe(peek())}")
+            }
+            if tipo() == "Eof" { fail ErrorParse("esta interfaz no se cierra: falta `}`") }
+            finSentencia(true)
+        }
+        return dos("Kind", nombre, tparams, con("KMethods", "", metodos))
+    }
+
+    /// Lista de parámetros `(a: T, b: U)`; el siguiente token es `(`.
+    fn parametros() -> Nodo {
+        expect("LParen", "`(`")
+        fix params = Lista<Nodo>()
+        fix nombres = Lista<Str>()
+        if tipo() != "RParen" {
+            while true {
+                fix pnombre = expectIdent("el nombre del parámetro")
+                if nombres.contiene(pnombre) { fail ErrorParse("el parámetro `${pnombre}` está repetido") }
+                nombres.agrega(pnombre)
+                expect("Colon", "`:` y el tipo del parámetro")
+                params.agrega(uno("Param", pnombre, typeRef()))
+                if tipo() == "Comma" {
+                    bump()
+                } else {
+                    break
+                }
+            }
+        }
+        expect("RParen", "`,` o `)`")
+        return con("Params", "", params)
+    }
+
+    /// `attempt { ... } rescue e: Tipo { ... } rescue ...`; los `rescue` pueden ir en la línea siguiente.
+    fn attemptStmt() -> Nodo {
+        bump()
+        fix hijos = Lista<Nodo>()
+        hijos.agrega(bloque())
+        mut rescues = 0
+        while true {
+            fix guardado = pos
+            skipNewlines()
+            if tipo() != "Rescue" {
+                pos = guardado
+                break
+            }
+            bump()
+            fix nombre = expectIdent("el nombre de la variable del error")
+            expect("Colon", "`:` y el tipo del error")
+            fix ty = typeRef()
+            hijos.agrega(dos("Rescue", nombre, ty, bloque()))
+            rescues += 1
+        }
+        if rescues == 0 { fail ErrorParse("un `attempt` necesita al menos un `rescue` después de su bloque") }
+        return con("Attempt", "", hijos)
+    }
+
+    fn letStmt() -> Nodo {
+        fix palabra = bump()
+        fix nombre = expectIdent("el nombre de la variable")
+        mut ty = nada()
+        if tipo() == "Colon" {
+            bump()
+            ty = typeRef()
+        }
+        expect("Assign", "`=` y el valor inicial")
+        fix init = expr(0)
+        return dos("Let", "${nombre} ${if palabra.tipo == "Mut" { "mut" } else { "fix" }}", ty, init)
+    }
+
+    fn assignStmt() -> Nodo {
+        fix nombre = expectIdent("el nombre de la variable")
+        fix op = ASIGNA.obtiene(bump().tipo) ?: "="
+        return uno("Assign", "${nombre} ${op}", expr(0))
+    }
+
+    fn ifStmt() -> Nodo {
+        bump()
+        fix cond = condicion()
+        fix entonces = bloque()
+        mut otro = nada()
+        if tipo() == "Else" {
+            bump()
+            if tipo() == "If" {
+                otro = con("Block", "", listaDe1(ifStmt()))
+            } else {
+                otro = bloque()
+            }
+        }
+        return tres("If", "", cond, entonces, otro)
+    }
+
+    /// Lambda `{ a, b: Int -> cuerpo }`; el `{` ya se consumió. Sin `->` no tiene parámetros.
+    fn lambda() -> Nodo {
+        fix guardado = pos
+        mut params = lambdaParams()
+        if params == nil {
+            pos = guardado
+            params = Lista<Nodo>()
+        }
+        fix fnAntes = fnDepth
+        fix loopAntes = loopDepth
+        fnDepth = 1
+        loopDepth = 0
+        fix trailAntes = noTrailing
+        noTrailing = false
+        fix cuerpo = bloqueResto()
+        noTrailing = trailAntes
+        fnDepth = fnAntes
+        loopDepth = loopAntes
+        return dos("Lambda", "", con("LParams", "", params ?: Lista<Nodo>()), cuerpo)
+    }
+
+    /// `a, b: Int ->`; nil si lo que sigue no es una lista de parámetros.
+    fn lambdaParams() -> Lista<Nodo>? {
+        fix params = Lista<Nodo>()
+        fix nombres = Lista<Str>()
+        if tipo() == "Arrow" {
+            bump()
+            return params
+        }
+        while true {
+            if tipo() != "Ident" { return nil }
+            fix nombre = bump().valor
+            if nombres.contiene(nombre) { return nil }
+            nombres.agrega(nombre)
+            mut ty = nada()
+            if tipo() == "Colon" {
+                bump()
+                mut ok = true
+                attempt {
+                    ty = typeRef()
+                } rescue e: ErrorParse {
+                    ok = false
+                }
+                if !ok { return nil }
+            }
+            params.agrega(uno("LParam", nombre, ty))
+            if tipo() == "Comma" {
+                bump()
+            } else if tipo() == "Arrow" {
+                bump()
+                return params
+            } else {
+                return nil
+            }
+        }
+        return nil
+    }
+
+    fn whileStmt() -> Nodo {
+        bump()
+        fix cond = condicion()
+        loopDepth += 1
+        fix cuerpo = bloque()
+        loopDepth -= 1
+        return dos("While", "", cond, cuerpo)
+    }
+
+    fn returnStmt() -> Nodo {
+        bump()
+        if fnDepth == 0 { fail ErrorParse("`return` solo se puede usar dentro de una función") }
+        fix t = tipo()
+        if t == "Newline" || t == "RBrace" || t == "Eof" { return uno("Return", "", nada()) }
+        return uno("Return", "", expr(0))
+    }
+
+    fn jumpStmt() -> Nodo {
+        fix palabra = bump()
+        if loopDepth == 0 {
+            fail ErrorParse("`${TEXTOS.obtiene(palabra.tipo) ?: ""}` solo se puede usar dentro de un `while`")
+        }
+        return vacio(palabra.tipo)
+    }
+
+    fn showStmt() -> Nodo {
+        bump()
+        expect("LParen", "`(` después de `show`")
+        fix valor = expr(0)
+        expect("RParen", "`)`")
+        return uno("Show", "", valor)
+    }
+
+    fn fnDecl() -> Nodo {
+        bump()
+        fix nombre = expectIdent("el nombre de la función")
+        fix tparams = typeParams()
+        fix params = parametros()
+        mut ret = nada()
+        if tipo() == "Arrow" {
+            bump()
+            ret = typeRef()
+        }
+        fix exprBody = tipo() == "Assign"
+        fnDepth += 1
+        mut cuerpo = nada()
+        if tipo() == "LBrace" {
+            cuerpo = bloque()
+        } else if exprBody {
+            bump()
+            cuerpo = con("Block", "", listaDe1(uno("Return", "", expr(0))))
+        } else {
+            fail ErrorParse("se esperaba `{` o `=` para el cuerpo de la función, pero se encontró ${describe(peek())}")
+        }
+        fnDepth -= 1
+        return cuatro("Fn", "${nombre} ${exprBody}", tparams, params, ret, cuerpo)
+    }
+
+    // ------------------------------------------------------------ expresiones
+
+    /// Pratt: `minBp` es el poder de enlace mínimo que debe tener un operador para seguir.
+    fn expr(minBp: Int) -> Nodo {
+        fix token = bump()
+        mut lhs = nada()
+        match token.tipo {
+            "Int" -> lhs = hoja("Int", token.valor)
+            "Float" -> lhs = hoja("Float", token.valor)
+            "True" -> lhs = hoja("Bool", "true")
+            "False" -> lhs = hoja("Bool", "false")
+            "Str" -> lhs = cadenaExpr(token.partes)
+            "LBracket" -> lhs = arreglo()
+            "Minus", "Bang" -> lhs = uno("Unary", if token.tipo == "Minus" { "Neg" } else { "Not" }, expr(13))
+            "LParen" -> {
+                lhs = exprAnidada()
+                expect("RParen", "`)`")
+            }
+            "LBrace" -> lhs = lambda()
+            "Match" -> lhs = matchExpr()
+            "If" -> lhs = ifExpr()
+            "This" -> lhs = vacio("This")
+            "Nil" -> lhs = vacio("Nil")
+            "Super" -> {
+                expect("Dot", "`.` después de `super`")
+                fix nombre = expectIdent("el nombre de un método de la clase padre")
+                if tipo() != "LParen" {
+                    fail ErrorParse("`super` solo se usa para llamar métodos: `super.metodo(...)`")
+                }
+                lhs = uno("SuperCall", nombre, con("Args", "", callArgs()))
+            }
+            "Ident" -> lhs = identificador(token.valor)
+            _ -> fail ErrorParse("se esperaba una expresión, pero se encontró ${describe(token)}")
+        }
+
+        // Postfijos `a[i]`, `a.campo` y `a.metodo(args)`, los más fuertes de todos.
+        while true {
+            fix t = tipo()
+            if t == "LBracket" {
+                bump()
+                fix indice = exprAnidada()
+                expect("RBracket", "`]`")
+                lhs = dos("Index", "", lhs, indice)
+            } else if t == "LParen" {
+                // `f(1)(2)`, `obj.campo(1)(2)`: llama al valor de tipo función de la izquierda.
+                lhs = dos("CallValue", "", lhs, con("Args", "", callArgsTrailing()))
+            } else if t == "QDot" {
+                bump()
+                fix nombre = expectIdent("el nombre de un campo o método después de `?.`")
+                if tipo() == "LParen" || puedeTrail() {
+                    lhs = dos("SafeCall", nombre, lhs, con("Args", "", callArgsTrailing()))
+                } else {
+                    lhs = uno("SafeField", nombre, lhs)
+                }
+            } else if t == "Dot" {
+                bump()
+                fix nombre = expectIdent("el nombre de un campo o método después de `.`")
+                // `obj.metodo<Int>(x)`; si no encaja, `<` era una comparación.
+                mut targs = Lista<Nodo>()
+                if tipo() == "Lt" {
+                    fix guardado = pos
+                    fix hallados = tryTypeArgs()
+                    if hallados == nil {
+                        pos = guardado
+                    } else {
+                        targs = hallados
+                    }
+                }
+                if tipo() == "LParen" || puedeTrail() {
+                    lhs = tres("MethodCall", nombre, lhs, con("TArgs", "", targs), con("Args", "", callArgsTrailing()))
+                } else if lhs.tag == "Var" && enums.contiene(lhs.attrs) {
+                    // `Color.Rojo`: la constante global de esa variante.
+                    lhs = hoja("Var", "${lhs.attrs}.${nombre}")
+                } else {
+                    lhs = uno("Field", nombre, lhs)
+                }
+            } else {
+                break
+            }
+        }
+
+        while true {
+            fix t = tipo()
+            // `x is T` (al nivel de las comparaciones) y `x as T` (más fuerte que la aritmética).
+            if t == "Is" || t == "As" {
+                if (if t == "Is" { 7 } else { 14 }) < minBp { break }
+                bump()
+                lhs = dos(if t == "Is" { "Is" } else { "Cast" }, "", lhs, typeRef())
+                continue
+            }
+            // `a ?: b`, el operador de menor precedencia.
+            if t == "Elvis" {
+                if 0 < minBp { break }
+                bump()
+                lhs = dos("Elvis", "", lhs, expr(1))
+                continue
+            }
+            fix izq = bpIzq(t)
+            if izq == 0 || izq < minBp { break }
+            bump()
+            lhs = dos("Binary", BIN.obtiene(t) ?: t, lhs, expr(izq + 1))
+        }
+        return lhs
+    }
+
+    /// Un identificador al principio de una expresión: variable, llamada o llamada con lambda final.
+    fn identificador(nombre: Str) -> Nodo {
+        if tipo() == "LParen" { return llamada(nombre, vacio("TArgs")) }
+        fix lambdaFinal = trailingLambda()
+        if lambdaFinal != nil {
+            // `repite { ... }`: llamada cuyo único argumento es la lambda.
+            return dos("Call", nombre, vacio("TArgs"), uno("Args", "", lambdaFinal))
+        }
+        if tipo() == "Lt" {
+            // `f<Int>(x)` o `Lista<Int>()`; si no encaja, era una comparación.
+            fix guardado = pos
+            fix targs = tryTypeArgs()
+            if targs != nil { return llamada(nombre, con("TArgs", "", targs)) }
+            pos = guardado
+        }
+        return hoja("Var", nombre)
+    }
+
+    /// Lambda final (`lista.map { x -> x }`) si el siguiente token es `{` y está permitida.
+    fn trailingLambda() -> Nodo? {
+        if !puedeTrail() { return nil }
+        bump()
+        return lambda()
+    }
+
+    /// Cadena literal: sin interpolaciones es `Str`; con ellas, `Interp`.
+    fn cadenaExpr(partes: Lista<Parte>) -> Nodo {
+        fix salida = Lista<Nodo>()
+        partes.paraCada { p ->
+            if !p.esCodigo {
+                salida.agrega(hoja("Text", comillas(p.texto)))
+            } else {
+                fix interno = Parser(p.codigo, enums, cont, fnDepth, loopDepth)
+                fix e = interno.expr(0)
+                if interno.tipo() != "RBrace" {
+                    fail ErrorParse("la interpolación `\${...}` admite una sola expresión, pero se encontró ${describe(interno.peek())}")
+                }
+                salida.agrega(e)
+            }
+        }
+        if salida.tam() == 1 && salida.obtiene(0).tag == "Text" {
+            return hoja("Str", salida.obtiene(0).attrs)
+        }
+        return con("Interp", "", salida)
+    }
+
+    /// Literal `[a, b, c]`; el `[` ya se consumió. Admite saltos de línea entre elementos.
+    fn arreglo() -> Nodo {
+        fix elems = Lista<Nodo>()
+        while true {
+            skipNewlines()
+            if tipo() == "RBracket" { break }
+            elems.agrega(exprAnidada())
+            skipNewlines()
+            if tipo() == "Comma" {
+                bump()
+            } else {
+                break
+            }
+        }
+        skipNewlines()
+        expect("RBracket", "`,` o `]`")
+        return con("Array", "", elems)
+    }
+
+    /// Llamada `nombre(args)`; el nombre ya se consumió y el siguiente token es `(`.
+    fn llamada(nombre: Str, targs: Nodo) -> Nodo = dos("Call", nombre, targs, con("Args", "", callArgsTrailing()))
+
+    /// Argumentos `(a, b)` y/o una lambda final: `f(a) { ... }`, `x.m { ... }`.
+    fn callArgsTrailing() -> Lista<Nodo> {
+        mut args = Lista<Nodo>()
+        if tipo() == "LParen" { args = callArgs() }
+        fix lambdaFinal = trailingLambda()
+        if lambdaFinal != nil { args.agrega(lambdaFinal) }
+        return args
+    }
+
+    /// Argumentos `(a, b)`; el siguiente token es `(`.
+    fn callArgs() -> Lista<Nodo> {
+        bump()
+        fix args = Lista<Nodo>()
+        if tipo() != "RParen" {
+            while true {
+                args.agrega(exprAnidada())
+                if tipo() == "Comma" {
+                    bump()
+                } else {
+                    break
+                }
+            }
+        }
+        expect("RParen", "`,` o `)`")
+        return args
+    }
+}
+
+// ---------------------------------------------------------------- volcado
+
+fn vuelca(n: Nodo, sangria: Str, salida: Lista<Str>) {
+    if n.attrs == "" {
+        salida.agrega("${sangria}${n.tag}")
+    } else {
+        salida.agrega("${sangria}${n.tag} ${n.attrs}")
+    }
+    n.kids.paraCada { k -> vuelca(k, sangria + "  ", salida) }
+}
+
+/// Los enumerados del archivo y sus variantes, para reconocer `Color.Rojo` antes de haber visto la
+/// declaración y para comprobar que un `match` los cubre todos.
+fn enumerados(toks: Lista<Token>) -> Mapa<Str, Lista<Str>> {
+    fix m = Mapa<Str, Lista<Str>>()
+    mut i = 0
+    while i + 2 < toks.tam() {
+        if toks.obtiene(i).tipo == "Enum" && toks.obtiene(i + 1).tipo == "Ident" && toks.obtiene(i + 2).tipo == "LBrace" {
+            fix vars = Lista<Str>()
+            mut j = i + 3
+            while j < toks.tam() && toks.obtiene(j).tipo != "RBrace" {
+                if toks.obtiene(j).tipo == "Ident" { vars.agrega(toks.obtiene(j).valor) }
+                j += 1
+            }
+            m.pone(toks.obtiene(i + 1).valor, vars)
+        }
+        i += 1
+    }
+    return m
+}
+
+fn main() {
+    fix a = argumentos()
+    if a.tam() != 1 {
+        show("uso: and23 mn/parser.jb archivo.jb")
+        return
+    }
+    attempt {
+        fix toks = lexea(leeArchivo(a.obtiene(0)))
+        fix p = Parser(toks, enumerados(toks), Contador(), 0, 0)
+        fix salida = Lista<Str>()
+        vuelca(p.programa(), "", salida)
+        show(une(salida, "\n"))
+    } rescue e: ErrorLexico {
+        show("Error ${e.msg}")
+    } rescue e: ErrorParse {
+        show("Error ${e.msg}")
+    }
+}

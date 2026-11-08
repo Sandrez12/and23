@@ -1,0 +1,14 @@
+thing P(fix x: Int, mut y: Int, z: Str) : Base(x, 1), Iface, Gen<Int>(2), util.Otra {
+    mut n = 0
+    fix t: Str = "a"
+    fn f() -> Int = x
+    fn g(a: Int) { n += a }
+    fn h<T>(a: T) -> T = a
+}
+thing Vacia()
+thing G<T, U: Ord>(fix a: T)
+kind K<T> { fn f(x: T) -> T
+ fn g()
+ fn h(a: Int, b: [Str]) -> (Int, Str) -> Bool }
+fn gen<T, U: K>(a: T) -> Lista<T?> = a
+fn tipos(a: [[Int]], b: Mapa<Str, [Int]>?, c: ((Int) -> Int)?) { }

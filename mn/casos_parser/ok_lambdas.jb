@@ -1,0 +1,10 @@
+fix f = { -> 1 }
+fix g = { a -> a }
+fix h = { a, b: Int -> a + b }
+fix k = { a: (Int) -> Int?, b -> a(b) }
+xs.map { x -> x * 2 }.filter { x -> x > 1 }
+repite { show(1) }
+repite(3) { show(2) }
+fix z = { 1 + 2 }
+if cond { show(1) }
+while xs.alguno({ x -> x }) { break }

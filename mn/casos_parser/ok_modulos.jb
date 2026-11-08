@@ -1,0 +1,9 @@
+use "util.jb"
+use "otro.jb" como o
+open fn f() { }
+open fix K = 3
+open thing T()
+open kind I { fn m() }
+open enum E { X, Y }
+prueba "una prueba" { afirma(true) }
+prueba "otra" { show(1) }

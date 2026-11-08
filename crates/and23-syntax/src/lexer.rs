@@ -535,7 +535,7 @@ impl Lexer<'_> {
 }
 
 /// Texto de un trozo de cadena en el volcado: solo se escapan `\`, `"` y los caracteres de control comunes.
-fn escape_dump(text: &str) -> String {
+pub(crate) fn escape_dump(text: &str) -> String {
     let mut out = String::new();
     for c in text.chars() {
         match c {

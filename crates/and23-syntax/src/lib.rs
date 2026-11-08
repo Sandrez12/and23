@@ -1,6 +1,7 @@
 //! Frontend de And23: lexer, AST, parser y diagnósticos.
 
 pub mod ast;
+pub mod astdump;
 pub mod error;
 pub mod format;
 pub mod lexer;

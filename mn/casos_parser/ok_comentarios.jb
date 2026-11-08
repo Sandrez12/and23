@@ -1,0 +1,5 @@
+// solo un comentario
+
+show(1) // fin
+;;
+show(2)

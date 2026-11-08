@@ -1,0 +1,15 @@
+fn f(n: Int) -> Int {
+    mut i = 0
+    while i < n {
+        if i == 3 { i += 1; continue } else if i == 5 { break } else { i += 2 }
+        a[i] += 1
+        o.c -= 2
+        x *= 3
+        y /= 4
+        z %= 5
+    }
+    attempt { fail E("x") }
+    rescue e: E { show(e.msg) }
+    rescue e2: Fallo { return }
+    return i
+}

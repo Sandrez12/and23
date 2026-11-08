@@ -15,6 +15,7 @@ Uso:
   and23 --disasm <archivo.jb>   muestra el bytecode en vez de ejecutar
   and23 fmt [--check] <archivos.jb...>   da formato a los archivos (con --check solo avisa de los que cambiarían)
   and23 --tokens <archivo.jb>   vuelca los tokens (para comparar con el lexer escrito en And23, mn/lexer.jb)
+  and23 --ast <archivo.jb>      vuelca el árbol sintáctico (para comparar con el parser escrito en And23, mn/parser.jb)
   and23 --prueba <archivo.jb>   ejecuta los bloques `prueba` del archivo y resume el resultado
   and23 --tree <archivo.jb>     usa el intérprete de árbol (referencia de M1a; sin cadenas)
   and23 --gc-stress ...         recolecta basura en cada punto seguro (prueba del GC)
@@ -63,6 +64,7 @@ fn dispatch(args: &[String]) -> u8 {
         }
         [cmd, rest @ ..] if cmd == "fmt" => run_fmt(rest),
         [flag, path] if flag == "--tokens" => dump_tokens(path),
+        [flag, path] if flag == "--ast" => dump_ast(path),
         [flag, path] if flag == "--disasm" => disasm_file(path),
         [flag, path] if flag == "--tree" => run_file_tree(path),
         [flag, path] if flag == "--prueba" => run_tests(path, stress),
@@ -184,6 +186,23 @@ fn dump_tokens(path: &str) -> u8 {
             0
         }
     }
+}
+
+/// `and23 --ast archivo`: el árbol sintáctico del archivo (sin cargar `use`), o `Error mensaje`.
+fn dump_ast(path: &str) -> u8 {
+    let src = match std::fs::read_to_string(path) {
+        Ok(src) => src,
+        Err(e) => {
+            eprintln!("error: no se pudo leer `{path}`: {e}");
+            return 1;
+        }
+    };
+    let src = src.strip_prefix('\u{feff}').unwrap_or(&src).to_string();
+    match and23_syntax::parse(&src) {
+        Ok(program) => print!("{}", and23_syntax::astdump::dump_program(&program)),
+        Err(d) => println!("Error {}", d.message),
+    }
+    0
 }
 
 /// `and23 fmt [--check] archivos...`: reescribe cada archivo con el formato estándar. Con `--check` no

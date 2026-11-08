@@ -1,0 +1,27 @@
+open enum Dia { Lun, Mar
+ Mie }
+enum Solo { A }
+fn f(d: Dia) -> Str = match d {
+    Dia.Lun -> "l"
+    Dia.Mar, Dia.Mie -> "m"
+}
+fn g(x: Int) {
+    match x {
+        1 -> show("uno")
+        2, 3 -> { show("a")
+            show("b") }
+        _ -> show("otro")
+    }
+}
+fn h(k: K) -> Int = match k { a: A -> 1
+ b: B -> 2
+ _ -> 3 }
+fix v = if true { 1 } else if false { 2 } else { 3 }
+show("x ${match 1 { 1 -> "a"
+ _ -> "b" }} y ${if true { 1 } else { 2 }}")
+fn nested(a: Int) -> Int = match a { 1 -> match a { 1 -> 5
+ _ -> 6 }
+ _ -> 7 }
+fix s = Dia.Lun
+show(Dia.todos.tam())
+show(Solo.A)

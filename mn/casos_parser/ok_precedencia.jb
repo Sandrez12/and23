@@ -1,0 +1,10 @@
+show(1 + 2 * 3 - 4 / 2 % 3)
+show(-1 + !true == false)
+show(a || b && c == d != e < f <= g > h >= i)
+show(x ?: y ?: z)
+show(a is Int && b as Str == "x")
+show(a.b.c(1)(2)[3].d?.e?.f(4))
+show(f<Int>(1) + g<Int, Str>(2) < 3)
+show(a < b)
+show(a < b > (c))
+fix v = obj.m<Int>(3) { x -> x }

@@ -548,7 +548,7 @@ fix m = Mapa<Str, Int>()                                                // expl�
 
 ### Mn: auto-compilación (en curso)
 
-Plan: reescribir el compilador en And23 por etapas, comprobando cada una contra la de Rust. Etapa 1, el lexer.
+Plan: reescribir el compilador en And23 por etapas, comprobando cada una contra la de Rust. Etapa 1, el lexer; etapa 2, el parser.
 
 - **Etapa 1: `mn/lexer.jb`.** El lexer de And23 escrito en And23 (unas 330 líneas). Hace lo mismo que `lexer.rs` y vuelca los tokens con el
   formato de `and23 --tokens archivo.jb` (una línea por token; las cadenas con sus partes sangradas; `Error mensaje` si el código no se puede
@@ -570,7 +570,28 @@ Plan: reescribir el compilador en And23 por etapas, comprobando cada una contra 
   - Enumerados y `match`: ahora existen (sección siguiente).
   - `if` como expresión: ahora existe.
   - Decimales fuera de rango: dan `inf`, como en Rust.
-- **Siguiente.** El parser (AST con clases y `match`) y comprobarlo contra el de Rust.
+- **Siguiente.** El verificador de tipos (etapa 3).
+
+#### Etapa 2: `mn/parser.jb`
+
+El parser de And23 escrito en And23: un port fiel de `parser.rs` (unas 1 300 líneas contra unas 2 000 de Rust, sin contar los tests), con el mismo Pratt, el
+mismo retroceso para `f<Int>(x)` y las lambdas, las mismas traducciones de `enum`, `match`, `if` como valor y `prueba`, y los mismos mensajes
+de error. Usa `mn/lexer.jb` (`use "lexer.jb"`; por eso el lexer declara `open` lo que el parser necesita).
+
+- **Cómo se compara.** `and23 --ast archivo.jb` vuelca el AST de Rust como texto (`astdump.rs`): una línea por nodo (`Etiqueta atributos`) con
+  sus hijos sangrados, sin posiciones; `and23 mn/parser.jb archivo.jb` produce exactamente el mismo texto. Si el código no se puede analizar,
+  los dos imprimen `Error mensaje`. El test `el_parser_escrito_en_and23_coincide_con_el_de_rust` lo exige sobre el preludio, los ejemplos,
+  `mn/lexer.jb`, el propio `mn/parser.jb`, los casos del lexer y 84 casos propios en `mn/casos_parser` (cada construcción y cada mensaje de
+  error).
+- **Árbol uniforme.** En vez de una clase por nodo, el parser construye `Nodo(tag, attrs, kids)`: es el mismo formato del volcado, así que
+  construir el árbol y mostrarlo son lo mismo, y el port cabe en una fracción del código. Es una decisión de ahorro, no de diseño final: el
+  verificador de tipos puede recorrer este árbol por etiquetas, o esa etapa puede introducir un AST con clases y `match` por tipo.
+- **No hay posiciones** en los nodos ni en los errores (solo se compara el mensaje). Lo necesitará el verificador para sus mensajes.
+- **Lo que mostró del lenguaje.** `enum`, `match` e `if` como valor hicieron el port mucho más legible (la tabla de precedencias es un `match`
+  de una línea por grupo). Se echaron de menos: tuplas o varios valores de retorno (se usaron objetos y listas de salida), `Lista<T>` con
+  literal, y que `?:` y el estrechamiento de `T?` conviven mal con variables `mut` (hay que copiar a un `fix` antes de comprobar `nil`).
+- **Rendimiento.** Un archivo de 370 KB (el preludio 20 veces; 56 685 líneas de árbol): 0,65 s el lexer más el parser de And23 contra 0,33 s
+  el de Rust incluido el arranque del proceso y la impresión, con salida idéntica.
 
 ### Enumerados, `match` e `if` como valor
 

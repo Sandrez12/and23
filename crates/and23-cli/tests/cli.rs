@@ -1142,3 +1142,39 @@ fn el_lexer_escrito_en_and23_coincide_con_el_de_rust() {
         );
     }
 }
+
+/// Mn, etapa 2: el parser escrito en And23 (`mn/parser.jb`) produce el mismo árbol (y los mismos errores)
+/// que el de Rust (`--ast`) en el preludio, los ejemplos, los dos archivos de `mn`, los casos del lexer y los
+/// casos del parser (cada construcción y cada mensaje de error).
+#[test]
+fn el_parser_escrito_en_and23_coincide_con_el_de_rust() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut files = vec![
+        root.join("crates/and23-syntax/prelude.jb"),
+        root.join("mn/lexer.jb"),
+        root.join("mn/parser.jb"),
+    ];
+    jb_files(&root.join("examples"), &mut files);
+    jb_files(&root.join("mn/casos"), &mut files);
+    jb_files(&root.join("mn/casos_parser"), &mut files);
+    assert!(files.len() > 100, "{} archivos", files.len());
+    for file in files {
+        let rust = Command::new(env!("CARGO_BIN_EXE_and23"))
+            .arg("--ast")
+            .arg(&file)
+            .output()
+            .unwrap();
+        let and23 = Command::new(env!("CARGO_BIN_EXE_and23"))
+            .arg("mn/parser.jb")
+            .arg(&file)
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(and23.status.success(), "{file:?}: {}", stderr(&and23));
+        assert_eq!(
+            stdout(&and23),
+            stdout(&rust),
+            "árboles distintos en {file:?}"
+        );
+    }
+}

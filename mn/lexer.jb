@@ -8,22 +8,22 @@
 // Las posiciones (`@desde-hasta`) son índices de carácter, no de byte: en And23 un texto se recorre por
 // caracteres (ver DESIGN.md, «Mn»).
 
-thing ErrorLexico(m: Str) : Fallo(m)
+open thing ErrorLexico(m: Str) : Fallo(m)
 
 /// Un trozo de cadena: texto literal, o los tokens de una interpolación `${...}`.
-thing Parte(fix esCodigo: Bool, fix texto: Str, fix codigo: Lista<Token>)
+open thing Parte(fix esCodigo: Bool, fix texto: Str, fix codigo: Lista<Token>)
 
 /// `tipo` es el nombre del token (`Fix`, `Plus`, `Int`...); `valor` el texto de los enteros, decimales e
 /// identificadores; `partes` solo se usa en las cadenas. `desde` y `hasta` son su posición en el fuente, en
 /// caracteres (`hasta` excluido).
-thing Token(fix tipo: Str, fix valor: Str, fix partes: Lista<Parte>, fix desde: Int, fix hasta: Int)
+open thing Token(fix tipo: Str, fix valor: Str, fix partes: Lista<Parte>, fix desde: Int, fix hasta: Int)
 
 fix SIN_PARTES = Lista<Parte>()
 fix SIN_TOKENS = Lista<Token>()
 
 fn simple(tipo: Str, desde: Int, hasta: Int) -> Token = Token(tipo, "", SIN_PARTES, desde, hasta)
 
-fn tabla(pares: Str) -> Mapa<Str, Str> {
+open fn tabla(pares: Str) -> Mapa<Str, Str> {
     // "clave~Nombre clave~Nombre ..."
     fix m = Mapa<Str, Str>()
     pares.parte(" ").paraCada { par ->
@@ -38,6 +38,17 @@ fix PALABRAS = tabla("fix~Fix mut~Mut fn~Fn thing~Thing this~This kind~Kind supe
 // Operadores de dos caracteres y de uno.
 fix DOS = tabla("==~EqEq !=~NotEq <=~LtEq >=~GtEq &&~AndAnd ||~OrOr ->~Arrow +=~PlusEq -=~MinusEq *=~StarEq /=~SlashEq %=~PercentEq ?.~QDot ?:~Elvis")
 fix UNO = tabla("+~Plus -~Minus *~Star /~Slash %~Percent =~Assign !~Bang <~Lt >~Gt (~LParen )~RParen {~LBrace }~RBrace [~LBracket ]~RBracket ,~Comma :~Colon .~Dot ?~Question")
+
+/// Para cada nombre de token (`Fix`, `Plus`...), su texto en el código (`fix`, `+`...).
+open fix TEXTOS = invierte()
+
+fn invierte() -> Mapa<Str, Str> {
+    fix m = Mapa<Str, Str>()
+    PALABRAS.paraCada { k, v -> m.pone(v, k) }
+    DOS.paraCada { k, v -> m.pone(v, k) }
+    UNO.paraCada { k, v -> m.pone(v, k) }
+    return m
+}
 
 fn digitoHex(c: Str) -> Int = "0123456789abcdef".indiceDe(c.minus())
 
@@ -230,10 +241,18 @@ thing Lexer(fix cs: Lista<Str>) {
     }
 }
 
+/// Los tokens de un texto, terminados en `Eof`. Falla con `ErrorLexico` si no se puede leer.
+open fn lexea(texto: Str) -> Lista<Token> {
+    fix cs = texto.caracteres()
+    fix tokens = Lexer(cs).corre(false)
+    tokens.agrega(simple("Eof", cs.tam(), cs.tam()))
+    return tokens
+}
+
 // ---------------------------------------------------------------- volcado
 
 /// Escapa el texto de una parte igual que `and23 --tokens`.
-fn escapa(t: Str) -> Str {
+open fn escapa(t: Str) -> Str {
     mut r = ""
     t.caracteres().paraCada { c ->
         if c == "\\" {
@@ -285,9 +304,7 @@ fn main() {
         return
     }
     attempt {
-        fix cs = leeArchivo(a.obtiene(0)).caracteres()
-        fix tokens = Lexer(cs).corre(false)
-        tokens.agrega(simple("Eof", cs.tam(), cs.tam()))
+        fix tokens = lexea(leeArchivo(a.obtiene(0)))
         fix salida = Lista<Str>()
         volcar(tokens, "", salida)
         show(une(salida, "\n"))
