@@ -30,6 +30,15 @@ jobs:
           targets: ${{ matrix.target }}
       - name: Compilar
         run: cargo build --release --locked -p and23-cli --target ${{ matrix.target }}
+      - name: Probar el binario
+        shell: bash
+        run: |
+          bin=target/${{ matrix.target }}/release/and23
+          [ -f "$bin" ] || bin="$bin.exe"
+          "$bin" --version
+          test "$("$bin" examples/aritmetica.jb | head -1)" = "7"
+          "$bin" --check examples/clases.jb
+          "$bin" mn/checker.jb examples/clases.jb
       - name: Empaquetar (Unix)
         if: runner.os != 'Windows'
         shell: bash

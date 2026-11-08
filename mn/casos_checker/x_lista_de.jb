@@ -1,0 +1,8 @@
+fn main() {
+    fix l = listaDe([3, 1, 2])
+    show(l.tam())
+    fix d = Dupla("edad", 30)
+    show(d.intercambiada().primero)
+    fix ls = listaDe(["a", "b"])
+    show(ls.obtiene(1))
+}

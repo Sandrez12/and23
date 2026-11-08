@@ -1,0 +1,2 @@
+fn f(n: Int) = if n > 0 { 1 } else { "a" }
+fn main() { show(f(1)) }

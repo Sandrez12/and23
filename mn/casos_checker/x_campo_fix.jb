@@ -1,0 +1,34 @@
+thing P(fix nombre: Str?, fix edad: Int?) {
+    fn largo() -> Int {
+        if nombre != nil { return nombre.largo() }
+        return 0
+    }
+    fn suma() -> Int {
+        if nombre == nil { return -1 }
+        if edad == nil || nombre.largo() > 100 { return 0 }
+        return edad + nombre.largo()
+    }
+    fn conLambda() -> Int {
+        if nombre != nil {
+            fix f = { -> nombre.largo() }
+            return f()
+        }
+        return 0
+    }
+    fn local() -> Int {
+        fix nombre = "zz"
+        return nombre.largo()
+    }
+}
+thing Q(fix x: Str?) : P(x, 5) {
+    fn z() -> Int = if x != nil { x.largo() } else { 0 }
+}
+fn main() {
+    show(P("hola", 3).largo())
+    show(P("hola", 3).suma())
+    show(P("hola", 3).conLambda())
+    show(P(nil, nil).suma())
+    show(P("a", 1).local())
+    show(Q("abc").z())
+    show(Q(nil).z())
+}

@@ -1,0 +1,12 @@
+fn buscar(xs: [Int], v: Int) -> Int? {
+    mut i = 0
+    while i < len(xs) {
+        if xs[i] == v { return i }
+        i += 1
+    }
+    return nil
+}
+fn main() {
+    fix r: Int? = buscar([1, 2], 2)
+    fix s: Int = buscar([1, 2], 2)
+}

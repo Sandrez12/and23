@@ -1,0 +1,1 @@
+fn main() { fix a = if 1 > 0 { nil } else { nil } }

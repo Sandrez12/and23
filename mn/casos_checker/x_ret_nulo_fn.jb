@@ -1,0 +1,5 @@
+fn g(n: Int) -> Int? {
+    fix v = if n > 0 { n } else { nil }
+    return v
+}
+fn main() { show(g(1)) }

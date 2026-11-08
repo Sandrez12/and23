@@ -1,0 +1,7 @@
+thing P(mut nombre: Str?) {
+    fn largo() -> Int {
+        if nombre != nil { return nombre.largo() }
+        return 0
+    }
+}
+fn main() { show(P("x").largo()) }

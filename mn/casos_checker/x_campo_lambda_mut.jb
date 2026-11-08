@@ -1,0 +1,7 @@
+thing P(fix a: Str?, mut b: Str?) {
+    fn f() -> Int {
+        if a != nil && b != nil { return a.largo() + b.largo() }
+        return 0
+    }
+}
+fn main() { show(P("x", "y").f()) }

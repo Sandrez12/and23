@@ -215,7 +215,8 @@ enum Ret {
     Script,
     Declared(Type),
     /// Función con cuerpo `= expr` sin `->`: el tipo es el de la expresión.
-    Infer(Option<Type>),
+    /// El tipo deducido hasta ahora y, si es solo `nil`, dónde se vio el primero (para el error).
+    Infer(Option<Type>, Option<Span>),
 }
 
 struct Ctx {
@@ -1086,7 +1087,7 @@ impl<'p> Pass<'p> {
             scopes: vec![scope],
             ret: match sig.ret {
                 Some(ty) => Ret::Declared(ty),
-                None => Ret::Infer(None),
+                None => Ret::Infer(None, None),
             },
             script_narrow: HashMap::new(),
             this: class,
@@ -1094,7 +1095,10 @@ impl<'p> Pass<'p> {
         };
         self.block(&mut ctx, &decl.body)?;
         match ctx.ret {
-            Ret::Infer(found) => {
+            Ret::Infer(found, nil_span) => {
+                if let (Some(Type::Nil), Some(span)) = (&found, nil_span) {
+                    no_nil(&Type::Nil, span)?;
+                }
                 let ty = found.unwrap_or(Type::Unit);
                 if let Some(sig) = self.funcs.get_mut(key) {
                     sig.ret = Some(ty);
@@ -1113,6 +1117,29 @@ impl<'p> Pass<'p> {
         }
         self.state.insert(key.to_string(), State::Done);
         self.scope_params = saved_params;
+        Ok(())
+    }
+
+    /// Anota un valor devuelto en una función o lambda sin tipo de retorno declarado. `T` y `nil` juntos
+    /// dan `T?`; el resto de los valores deben coincidir con el primero.
+    fn record_ret(ctx: &mut Ctx, found: Type, span: Span, this: &Self) -> Result<(), Diagnostic> {
+        let Ret::Infer(slot, nil_span) = &mut ctx.ret else {
+            return Ok(());
+        };
+        match (slot.clone(), found) {
+            (None, Type::Nil) => {
+                *slot = Some(Type::Nil);
+                *nil_span = Some(span);
+            }
+            (None, found) => *slot = Some(found),
+            (Some(Type::Nil), Type::Nil) => {}
+            (Some(Type::Nil), found) => *slot = Some(optional(found)),
+            (Some(previous), Type::Nil) => *slot = Some(optional(previous)),
+            (Some(previous), found @ Type::Nullable(_)) if this.assignable(&found, &previous) => {
+                *slot = Some(found);
+            }
+            (Some(previous), found) => this.expect(&previous, &found, span)?,
+        }
         Ok(())
     }
 
@@ -1142,7 +1169,14 @@ impl<'p> Pass<'p> {
             let fields = self.all_fields(class, &self.identity_args(class));
             if let Some(i) = fields.iter().position(|f| f.name == name) {
                 let f = &fields[i];
-                return Some((f.ty.clone(), f.mutable, Some(i as u32)));
+                // Un campo `fix` que se probó como no nulo (ver `narrowing`) lo sigue siendo.
+                let narrowed = ctx
+                    .scopes
+                    .iter()
+                    .rev()
+                    .find_map(|scope| scope.get(&format!("@campo:{name}")));
+                let ty = narrowed.map_or_else(|| f.ty.clone(), |entry| entry.0.clone());
+                return Some((ty, f.mutable, Some(i as u32)));
             }
         }
         if let Some(ty) = ctx.script_narrow.get(name) {
@@ -1154,7 +1188,8 @@ impl<'p> Pass<'p> {
     }
 
     /// Como `lookup` pero solo para estrechar: tipo, mutabilidad, tipo declarado si ya estaba
-    /// estrechada y si es un local (los campos no se estrechan).
+    /// estrechada y si es un local o un campo `fix` (los campos `mut` no se estrechan: cualquier
+    /// llamada puede cambiarlos).
     fn narrowable(&self, ctx: &Ctx, name: &str) -> Option<(Type, bool, Option<Type>, bool)> {
         if let Some((ty, mutable, declared)) =
             ctx.scopes.iter().rev().find_map(|scope| scope.get(name))
@@ -1162,12 +1197,28 @@ impl<'p> Pass<'p> {
             return Some((ty.clone(), *mutable, declared.clone(), true));
         }
         if let Some(class) = &ctx.this {
-            if self
+            if let Some(field) = self
                 .all_fields(class, &self.identity_args(class))
-                .iter()
-                .any(|f| f.name == name)
+                .into_iter()
+                .find(|f| f.name == name)
             {
-                return None;
+                if field.mutable {
+                    return None;
+                }
+                let key = format!("@campo:{name}");
+                let declared = ctx
+                    .scopes
+                    .iter()
+                    .rev()
+                    .find_map(|scope| scope.get(&key))
+                    .and_then(|entry| entry.2.clone());
+                let ty = ctx
+                    .scopes
+                    .iter()
+                    .rev()
+                    .find_map(|scope| scope.get(&key))
+                    .map_or(field.ty, |entry| entry.0.clone());
+                return Some((ty, false, declared, true));
             }
         }
         if ctx.script_narrow.contains_key(name) {
@@ -1182,6 +1233,16 @@ impl<'p> Pass<'p> {
         self.globals
             .get(name)
             .map(|(ty, mutable, declared)| (ty.clone(), *mutable, declared.clone(), safe))
+    }
+
+    /// Si `name` se refiere a un campo de `this` y no a un local.
+    fn narrow_field(&self, ctx: &Ctx, name: &str) -> bool {
+        ctx.scopes.iter().all(|scope| !scope.contains_key(name))
+            && ctx.this.as_ref().is_some_and(|class| {
+                self.all_fields(class, &self.identity_args(class))
+                    .iter()
+                    .any(|f| f.name == name)
+            })
     }
 
     /// Variables que `cond` prueba como no nulas cuando es verdadera y cuando es falsa.
@@ -1256,8 +1317,14 @@ impl<'p> Pass<'p> {
             if mutable && (!local || body.is_some_and(|b| assigned_in_loop(b, name))) {
                 continue;
             }
+            // Un campo no es una variable: su estrechamiento se guarda con otra clave (ver `lookup`).
+            let is_field = ctx.this.is_some() && self.narrow_field(ctx, name);
             out.push((
-                name.clone(),
+                if is_field {
+                    format!("@campo:{name}")
+                } else {
+                    name.clone()
+                },
                 (
                     (**inner).clone(),
                     mutable,
@@ -1621,11 +1688,14 @@ impl<'p> Pass<'p> {
                 let expected = match &ctx.ret {
                     Ret::Script => None,
                     Ret::Declared(ty) => Some(ty.clone()),
-                    Ret::Infer(slot) => slot.clone(),
+                    Ret::Infer(slot, _) => slot.clone().filter(|t| *t != Type::Nil),
                 };
+                if let (Ret::Infer(..), Some(Expr::Nil(nil_span))) = (&ctx.ret, expr) {
+                    return Self::record_ret(ctx, Type::Nil, *nil_span, self);
+                }
                 match (expr, expected) {
                     (Some(expr), Some(expected)) => {
-                        if expected == Type::Unit && !matches!(ctx.ret, Ret::Infer(_)) {
+                        if expected == Type::Unit && !matches!(ctx.ret, Ret::Infer(..)) {
                             let found = self.expr(ctx, expr)?;
                             return Err(Diagnostic::new(
                                 expr.span(),
@@ -1634,18 +1704,32 @@ impl<'p> Pass<'p> {
                                 ),
                             ));
                         }
-                        self.expr_as(ctx, expr, &expected)?;
+                        if let Err(error) = self.expr_as(ctx, expr, &expected) {
+                            // En una función sin tipo declarado, un valor opcional ensancha el tipo deducido.
+                            if !matches!(ctx.ret, Ret::Infer(..)) {
+                                return Err(error);
+                            }
+                            match self.expr(ctx, expr) {
+                                Ok(found @ Type::Nullable(_))
+                                    if self.assignable(&found, &expected) =>
+                                {
+                                    Self::record_ret(ctx, found, expr.span(), self)?;
+                                }
+                                _ => return Err(error),
+                            }
+                        }
                     }
                     (Some(expr), None) => {
                         let found = self.expr(ctx, expr)?;
-                        no_nil(&found, expr.span())?;
-                        if let Ret::Infer(slot) = &mut ctx.ret {
-                            *slot = Some(found);
+                        if matches!(ctx.ret, Ret::Infer(..)) {
+                            Self::record_ret(ctx, found, expr.span(), self)?;
+                        } else {
+                            no_nil(&found, expr.span())?;
                         }
                     }
                     (None, Some(expected)) => self.expect(&expected, &Type::Unit, *span)?,
                     (None, None) => {
-                        if let Ret::Infer(slot) = &mut ctx.ret {
+                        if let Ret::Infer(slot, _) = &mut ctx.ret {
                             *slot = Some(Type::Unit);
                         }
                     }
@@ -2522,7 +2606,7 @@ impl<'p> Pass<'p> {
             &mut ctx.ret,
             match &ret_expected {
                 Some(ty) => Ret::Declared(ty.clone()),
-                None => Ret::Infer(None),
+                None => Ret::Infer(None, None),
             },
         );
         ctx.lambda_marks.push(ctx.scopes.len());
@@ -2532,9 +2616,12 @@ impl<'p> Pass<'p> {
         ctx.lambda_marks.pop();
         let used_ret = std::mem::replace(&mut ctx.ret, saved_ret);
         result?;
+        if let (None, Ret::Infer(Some(Type::Nil), Some(span))) = (&ret_expected, &used_ret) {
+            no_nil(&Type::Nil, *span)?;
+        }
         let ret = match (ret_expected, used_ret) {
             (Some(ty), _) => ty,
-            (None, Ret::Infer(slot)) => slot.unwrap_or(Type::Unit),
+            (None, Ret::Infer(slot, _)) => slot.unwrap_or(Type::Unit),
             _ => Type::Unit,
         };
         Ok(Type::Fn(types, Box::new(ret)))
@@ -2563,19 +2650,7 @@ impl<'p> Pass<'p> {
             (Some(tail), Some(ret)) => self.expr_as(ctx, tail, ret)?,
             (Some(tail), None) => {
                 let found = self.expr(ctx, tail)?;
-                no_nil(&found, tail.span())?;
-                let previous = match &ctx.ret {
-                    Ret::Infer(slot) => slot.clone(),
-                    _ => None,
-                };
-                match previous {
-                    Some(previous) => self.expect(&previous, &found, tail.span())?,
-                    None => {
-                        if let Ret::Infer(slot) = &mut ctx.ret {
-                            *slot = Some(found);
-                        }
-                    }
-                }
+                Self::record_ret(ctx, found, tail.span(), self)?;
             }
             (None, Some(ret)) => {
                 if *ret != Type::Unit && !block_returns(body) {
@@ -3812,8 +3887,8 @@ mod tests {
             // `||` y `&&` solo estrechan al lado derecho
             ("fn f(p: P?) -> Bool = p != nil || p.n > 1", "puede ser nil"),
             ("fn f(p: P?) -> Bool = p == nil && p.n > 1", "puede ser nil"),
-            // los campos no se estrechan
-            ("thing Q(fix p: P?) { fn f() -> Int {\n if p != nil { return p.n }\n return 0\n} }", "puede ser nil"),
+            // los campos `mut` no se estrechan (cualquier llamada puede cambiarlos)
+            ("thing Q(mut p: P?) { fn f() -> Int {\n if p != nil { return p.n }\n return 0\n} }", "puede ser nil"),
             // una variable distinta con el mismo nombre en un bloque interior no hereda el estrechamiento
             ("fn f(p: P?) -> Int {\n if p != nil {\n fix p: P? = nil\n return p.n\n }\n return 0\n}", "puede ser nil"),
         ];
@@ -3823,6 +3898,65 @@ mod tests {
                 message.contains(expected),
                 "{tail}: se esperaba «{expected}», pero fue «{message}»"
             );
+        }
+    }
+
+    #[test]
+    fn los_campos_fix_se_estrechan_y_el_resultado_es_el_mismo_campo() {
+        let pre = "thing P(fix n: Int)
+";
+        let ok = |tail: &str| {
+            check(&format!("{pre}{tail}")).unwrap_or_else(|e| panic!("{tail}: {e}"));
+        };
+        ok("thing Q(fix p: P?) { fn f() -> Int {
+ if p != nil { return p.n }
+ return 0
+} }");
+        ok("thing Q(fix p: P?) { fn f() -> Int {
+ if p == nil { return 0 }
+ return p.n
+} }");
+        ok("thing Q(fix p: P?) { fn f() -> Int {
+ if p != nil { fix g = { -> p.n }
+ return g() }
+ return 0
+} }");
+    }
+
+    #[test]
+    fn un_valor_entre_t_y_nil_da_t_opcional() {
+        for src in [
+            "fn g(n: Int) -> Int? {
+ fix v = if n > 0 { n } else { nil }
+ return v
+}",
+            "fn g(n: Int) = if n > 0 { n } else { nil }
+fix r: Int? = g(1)",
+            "fix a = if true { 3 } else if false { nil } else { 4 }
+fix r: Int? = a",
+            "fix f = { n: Int -> if n > 0 { return nil }
+ n }
+fix r: Int? = f(1)",
+        ] {
+            check(src).unwrap_or_else(|e| panic!("{src}: {e}"));
+        }
+        for (src, expected) in [
+            (
+                "fix a = if true { nil } else { nil }",
+                "no se puede deducir el tipo de `nil`",
+            ),
+            (
+                "fix a = if true { 3 } else { nil }
+fix b: Int = a",
+                "puede ser nil",
+            ),
+            (
+                "fix a = if true { 3 } else { \"x\" }",
+                "se esperaba Int, pero es Str",
+            ),
+        ] {
+            let message = err(src);
+            assert!(message.contains(expected), "{src}: «{message}»");
         }
     }
 

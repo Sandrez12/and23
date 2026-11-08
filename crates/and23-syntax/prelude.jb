@@ -498,8 +498,9 @@ thing Canal<T>(fix capacidad: Int) {
 
 // ---------------------------------------------------------------- M12: biblioteca estándar 2
 
-fn _listaDe(xs: [Str]) -> Lista<Str> {
-    fix l = Lista<Str>()
+/// Una `Lista` con los elementos de un arreglo: `listaDe([1, 2, 3])`.
+fn listaDe<T>(xs: [T]) -> Lista<T> {
+    fix l = Lista<T>()
     mut i = 0
     while i < len(xs) {
         l.agrega(xs[i])
@@ -508,8 +509,13 @@ fn _listaDe(xs: [Str]) -> Lista<Str> {
     return l
 }
 
+/// Dos valores juntos, de tipos distintos: `Dupla("edad", 30)`.
+thing Dupla<A, B>(fix primero: A, fix segundo: B) {
+    fn intercambiada() -> Dupla<B, A> = Dupla(segundo, primero)
+}
+
 /// Los argumentos que siguen al archivo en la línea de comandos: `and23 programa.jb uno dos`.
-fn argumentos() -> Lista<Str> = _listaDe(_args())
+fn argumentos() -> Lista<Str> = listaDe(_args())
 
 /// Valor de una variable de entorno, o nil si no existe.
 fn entorno(nombre: Str) -> Str? = _entorno(nombre)
@@ -546,7 +552,7 @@ fn esDir(ruta: Str) -> Bool = _esDir(ruta)
 /// Nombres (no rutas) del contenido de una carpeta, en orden alfabético.
 fn listaDir(ruta: Str) -> Lista<Str> {
     fix nombres = _listaDir(ruta)
-    if nombres != nil { return _listaDe(nombres) }
+    if nombres != nil { return listaDe(nombres) }
     fail ErrorES(_errorES())
 }
 
@@ -623,7 +629,7 @@ fn _str_esDigito(s: Str) -> Bool = _esDigito(s)
 
 /// Cada carácter como una cadena, en una `Lista<Str>` (O(n): para recorrer un texto largo es mucho más
 /// rápido que `s[i]`, que cuenta desde el principio cada vez).
-fn _str_caracteres(s: Str) -> Lista<Str> = _listaDe(_caracteres(s))
+fn _str_caracteres(s: Str) -> Lista<Str> = listaDe(_caracteres(s))
 
 /// El carácter con ese punto de código Unicode, o nil si no es uno válido.
 fn desdeCodigo(n: Int) -> Str? = _desdeCodigo(n)

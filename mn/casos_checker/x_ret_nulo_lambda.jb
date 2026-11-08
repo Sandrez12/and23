@@ -1,0 +1,5 @@
+fn main() {
+    fix g = { n: Int -> if n > 5 { return nil }; n * 2 }
+    fix r: Int? = g(7)
+    fix s: Int = g(1)
+}

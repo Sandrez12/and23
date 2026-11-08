@@ -1,0 +1,13 @@
+fn h(n: Int) = if n > 0 { n } else { nil }
+fn main() {
+    fix a = if 1 > 0 { "x" } else { nil }
+    fix b = if 1 > 5 { 3 } else if 2 > 1 { nil } else { 4 }
+    fix c = if 1 > 5 { nil } else { 7 }
+    show(a)
+    show(b)
+    show(c)
+    fix f = { n: Int -> if n > 0 { return nil }; n }
+    show(f(0))
+    show(h(1))
+    show(h(0))
+}

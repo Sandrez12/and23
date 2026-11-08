@@ -102,7 +102,7 @@
     },
     "builtin": {
       "name": "support.function.builtin.and23",
-      "match": "\\b(show|len|push|pop|hash|afirma|afirmaIgual|lanza|lanzaDe|cede|duerme|ahora|azar|azarF|semilla|argumentos|entorno|leeLinea|leeArchivo|leeLineas|escribeArchivo|agregaArchivo|borraArchivo|existe|esDir|listaDir|creaDir|unirRuta|nombreDe|carpetaDe|extension|une|raiz|potencia|piso|techo|redondea|aFloat|absoluto|minimo|maximo)\\b(?=\\s*[(<{])"
+      "match": "\\b(show|len|push|pop|hash|afirma|afirmaIgual|lanza|lanzaDe|cede|duerme|ahora|azar|azarF|semilla|argumentos|entorno|leeLinea|leeArchivo|leeLineas|escribeArchivo|agregaArchivo|borraArchivo|existe|esDir|listaDir|creaDir|unirRuta|nombreDe|carpetaDe|extension|une|raiz|potencia|piso|techo|redondea|aFloat|listaDe|absoluto|absolutoF|minimo|minimoF|maximo|maximoF|desdeCodigo)\\b(?=\\s*[(<{])"
     },
     "type": {
       "patterns": [
