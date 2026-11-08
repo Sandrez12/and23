@@ -37,17 +37,17 @@ Lo que más protege a un usuario y menos cuesta.
 
 Se deciden **antes** de tocar el lenguaje, porque cada una condiciona la Fase 2.
 
-- [ ] **1.1 Política de compatibilidad.** (S) Qué se promete en 1.x (sintaxis, tipos, biblioteca) y qué no (formato del
+- [x] **1.1 Política de compatibilidad.** (S) Qué se promete en 1.x (sintaxis, tipos, biblioteca) y qué no (formato del
   bytecode y de los volcados: internos). Cómo se marca algo obsoleto y cuántas versiones vive.
-- [ ] **1.2 Palabras reservadas definitivas.** (S) Lista final (`kind`, `rescue`, `enum`, `match`, `show`, `thing`...). Decidir
+- [x] **1.2 Palabras reservadas definitivas.** (S) Lista final (`kind`, `rescue`, `enum`, `match`, `show`, `thing`...). Decidir
   si alguna se renombra *ahora*; después ya no.
-- [ ] **1.3 Un veredicto por cada límite conocido.** (M) Tabla con tres columnas: **hacer antes de 1.0**, **documentar como
+- [x] **1.3 Un veredicto por cada límite conocido.** (M) Tabla con tres columnas: **hacer antes de 1.0**, **documentar como
   límite**, **posponer a 1.x**. Propuesta inicial en la Fase 2.
-- [ ] **1.4 Qué hacer con `--tree`.** (S) Retirarlo o mantenerlo como referencia, sin promesa de compatibilidad.
-- [ ] **1.5 Papel de Rust y de Mn.** (S) Decidir si Rust sigue siendo el compilador oficial y Mn la prueba de autocompilación
+- [x] **1.4 Qué hacer con `--tree`.** (S) Retirarlo o mantenerlo como referencia, sin promesa de compatibilidad.
+- [x] **1.5 Papel de Rust y de Mn.** (S) Decidir si Rust sigue siendo el compilador oficial y Mn la prueba de autocompilación
   (propuesta, menos riesgo), o si Mn pasa a oficial. Cambia lo que se promete en la release.
 
-## Fase 2 — Cerrar huecos del lenguaje (propuesta de reparto, a confirmar en 1.3)
+## Fase 2 — Cerrar huecos del lenguaje (reparto decidido en 1.3, ver `DESIGN.md`)
 
 **Hacer antes de 1.0** (los que un usuario encuentra a la primera semana):
 
@@ -58,6 +58,8 @@ Se deciden **antes** de tocar el lenguaje, porque cada una condiciona la Fase 2.
 - [ ] **2.5 `!!` y `?:` con `return`/`fail` a la derecha.** (M) El patrón más natural para opcionales.
 - [ ] **2.6 `use` en el REPL.** (S)
 - [ ] **2.7 Pasar métodos y constructores como valores.** (M) Hoy hay que envolverlos en una lambda.
+- [ ] **2.8 Retirar el intérprete de árbol** (`--tree` y el crate `and23-eval`). (M) Decidido en 1.4: los tests de `diferencial.rs` pasan a
+  salidas esperadas escritas a mano.
 
 **Documentar como límite de 1.0, posponer a 1.x** (si no hay razón para cambiarlo):
 herencia múltiple de clases, métodos por defecto en interfaces, cotas múltiples, varianza y comodines, guardas y

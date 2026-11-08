@@ -704,6 +704,73 @@ Los tres se traducen en el parser a construcciones que ya existían, así el ver
   `nombre: Tipo`. El `match` como valor cuesta una lambda por evaluación. `m.Color.Rojo` funciona, pero `Color` como nombre de variable local
   tapa al enumerado.
 
+## Política de 1.0 (decisiones del 2026-11-08)
+
+Decididas en la Fase 1 de `ROADMAP.md`. Cambiarlas es posible, pero hay que escribir aquí el porqué.
+
+### Compatibilidad (1.1)
+
+- **Qué promete 1.x:** un programa válido en `1.0` sigue siendo válido y hace lo mismo en cualquier `1.y`. Eso cubre la sintaxis, las reglas
+  de tipos (lo que se aceptaba se sigue aceptando; puede aceptarse más), la semántica de ejecución, la API de la biblioteca (nombres, firmas
+  y comportamiento de lo que documenta `docs/biblioteca.md`) y las opciones de la línea de comandos que documenta `--help`.
+- **Qué se puede cambiar en 1.x:** añadir funciones, métodos, clases y opciones; aceptar programas que antes se rechazaban; mejorar los
+  mensajes de error (su texto no es API); corregir fallos (un comportamiento que contradice la documentación es un fallo, no una
+  promesa); ser más rápido.
+- **Qué solo cambia en 2.0:** quitar o renombrar algo documentado, cambiar el significado de un programa válido, añadir una palabra reservada.
+  Algo se marca como obsoleto en una versión menor (aviso en `CHANGELOG.md` y en la referencia) y no se quita hasta la siguiente mayor.
+- **Interno, sin promesa:** el formato del bytecode y de los volcados (`--dump`, `--carga`, `--tokens`, `--ast`, `--resuelve`, `--unido`,
+  `--disasm`), el formato del texto de los errores, los crates como bibliotecas de Rust, y los nombres que empiezan por `_` del preludio.
+- **Versiones `0.x`:** hasta 1.0 nada de esto se promete.
+
+### Palabras reservadas (1.2)
+
+Se mantienen tal cual (24): `fix mut fn thing this kind super is as nil attempt rescue fail if else while return break continue true
+false show enum match`. Es una lista **cerrada en 1.x**: añadir otra sería romper programas que la usan como nombre, así que solo en 2.0.
+`show` sigue siendo una sentencia (no una función): no se puede pasar como valor, y lo normal es envolverla en una lambda. Además de
+las palabras reservadas, `len`, `push`, `pop` y `hash` son funciones integradas, y los nombres del preludio (`Lista`, `Mapa`, `Entrada`,
+`Fallo`, `Tarea`, `Canal`...) se pueden redefinir en un programa, que gana al preludio.
+
+### Veredicto de cada límite conocido (1.3)
+
+| Límite | Veredicto | Paso |
+|---|---|---|
+| Lambda que se llama a sí misma dentro de una función | **Antes de 1.0** | 2.1 |
+| `Mapa` sin orden de inserción | **Antes de 1.0** | 2.2 |
+| Sin formato de decimales | **Antes de 1.0** | 2.3 |
+| `ordena` en O(n²) | **Antes de 1.0** | 2.4 |
+| Sin `!!` ni `?:` con `return`/`fail` a la derecha | **Antes de 1.0** | 2.5 |
+| Sin `use` en el REPL | **Antes de 1.0** | 2.6 |
+| Métodos y constructores no se pasan como valores | **Antes de 1.0** | 2.7 |
+| Intérprete de árbol (`--tree`) | **Retirar** (ver 1.4) | 2.8 |
+| Una sola clase padre; interfaces sin herencia ni métodos por defecto | Documentar como límite | |
+| Sin cotas múltiples, varianza ni comodines en genéricos | Documentar como límite | |
+| `match` sin guardas, sin desestructuración, sin variantes con datos | Documentar como límite (se usan clases con `kind`) | |
+| Sin reexportar ni importar nombres sueltos; sin manifiesto de proyecto | Documentar como límite | |
+| Sin `it` implícito ni `::nombre`; sin lambdas genéricas | Documentar como límite | |
+| Tareas sin expulsión por tiempo; `leeLinea` bloquea toda la VM | Documentar como límite | |
+| Tareas pendientes al terminar `main` se descartan | Documentar como límite (ver 1.5) | |
+| Sin Unicode avanzado en `mayus`/`minus` | Documentar como límite | |
+| Sin copiar, renombrar ni borrar carpetas | Posponer a 1.x (es solo añadir funciones) | |
+| `s[i]` y `_busca`/`_trozo` cuestan O(n) en cadenas no ASCII | Posponer a 1.x (es una optimización) | |
+| Sin servidor de lenguaje ni gestor de paquetes | Posponer a 1.x | |
+
+Lo que se **documenta como límite** no se promete resolver: si se resuelve en 1.x, es una ampliación compatible (aceptar más programas).
+
+### Intérprete de árbol (1.4)
+
+Se **retira** antes de 1.0 (`and23 --tree` y el crate `and23-eval`): no conoce la biblioteca, las tareas ni las cadenas, y era solo la
+referencia de M1a. Los tests que lo usan como referencia (`diferencial.rs`) se reemplazan por salidas esperadas escritas a mano.
+
+### Papel de Rust y de Mn (1.5)
+
+El compilador y la VM de **Rust son los oficiales**: lo que se distribuye y lo que 1.0 promete. **Mn es la demostración y una prueba**: el
+test del punto fijo (el compilador de And23 compilado por sí mismo escribe el mismo bytecode que compilado por Rust) y las comparaciones
+etapa por etapa siguen en cada cambio del lenguaje, pero Mn no se distribuye como herramienta ni tiene promesa de uso. Un cambio del
+lenguaje se hace en Rust **y** en Mn; si Mn no sigue idéntico, el cambio no está terminado.
+
+Cuando `main` termina, las tareas que no han terminado se descartan sin aviso (como en Go); lo que sí se avisa es una tarea que falló y
+que nadie esperó (paso 0.1).
+
 ## Fuentes de referencia
 
 - Crafting Interpreters (VM de bytecode, GC): https://craftinginterpreters.com
