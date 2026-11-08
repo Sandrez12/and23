@@ -9,13 +9,49 @@
 // formato del volcado, así que construirlo y mostrarlo es lo mismo. Más adelante un AST con clases
 // ganaría seguridad de tipos; por ahora lo importante es comparar con el parser de Rust.
 //
-// No lleva posiciones, y los errores solo comparan su mensaje.
+// Cada nodo lleva su posición (`@desde-hasta`) y la de su nombre (`#desde-hasta`) en caracteres, como el
+// volcado de Rust, y los errores también.
 
 use "lexer.jb"
 
-thing ErrorParse(m: Str) : Fallo(m)
+/// Un rango de caracteres `[a, b)` del texto fuente.
+thing Rango(fix a: Int, fix b: Int) {
+    /// El menor rango que cubre a los dos.
+    fn to(o: Rango) -> Rango = Rango(minimo(a, o.a), maximo(b, o.b))
+}
 
-thing Nodo(fix tag: Str, fix attrs: Str, fix kids: Lista<Nodo>)
+fn rango(t: Token) -> Rango = Rango(t.desde, t.hasta)
+
+thing ErrorParse(m: Str, fix donde: Rango) : Fallo(m)
+
+/// Un nombre (posiblemente cualificado) y dónde está.
+thing Nom(fix nombre: Str, fix r: Rango)
+
+thing Nodo(fix tag: Str, fix attrs: Str, fix kids: Lista<Nodo>) {
+    /// Posición del nodo y de su nombre; -1 si no la tiene.
+    mut d = -1
+    mut h = -1
+    mut nd = -1
+    mut nh = -1
+
+    fn en(r: Rango) -> Nodo {
+        d = r.a
+        h = r.b
+        return this
+    }
+
+    fn nom(r: Rango) -> Nodo {
+        nd = r.a
+        nh = r.b
+        return this
+    }
+}
+
+/// La posición de un nodo.
+fn rg(n: Nodo) -> Rango = Rango(n.d, n.h)
+
+/// La posición de una sentencia: una expresión suelta ocupa lo que su expresión.
+fn spanDe(n: Nodo) -> Rango = if n.tag == "ExprStmt" { rg(n.kids.obtiene(0)) } else { rg(n) }
 
 fn hoja(tag: Str, attrs: Str) -> Nodo = Nodo(tag, attrs, Lista<Nodo>())
 
@@ -64,9 +100,9 @@ fn listaDe1(a: Nodo) -> Lista<Nodo> {
 }
 
 /// `{ -> cuerpo }()`: ejecuta el cuerpo al instante; sus `return` dan el valor de la expresión.
-fn inmediata(stmts: Lista<Nodo>) -> Nodo {
-    fix lambda = dos("Lambda", "", vacio("LParams"), con("Block", "", stmts))
-    return dos("CallValue", "", lambda, vacio("Args"))
+fn inmediata(stmts: Lista<Nodo>, r: Rango) -> Nodo {
+    fix lambda = dos("Lambda", "", vacio("LParams"), con("Block", "", stmts).en(r)).en(r)
+    return dos("CallValue", "", lambda, vacio("Args")).en(r)
 }
 
 // ---------------------------------------------------------------- tablas
@@ -105,11 +141,12 @@ fn describe(t: Token) -> Str {
 // ---------------------------------------------------------------- casos de match
 
 /// Un patrón: `_` (clase "Wild"), una expresión (clase "Value") o `nombre: Tipo` (clase "Typed").
-thing Pat(fix clase: Str, fix valor: Nodo, fix nombre: Str, fix ty: Nodo)
+thing Pat(fix clase: Str, fix valor: Nodo, fix nombre: Str, fix ty: Nodo, fix r: Rango)
 
-thing Caso(fix pats: Lista<Pat>, fix cuerpo: Lista<Nodo>)
+/// Un caso: sus patrones, su cuerpo (un `Block`) y su posición.
+thing Caso(fix pats: Lista<Pat>, fix cuerpo: Nodo, fix r: Rango)
 
-thing Casos(fix scrut: Nodo, fix casos: Lista<Caso>)
+thing Casos(fix scrut: Nodo, fix casos: Lista<Caso>, fix cierre: Rango)
 
 thing Contador() {
     mut n = 0
@@ -118,6 +155,8 @@ thing Contador() {
 thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont: Contador, mut fnDepth: Int, mut loopDepth: Int) {
     mut pos = 0
     mut noTrailing = false
+    /// Posición del último `)` (o de la última lambda final) de unos argumentos.
+    mut cierre = Rango(0, 0)
 
     // ------------------------------------------------------------ utilidades
 
@@ -138,15 +177,20 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
         while tipo() == "Newline" { bump() }
     }
 
+    /// Un error en el token actual.
+    fn aqui(msg: Str) -> ErrorParse = ErrorParse(msg, rango(peek()))
+
     fn expect(t: Str, que: Str) -> Token {
         if tipo() == t { return bump() }
-        fail ErrorParse("se esperaba ${que}, pero se encontró ${describe(peek())}")
+        fail aqui("se esperaba ${que}, pero se encontró ${describe(peek())}")
     }
 
-    fn expectIdent(que: Str) -> Str {
-        if tipo() == "Ident" { return bump().valor }
-        fail ErrorParse("se esperaba ${que}, pero se encontró ${describe(peek())}")
+    fn expectIdentT(que: Str) -> Token {
+        if tipo() == "Ident" { return bump() }
+        fail aqui("se esperaba ${que}, pero se encontró ${describe(peek())}")
     }
+
+    fn expectIdent(que: Str) -> Str = expectIdentT(que).valor
 
     /// Tras una sentencia debe venir un salto de línea, o el cierre del bloque / fin del archivo.
     fn finSentencia(enBloque: Bool) {
@@ -154,18 +198,22 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
         if t == "Newline" { return }
         if t == "Eof" && !enBloque { return }
         if t == "RBrace" && enBloque { return }
-        if t == "Eof" { fail ErrorParse("se esperaba `}` para cerrar el bloque") }
-        fail ErrorParse("se esperaba el fin de la sentencia, pero se encontró ${describe(peek())}")
+        if t == "Eof" { fail aqui("se esperaba `}` para cerrar el bloque") }
+        fail aqui("se esperaba el fin de la sentencia, pero se encontró ${describe(peek())}")
     }
 
     /// Nombre de tipo o de clase, posiblemente cualificado por el alias de un `use`: `util.Persona`.
-    fn identCualificado(que: Str) -> Str {
-        mut nombre = expectIdent(que)
+    fn identCualificado(que: Str) -> Nom {
+        fix primero = expectIdentT(que)
+        mut nombre = primero.valor
+        mut r = rango(primero)
         if tipo() == "Dot" && peekAt(1).tipo == "Ident" {
             bump()
-            nombre = nombre + "." + bump().valor
+            fix miembro = bump()
+            r = r.to(rango(miembro))
+            nombre = nombre + "." + miembro.valor
         }
-        return nombre
+        return Nom(nombre, r)
     }
 
     fn esPalabra(k: Int, w: Str) -> Bool = peekAt(k).tipo == "Ident" && peekAt(k).valor == w
@@ -193,34 +241,40 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
     // ------------------------------------------------------------ programa
 
     fn usoDecl() -> Nodo {
-        bump()
-        if tipo() != "Str" { fail ErrorParse("se esperaba la ruta entre comillas después de `use`") }
-        fix partes = bump().partes
+        fix inicio = rango(bump())
+        if tipo() != "Str" { fail aqui("se esperaba la ruta entre comillas después de `use`") }
+        fix ruta = bump()
+        fix partes = ruta.partes
         if partes.tam() != 1 || partes.obtiene(0).esCodigo || partes.obtiene(0).texto == "" {
-            fail ErrorParse("la ruta de `use` es un texto fijo, sin `\${}` y no vacío")
+            fail ErrorParse("la ruta de `use` es un texto fijo, sin `\${}` y no vacío", rango(ruta))
         }
+        mut r = inicio.to(rango(ruta))
         mut alias = "-"
         if esPalabra(0, "como") {
             bump()
-            alias = expectIdent("el alias después de `como`")
+            fix a = expectIdentT("el alias después de `como`")
+            alias = a.valor
+            r = r.to(rango(a))
         }
-        return hoja("Use", "${comillas(partes.obtiene(0).texto)} ${alias}")
+        return hoja("Use", "${comillas(partes.obtiene(0).texto)} ${alias}").en(r)
     }
 
     /// `prueba "nombre" { ... }`: una función `_prueba_N` con el cuerpo; deja el registro en `tests`.
     fn pruebaDecl(indice: Int, tests: Lista<Nodo>) -> Nodo {
-        bump()
-        if tipo() != "Str" { fail ErrorParse("se esperaba el nombre de la prueba entre comillas") }
-        fix partes = bump().partes
+        fix inicio = rango(bump())
+        if tipo() != "Str" { fail aqui("se esperaba el nombre de la prueba entre comillas") }
+        fix nt = bump()
+        fix nsp = rango(nt)
+        fix partes = nt.partes
         if partes.tam() != 1 || partes.obtiene(0).esCodigo || partes.obtiene(0).texto == "" {
-            fail ErrorParse("el nombre de una prueba es un texto fijo, sin `\${}` y no vacío")
+            fail ErrorParse("el nombre de una prueba es un texto fijo, sin `\${}` y no vacío", nsp)
         }
         fnDepth += 1
         fix cuerpo = bloque()
         fnDepth -= 1
         fix func = "_prueba_${indice}"
-        tests.agrega(hoja("Test", "${comillas(partes.obtiene(0).texto)} ${func}"))
-        return cuatro("Fn", "${func} false", vacio("TypeParams"), vacio("Params"), nada(), cuerpo)
+        tests.agrega(hoja("Test", "${comillas(partes.obtiene(0).texto)} ${func}").en(nsp))
+        return cuatro("Fn", "${func} false", vacio("TypeParams"), vacio("Params"), nada(), cuerpo).en(inicio.to(rg(cuerpo))).nom(nsp)
     }
 
     fn programa() -> Nodo {
@@ -245,7 +299,7 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
             if abrir {
                 bump()
                 if tipo() == "Mut" {
-                    fail ErrorParse("una variable `mut` no se puede abrir: otro archivo no podría cambiarla; usa `open fix` o una función")
+                    fail aqui("una variable `mut` no se puede abrir: otro archivo no podría cambiarla; usa `open fix` o una función")
                 }
             }
             if tipo() == "Enum" {
@@ -274,62 +328,70 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
     /// `enum Color { Rojo, Verde }`: una clase `Color(nombre, orden)`, una constante por variante
     /// (`Color.Rojo`) y `Color.todos`. Con `abrir`, anota los nombres públicos en `exports`.
     fn enumDecl(abrir: Bool, exports: Lista<Str>) -> Lista<Nodo> {
-        bump()
-        fix nombre = expectIdent("el nombre del enumerado")
-        expect("LBrace", "`{` y las variantes del enumerado")
+        fix kw = rango(bump())
+        fix nt = expectIdentT("el nombre del enumerado")
+        fix nombre = nt.valor
+        fix nsp = rango(nt)
+        fix abre = rango(expect("LBrace", "`{` y las variantes del enumerado"))
         fix variantes = Lista<Str>()
+        fix rangos = Lista<Rango>()
+        mut cierreEnum = kw
         while true {
             skipNewlines()
             fix t = tipo()
             if t == "RBrace" {
-                bump()
+                cierreEnum = rango(bump())
                 break
             } else if t == "Eof" {
-                fail ErrorParse("este enumerado no se cierra: falta `}`")
+                fail ErrorParse("este enumerado no se cierra: falta `}`", abre)
             } else if t == "Ident" {
-                fix v = bump().valor
+                fix vt = bump()
+                fix v = vt.valor
                 if v == "todos" || variantes.contiene(v) {
-                    fail ErrorParse("la variante `${v}` está repetida o es un nombre reservado del enumerado")
+                    fail ErrorParse("la variante `${v}` está repetida o es un nombre reservado del enumerado", rango(vt))
                 }
                 variantes.agrega(v)
+                rangos.agrega(rango(vt))
                 if tipo() == "Comma" {
                     bump()
                 } else if tipo() != "Newline" && tipo() != "RBrace" {
-                    fail ErrorParse("se esperaba `,` o el fin de la línea después de la variante")
+                    fail aqui("se esperaba `,` o el fin de la línea después de la variante")
                 }
             } else {
-                fail ErrorParse("se esperaba el nombre de una variante")
+                fail aqui("se esperaba el nombre de una variante")
             }
         }
-        if variantes.vacia() { fail ErrorParse("un enumerado necesita al menos una variante") }
+        if variantes.vacia() { fail ErrorParse("un enumerado necesita al menos una variante", kw.to(cierreEnum)) }
+        fix span = kw.to(cierreEnum)
         fix decls = Lista<Nodo>()
         fix params = Lista<Nodo>()
-        params.agrega(uno("CtorParam", "nombre fix", hoja("Type", "Str")))
-        params.agrega(uno("CtorParam", "orden fix", hoja("Type", "Int")))
+        params.agrega(uno("CtorParam", "nombre fix", hoja("Type", "Str").en(nsp)).en(nsp).nom(nsp))
+        params.agrega(uno("CtorParam", "orden fix", hoja("Type", "Int").en(nsp)).en(nsp).nom(nsp))
         fix hijos = Lista<Nodo>()
         hijos.agrega(vacio("TypeParams"))
         hijos.agrega(con("CtorParams", "", params))
         hijos.agrega(vacio("Supers"))
         hijos.agrega(vacio("Fields"))
         hijos.agrega(vacio("Methods"))
-        decls.agrega(con("Thing", nombre, hijos))
+        decls.agrega(con("Thing", nombre, hijos).en(span).nom(nsp))
         if abrir { exports.agrega(nombre) }
         fix todas = Lista<Nodo>()
         mut i = 0
         while i < variantes.tam() {
             fix v = variantes.obtiene(i)
+            fix vr = rangos.obtiene(i)
             fix completo = "${nombre}.${v}"
             fix args = Lista<Nodo>()
-            args.agrega(hoja("Str", comillas(v)))
-            args.agrega(hoja("Int", "${i}"))
-            fix llamada = dos("Call", nombre, vacio("TArgs"), con("Args", "", args))
-            decls.agrega(dos("Let", "${completo} fix", nada(), llamada))
-            todas.agrega(hoja("Var", completo))
+            args.agrega(hoja("Str", comillas(v)).en(vr))
+            args.agrega(hoja("Int", "${i}").en(vr))
+            fix llamada = dos("Call", nombre, vacio("TArgs"), con("Args", "", args)).en(vr)
+            decls.agrega(dos("Let", "${completo} fix", nada(), llamada).en(vr).nom(vr))
+            todas.agrega(hoja("Var", completo).en(vr))
             if abrir { exports.agrega(completo) }
             i += 1
         }
-        fix lista = dos("Call", "_variantes", vacio("TArgs"), uno("Args", "", con("Array", "", todas)))
-        decls.agrega(dos("Let", "${nombre}.todos fix", nada(), lista))
+        fix lista = dos("Call", "_variantes", vacio("TArgs"), uno("Args", "", con("Array", "", todas).en(span))).en(span)
+        decls.agrega(dos("Let", "${nombre}.todos fix", nada(), lista).en(span).nom(nsp))
         if abrir { exports.agrega("${nombre}.todos") }
         return decls
     }
@@ -344,30 +406,32 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
             fix n = peek().valor
             if n == "_" && (peekAt(1).tipo == "Arrow" || peekAt(1).tipo == "Comma") {
                 bump()
-                return Pat("Wild", nada(), "", nada())
+                return Pat("Wild", nada(), "", nada(), Rango(0, 0))
             }
             if peekAt(1).tipo == "Colon" {
+                fix r = rango(bump())
                 bump()
-                bump()
-                return Pat("Typed", nada(), n, typeRef())
+                return Pat("Typed", nada(), n, typeRef(), r)
             }
         }
-        return Pat("Value", condicion(), "", nada())
+        return Pat("Value", condicion(), "", nada(), Rango(0, 0))
     }
 
     /// `match valor { patrón, patrón -> cuerpo ... }`. En la forma de valor cada cuerpo es una expresión; en la
     /// de sentencia, un bloque `{ ... }` o una sentencia.
     fn casos(esValor: Bool) -> Casos {
         fix scrut = condicion()
-        expect("LBrace", "`{` y los casos del `match`")
+        fix abre = rango(expect("LBrace", "`{` y los casos del `match`"))
         fix lista = Lista<Caso>()
+        mut cierreMatch = abre
         while true {
             skipNewlines()
             if tipo() == "RBrace" {
-                bump()
+                cierreMatch = rango(bump())
                 break
             }
-            if tipo() == "Eof" { fail ErrorParse("este `match` no se cierra: falta `}`") }
+            if tipo() == "Eof" { fail ErrorParse("este `match` no se cierra: falta `}`", abre) }
+            fix inicio = rango(peek())
             fix pats = Lista<Pat>()
             pats.agrega(patron())
             while tipo() == "Comma" {
@@ -375,27 +439,30 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
                 pats.agrega(patron())
             }
             if pats.tam() > 1 && pats.alguno({ p -> p.clase != "Value" }) {
-                fail ErrorParse("varios patrones con `,` solo pueden ser valores (no `_` ni `nombre: Tipo`)")
+                fail ErrorParse("varios patrones con `,` solo pueden ser valores (no `_` ni `nombre: Tipo`)", inicio)
             }
             expect("Arrow", "`->` y el cuerpo del caso")
-            mut cuerpo = Lista<Nodo>()
+            mut cuerpo = nada()
             if esValor {
-                cuerpo.agrega(uno("Return", "", expr(0)))
+                fix valor = expr(0)
+                fix vr = rg(valor)
+                cuerpo = con("Block", "", listaDe1(uno("Return", "", valor).en(vr))).en(vr)
             } else if tipo() == "LBrace" {
-                cuerpo = bloque().kids
+                cuerpo = bloque()
             } else {
-                cuerpo.agrega(stmt())
+                fix st = stmt()
+                cuerpo = con("Block", "", listaDe1(st)).en(spanDe(st))
             }
-            lista.agrega(Caso(pats, cuerpo))
+            lista.agrega(Caso(pats, cuerpo, inicio.to(rg(cuerpo))))
             // Como valor el separador es opcional: dentro de `${...}` no hay saltos de línea.
             if !esValor && tipo() != "RBrace" { finSentencia(true) }
         }
-        if lista.vacia() { fail ErrorParse("un `match` necesita al menos un caso") }
-        return Casos(scrut, lista)
+        if lista.vacia() { fail ErrorParse("un `match` necesita al menos un caso", abre.to(cierreMatch)) }
+        return Casos(scrut, lista, cierreMatch)
     }
 
     /// Un `match` sobre variantes de un enumerado de este archivo, sin `_`, tiene que nombrarlas todas.
-    fn cubre(lista: Lista<Caso>) {
+    fn cubre(lista: Lista<Caso>, kw: Rango) {
         mut dueno = ""
         fix vistas = Lista<Str>()
         mut i = 0
@@ -420,29 +487,29 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
         fix faltan = Lista<Str>()
         enums.obtiene(dueno)?.paraCada { v -> if !vistas.contiene(v) { faltan.agrega("`${dueno}.${v}`") } }
         if faltan.vacia() { return }
-        fail ErrorParse("este `match` no cubre ${une(faltan, ", ")}: añade esos casos o un caso `_`")
+        fail ErrorParse("este `match` no cubre ${une(faltan, ", ")}: añade esos casos o un caso `_`", kw)
     }
 
     /// `fail Fallo("...")` para cuando ningún caso de un `match` coincide.
-    fn sinCaso() -> Lista<Nodo> {
-        fix msg = hoja("Str", comillas("ningún caso del `match` coincide con el valor"))
-        fix llamada = dos("Call", "Fallo", vacio("TArgs"), uno("Args", "", msg))
-        return listaDe1(uno("Fail", "", llamada))
+    fn sinCaso(r: Rango) -> Nodo {
+        fix msg = hoja("Str", comillas("ningún caso del `match` coincide con el valor")).en(r)
+        fix llamada = dos("Call", "Fallo", vacio("TArgs"), uno("Args", "", msg)).en(r)
+        return con("Block", "", listaDe1(uno("Fail", "", llamada).en(r))).en(r)
     }
 
     /// Las sentencias que prueban cada caso en orden: `fix _mN = valor` y una cadena de `if`/`else`.
-    fn cadena(c: Casos) -> Lista<Nodo> {
-        cubre(c.casos)
+    fn cadena(c: Casos, kw: Rango) -> Lista<Nodo> {
+        cubre(c.casos, kw)
         fix tmp = fresco()
         fix ultimo = c.casos.tam() - 1
-        mut cola: Lista<Nodo>? = nil
+        mut cola: Nodo? = nil
         mut cadenaIf: Nodo? = nil
         mut i = ultimo
         while i >= 0 {
             fix caso = c.casos.obtiene(i)
             fix cuerpo = caso.cuerpo
             if caso.pats.obtiene(0).clase == "Wild" {
-                if i != ultimo { fail ErrorParse("el caso `_` coincide con todo: debe ser el último del `match`") }
+                if i != ultimo { fail ErrorParse("el caso `_` coincide con todo: debe ser el último del `match`", caso.r) }
                 cola = cuerpo
                 i -= 1
                 continue
@@ -451,72 +518,84 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
             caso.pats.paraCada { p ->
                 mut uno1 = nada()
                 if p.clase == "Value" {
-                    uno1 = dos("Binary", "==", hoja("Var", tmp), p.valor)
+                    fix sp = rg(p.valor)
+                    uno1 = dos("Binary", "==", hoja("Var", tmp).en(sp), p.valor).en(sp)
                 } else {
-                    cuerpo.inserta(0, dos("Let", "${p.nombre} fix", nada(), dos("Cast", "", hoja("Var", tmp), p.ty)))
-                    uno1 = dos("Is", "", hoja("Var", tmp), p.ty)
+                    cuerpo.kids.inserta(0, dos("Let", "${p.nombre} fix", nada(), dos("Cast", "", hoja("Var", tmp).en(p.r), p.ty).en(p.r)).en(p.r).nom(p.r))
+                    uno1 = dos("Is", "", hoja("Var", tmp).en(p.r), p.ty).en(p.r)
                 }
                 fix previa = cond
                 if previa == nil {
                     cond = uno1
                 } else {
-                    cond = dos("Binary", "||", previa, uno1)
+                    cond = dos("Binary", "||", previa, uno1).en(rg(previa).to(rg(uno1)))
                 }
             }
             mut otro: Nodo = nada()
             fix siguiente = cadenaIf
             fix colaActual = cola
             if siguiente != nil {
-                otro = con("Block", "", listaDe1(siguiente))
+                otro = con("Block", "", listaDe1(siguiente)).en(spanDe(siguiente))
+                cadenaIf = nil
             } else if colaActual != nil {
-                otro = con("Block", "", colaActual)
+                otro = colaActual
                 cola = nil
             } else {
-                otro = con("Block", "", sinCaso())
+                otro = sinCaso(kw)
             }
-            cadenaIf = tres("If", "", cond ?: nada(), con("Block", "", cuerpo), otro)
+            cadenaIf = tres("If", "", cond ?: nada(), cuerpo, otro).en(caso.r)
             i -= 1
         }
         fix salida = Lista<Nodo>()
-        salida.agrega(dos("Let", "${tmp} fix", nada(), c.scrut))
+        fix initR = rg(c.scrut)
+        salida.agrega(dos("Let", "${tmp} fix", nada(), c.scrut).en(initR).nom(initR))
         fix final = cadenaIf
         if final != nil {
             salida.agrega(final)
         } else {
             fix soloCola = cola
-            if soloCola != nil { soloCola.paraCada { s -> salida.agrega(s) } }
+            if soloCola != nil { soloCola.kids.paraCada { s -> salida.agrega(s) } }
         }
         return salida
     }
 
     fn matchStmt() -> Nodo {
-        bump()
+        fix kw = rango(bump())
         fix c = casos(false)
-        fix stmts = cadena(c)
-        return tres("If", "", hoja("Bool", "true"), con("Block", "", stmts), con("Block", "", sinCaso()))
+        fix span = kw.to(c.cierre)
+        fix stmts = cadena(c, kw)
+        return tres("If", "", hoja("Bool", "true").en(kw), con("Block", "", stmts).en(span), sinCaso(kw)).en(span)
     }
 
-    fn matchExpr() -> Nodo {
+    fn matchExpr(kw: Rango) -> Nodo {
         fix c = casos(true)
-        return inmediata(cadena(c))
+        fix span = kw.to(c.cierre)
+        return inmediata(cadena(c, kw), span)
     }
 
     /// `if cond { a } else { b }` usado como valor.
-    fn ifExpr() -> Nodo {
+    fn ifExpr(kw: Rango) -> Nodo {
         fix cond = condicion()
         fix a = exprEntreLlaves()
         skipNewlines()
-        if tipo() != "Else" { fail ErrorParse("un `if` usado como valor necesita `else` (si no, ¿qué valor tiene?)") }
+        if tipo() != "Else" { fail aqui("un `if` usado como valor necesita `else` (si no, ¿qué valor tiene?)") }
         bump()
         mut b = nada()
         if tipo() == "If" {
-            bump()
-            b = ifExpr()
+            fix interior = rango(bump())
+            b = ifExpr(interior)
         } else {
             b = exprEntreLlaves()
         }
-        fix si = tres("If", "", cond, con("Block", "", listaDe1(uno("Return", "", a))), con("Block", "", listaDe1(uno("Return", "", b))))
-        return inmediata(listaDe1(si))
+        fix span = kw.to(rg(b))
+        fix si = tres("If", "", cond, devuelve(a), devuelve(b)).en(span)
+        return inmediata(listaDe1(si), span)
+    }
+
+    /// `{ return e }` con la posición de `e`.
+    fn devuelve(e: Nodo) -> Nodo {
+        fix s = rg(e)
+        return con("Block", "", listaDe1(uno("Return", "", e).en(s))).en(s)
     }
 
     fn exprEntreLlaves() -> Nodo {
@@ -531,22 +610,22 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
     // ------------------------------------------------------------ bloques y tipos
 
     fn bloque() -> Nodo {
-        expect("LBrace", "`{`")
-        return bloqueResto()
+        fix abre = rango(expect("LBrace", "`{`"))
+        return bloqueResto(abre)
     }
 
     /// El resto de un bloque cuyo `{` ya se consumió.
-    fn bloqueResto() -> Nodo {
+    fn bloqueResto(abre: Rango) -> Nodo {
         fix stmts = Lista<Nodo>()
         while true {
             skipNewlines()
             if tipo() == "RBrace" {
-                bump()
-                return con("Block", "", stmts)
+                fix cierreB = rango(bump())
+                return con("Block", "", stmts).en(abre.to(cierreB))
             }
-            if tipo() == "Eof" { fail ErrorParse("este bloque no se cierra: falta `}`") }
+            if tipo() == "Eof" { fail ErrorParse("este bloque no se cierra: falta `}`", abre) }
             stmts.agrega(stmt())
-            if tipo() == "Eof" { fail ErrorParse("este bloque no se cierra: falta `}`") }
+            if tipo() == "Eof" { fail ErrorParse("este bloque no se cierra: falta `}`", abre) }
             finSentencia(true)
         }
         return con("Block", "", stmts)
@@ -559,15 +638,19 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
         bump()
         fix nombres = Lista<Str>()
         while true {
-            fix nombre = expectIdent("el nombre del parámetro de tipo")
-            if nombres.contiene(nombre) { fail ErrorParse("el parámetro de tipo `${nombre}` está repetido") }
+            fix nt = expectIdentT("el nombre del parámetro de tipo")
+            fix nombre = nt.valor
+            fix nsp = rango(nt)
+            if nombres.contiene(nombre) { fail ErrorParse("el parámetro de tipo `${nombre}` está repetido", nsp) }
             nombres.agrega(nombre)
             mut cota = nada()
+            mut span = nsp
             if tipo() == "Colon" {
                 bump()
                 cota = typeRef()
+                span = nsp.to(rg(cota))
             }
-            lista.agrega(uno("TypeParam", nombre, cota))
+            lista.agrega(uno("TypeParam", nombre, cota).en(span).nom(nsp))
             if tipo() == "Comma" {
                 bump()
             } else {
@@ -608,8 +691,8 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
         mut t = baseTypeRef()
         // `T?`; con varios (`T??`) el verificador explica que no tiene sentido.
         while tipo() == "Question" {
-            bump()
-            t = uno("Type", "Nullable", t)
+            fix q = rango(bump())
+            t = uno("Type", "Nullable", t).en(rg(t).to(q))
         }
         return t
     }
@@ -617,7 +700,7 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
     fn baseTypeRef() -> Nodo {
         // `(Int, Str) -> Bool` (tipo de función) o `(T)` (agrupación, para `((Int) -> Int)?`).
         if tipo() == "LParen" {
-            bump()
+            fix abre = rango(bump())
             fix items = Lista<Nodo>()
             if tipo() != "RParen" {
                 while true {
@@ -629,22 +712,23 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
                     }
                 }
             }
-            expect("RParen", "`,` o `)` en el tipo")
+            fix cierreT = rango(expect("RParen", "`,` o `)` en el tipo"))
             if tipo() == "Arrow" {
                 bump()
-                items.agrega(typeRef())
-                return con("Type", "Fn", items)
+                fix ret = typeRef()
+                items.agrega(ret)
+                return con("Type", "Fn", items).en(abre.to(rg(ret)))
             }
             if items.tam() == 1 { return items.obtiene(0) }
-            fail ErrorParse("un tipo de función necesita `->` y el tipo que devuelve, por ejemplo `(Int) -> Int`")
+            fail ErrorParse("un tipo de función necesita `->` y el tipo que devuelve, por ejemplo `(Int) -> Int`", abre.to(cierreT))
         }
         if tipo() == "LBracket" {
-            bump()
+            fix abre = rango(bump())
             fix elem = typeRef()
-            expect("RBracket", "`]` para cerrar el tipo")
-            return uno("Type", "Array", elem)
+            fix cierreT = rango(expect("RBracket", "`]` para cerrar el tipo"))
+            return uno("Type", "Array", elem).en(abre.to(cierreT))
         }
-        fix nombre = identCualificado("un nombre de tipo")
+        fix nm = identCualificado("un nombre de tipo")
         // `Lista<Int>`, `Mapa<Str, [Int]>`
         if tipo() == "Lt" {
             bump()
@@ -657,10 +741,10 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
                     break
                 }
             }
-            expect("Gt", "`>` para cerrar los argumentos de tipo")
-            return con("Type", nombre, args)
+            fix cierreT = rango(expect("Gt", "`>` para cerrar los argumentos de tipo"))
+            return con("Type", nm.nombre, args).en(nm.r.to(cierreT))
         }
-        return hoja("Type", nombre)
+        return hoja("Type", nm.nombre).en(nm.r)
     }
 
     // ------------------------------------------------------------ sentencias
@@ -674,18 +758,19 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
             "Return" -> return returnStmt()
             "Show" -> return showStmt()
             "Break", "Continue" -> return jumpStmt()
-            "Fn" -> fail ErrorParse("las funciones solo se pueden declarar al nivel superior del archivo")
+            "Fn" -> fail aqui("las funciones solo se pueden declarar al nivel superior del archivo")
             "Match" -> return matchStmt()
-            "Enum" -> fail ErrorParse("los enumerados solo se pueden declarar al nivel superior del archivo")
+            "Enum" -> fail aqui("los enumerados solo se pueden declarar al nivel superior del archivo")
             "Attempt" -> return attemptStmt()
             "Fail" -> {
-                bump()
-                return uno("Fail", "", expr(0))
+                fix inicio = rango(bump())
+                fix valor = expr(0)
+                return uno("Fail", "", valor).en(inicio.to(rg(valor)))
             }
-            "Rescue" -> fail ErrorParse("`rescue` solo puede ir después de un bloque `attempt { ... }`")
-            "Thing" -> fail ErrorParse("las clases solo se pueden declarar al nivel superior del archivo")
-            "Kind" -> fail ErrorParse("las interfaces solo se pueden declarar al nivel superior del archivo")
-            "Else" -> fail ErrorParse("`else` debe ir en la misma línea que la `}` del `if`")
+            "Rescue" -> fail aqui("`rescue` solo puede ir después de un bloque `attempt { ... }`")
+            "Thing" -> fail aqui("las clases solo se pueden declarar al nivel superior del archivo")
+            "Kind" -> fail aqui("las interfaces solo se pueden declarar al nivel superior del archivo")
+            "Else" -> fail aqui("`else` debe ir en la misma línea que la `}` del `if`")
             _ -> {
                 if t == "Ident" && ASIGNA.obtiene(peekAt(1).tipo) != nil { return assignStmt() }
                 fix e = expr(0)
@@ -693,23 +778,25 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
                 if e.tag == "Index" && op != nil {
                     bump()
                     fix valor = expr(0)
-                    return tres("IndexAssign", op, e.kids.obtiene(0), e.kids.obtiene(1), valor)
+                    return tres("IndexAssign", op, e.kids.obtiene(0), e.kids.obtiene(1), valor).en(rg(e).to(rg(valor)))
                 }
                 if e.tag == "Field" && op != nil {
                     bump()
                     fix valor = expr(0)
-                    return dos("FieldAssign", "${e.attrs} ${op}", e.kids.obtiene(0), valor)
+                    return dos("FieldAssign", "${e.attrs} ${op}", e.kids.obtiene(0), valor).en(rg(e).to(rg(valor))).nom(Rango(e.nd, e.nh))
                 }
                 return uno("ExprStmt", "", e)
             }
         }
-        fail ErrorParse("sentencia no válida")
+        fail aqui("sentencia no válida")
     }
 
     /// `thing Nombre(params) { campos y métodos }`; el cuerpo es opcional.
     fn thingDecl() -> Nodo {
-        bump()
-        fix nombre = expectIdent("el nombre de la clase")
+        fix inicio = rango(bump())
+        fix nt = expectIdentT("el nombre de la clase")
+        fix nombre = nt.valor
+        fix nsp = rango(nt)
         fix tparams = typeParams()
         expect("LParen", "`(` con los parámetros del constructor")
         fix params = Lista<Nodo>()
@@ -724,11 +811,14 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
                     bump()
                     mutab = "mut"
                 }
-                fix pnombre = expectIdent("el nombre del parámetro")
-                if nombres.contiene(pnombre) { fail ErrorParse("el parámetro `${pnombre}` está repetido") }
+                fix pt = expectIdentT("el nombre del parámetro")
+                fix pnombre = pt.valor
+                fix psp = rango(pt)
+                if nombres.contiene(pnombre) { fail ErrorParse("el parámetro `${pnombre}` está repetido", psp) }
                 nombres.agrega(pnombre)
                 expect("Colon", "`:` y el tipo del parámetro")
-                params.agrega(uno("CtorParam", "${pnombre} ${mutab}", typeRef()))
+                fix pty = typeRef()
+                params.agrega(uno("CtorParam", "${pnombre} ${mutab}", pty).en(psp.to(rg(pty))).nom(psp))
                 if tipo() == "Comma" {
                     bump()
                 } else {
@@ -736,13 +826,14 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
                 }
             }
         }
-        expect("RParen", "`,` o `)`")
+        mut fin = rango(expect("RParen", "`,` o `)`"))
         fix supers = Lista<Nodo>()
         if tipo() == "Colon" {
             bump()
             while true {
-                fix snombre = identCualificado("el nombre de una clase o interfaz")
+                fix sn = identCualificado("el nombre de una clase o interfaz")
                 fix targs = Lista<Nodo>()
+                mut cabeza = sn.r
                 if tipo() == "Lt" {
                     bump()
                     while true {
@@ -753,11 +844,16 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
                             break
                         }
                     }
-                    expect("Gt", "`>` para cerrar los argumentos de tipo")
+                    cabeza = sn.r.to(rango(expect("Gt", "`>` para cerrar los argumentos de tipo")))
                 }
                 mut args = nada()
-                if tipo() == "LParen" { args = con("Args", "", callArgs()) }
-                supers.agrega(dos("Super", snombre, con("TArgs", "", targs), args))
+                mut span = cabeza
+                if tipo() == "LParen" {
+                    args = con("Args", "", callArgs())
+                    span = sn.r.to(cierre)
+                }
+                fin = span
+                supers.agrega(dos("Super", sn.nombre, con("TArgs", "", targs), args).en(span).nom(sn.r))
                 if tipo() == "Comma" {
                     bump()
                 } else {
@@ -768,24 +864,24 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
         fix campos = Lista<Nodo>()
         fix metodos = Lista<Nodo>()
         if tipo() == "LBrace" {
-            bump()
+            fix abre = rango(bump())
             while true {
                 skipNewlines()
                 fix t = tipo()
                 if t == "RBrace" {
-                    bump()
+                    fin = rango(bump())
                     break
                 } else if t == "Eof" {
-                    fail ErrorParse("esta clase no se cierra: falta `}`")
+                    fail ErrorParse("esta clase no se cierra: falta `}`", abre)
                 } else if t == "Fix" || t == "Mut" {
                     fix l = letStmt()
-                    campos.agrega(Nodo("FieldDecl", l.attrs, l.kids))
+                    campos.agrega(Nodo("FieldDecl", l.attrs, l.kids).en(rg(l)).nom(Rango(l.nd, l.nh)))
                 } else if t == "Fn" {
                     metodos.agrega(fnDecl())
                 } else {
-                    fail ErrorParse("dentro de una clase se esperaba un campo (`fix`/`mut`) o un método (`fn`), pero se encontró ${describe(peek())}")
+                    fail aqui("dentro de una clase se esperaba un campo (`fix`/`mut`) o un método (`fn`), pero se encontró ${describe(peek())}")
                 }
-                if tipo() == "Eof" { fail ErrorParse("esta clase no se cierra: falta `}`") }
+                if tipo() == "Eof" { fail ErrorParse("esta clase no se cierra: falta `}`", abre) }
                 finSentencia(true)
             }
         }
@@ -795,44 +891,51 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
         hijos.agrega(con("Supers", "", supers))
         hijos.agrega(con("Fields", "", campos))
         hijos.agrega(con("Methods", "", metodos))
-        return con("Thing", nombre, hijos)
+        return con("Thing", nombre, hijos).en(inicio.to(fin)).nom(nsp)
     }
 
     /// `kind Nombre { fn m(params) -> T ... }`: solo firmas.
     fn kindDecl() -> Nodo {
-        bump()
-        fix nombre = expectIdent("el nombre de la interfaz")
+        fix inicio = rango(bump())
+        fix nt = expectIdentT("el nombre de la interfaz")
+        fix nombre = nt.valor
+        fix nsp = rango(nt)
         fix tparams = typeParams()
-        expect("LBrace", "`{`")
+        fix abre = rango(expect("LBrace", "`{`"))
         fix metodos = Lista<Nodo>()
+        mut fin = abre
         while true {
             skipNewlines()
             fix t = tipo()
             if t == "RBrace" {
-                bump()
+                fin = rango(bump())
                 break
             } else if t == "Eof" {
-                fail ErrorParse("esta interfaz no se cierra: falta `}`")
+                fail ErrorParse("esta interfaz no se cierra: falta `}`", abre)
             } else if t == "Fn" {
-                bump()
-                fix mnombre = expectIdent("el nombre del método")
+                fix fstart = rango(bump())
+                fix mt = expectIdentT("el nombre del método")
+                fix mnombre = mt.valor
+                fix msp = rango(mt)
                 fix params = parametros()
                 mut ret = nada()
+                mut hasta = msp
                 if tipo() == "Arrow" {
                     bump()
                     ret = typeRef()
+                    hasta = rg(ret)
                 }
                 if tipo() == "LBrace" || tipo() == "Assign" {
-                    fail ErrorParse("los métodos de una interfaz no llevan cuerpo; lo implementan las clases")
+                    fail aqui("los métodos de una interfaz no llevan cuerpo; lo implementan las clases")
                 }
-                metodos.agrega(dos("KMethod", mnombre, params, ret))
+                metodos.agrega(dos("KMethod", mnombre, params, ret).en(fstart.to(hasta)).nom(msp))
             } else {
-                fail ErrorParse("dentro de una interfaz se esperaba un método (`fn`), pero se encontró ${describe(peek())}")
+                fail aqui("dentro de una interfaz se esperaba un método (`fn`), pero se encontró ${describe(peek())}")
             }
-            if tipo() == "Eof" { fail ErrorParse("esta interfaz no se cierra: falta `}`") }
+            if tipo() == "Eof" { fail ErrorParse("esta interfaz no se cierra: falta `}`", abre) }
             finSentencia(true)
         }
-        return dos("Kind", nombre, tparams, con("KMethods", "", metodos))
+        return dos("Kind", nombre, tparams, con("KMethods", "", metodos)).en(inicio.to(fin)).nom(nsp)
     }
 
     /// Lista de parámetros `(a: T, b: U)`; el siguiente token es `(`.
@@ -842,11 +945,14 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
         fix nombres = Lista<Str>()
         if tipo() != "RParen" {
             while true {
-                fix pnombre = expectIdent("el nombre del parámetro")
-                if nombres.contiene(pnombre) { fail ErrorParse("el parámetro `${pnombre}` está repetido") }
+                fix pt = expectIdentT("el nombre del parámetro")
+                fix pnombre = pt.valor
+                fix psp = rango(pt)
+                if nombres.contiene(pnombre) { fail ErrorParse("el parámetro `${pnombre}` está repetido", psp) }
                 nombres.agrega(pnombre)
                 expect("Colon", "`:` y el tipo del parámetro")
-                params.agrega(uno("Param", pnombre, typeRef()))
+                fix pty = typeRef()
+                params.agrega(uno("Param", pnombre, pty).en(psp.to(rg(pty))))
                 if tipo() == "Comma" {
                     bump()
                 } else {
@@ -860,9 +966,11 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
 
     /// `attempt { ... } rescue e: Tipo { ... } rescue ...`; los `rescue` pueden ir en la línea siguiente.
     fn attemptStmt() -> Nodo {
-        bump()
+        fix inicio = rango(bump())
         fix hijos = Lista<Nodo>()
-        hijos.agrega(bloque())
+        fix cuerpo = bloque()
+        hijos.agrega(cuerpo)
+        mut fin = rg(cuerpo)
         mut rescues = 0
         while true {
             fix guardado = pos
@@ -871,20 +979,22 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
                 pos = guardado
                 break
             }
-            bump()
-            fix nombre = expectIdent("el nombre de la variable del error")
+            fix palabra = rango(bump())
+            fix nt = expectIdentT("el nombre de la variable del error")
             expect("Colon", "`:` y el tipo del error")
             fix ty = typeRef()
-            hijos.agrega(dos("Rescue", nombre, ty, bloque()))
+            fix bloqueR = bloque()
+            fin = rg(bloqueR)
+            hijos.agrega(dos("Rescue", nt.valor, ty, bloqueR).en(palabra.to(rg(bloqueR))).nom(rango(nt)))
             rescues += 1
         }
-        if rescues == 0 { fail ErrorParse("un `attempt` necesita al menos un `rescue` después de su bloque") }
-        return con("Attempt", "", hijos)
+        if rescues == 0 { fail ErrorParse("un `attempt` necesita al menos un `rescue` después de su bloque", inicio) }
+        return con("Attempt", "", hijos).en(inicio.to(fin))
     }
 
     fn letStmt() -> Nodo {
         fix palabra = bump()
-        fix nombre = expectIdent("el nombre de la variable")
+        fix nt = expectIdentT("el nombre de la variable")
         mut ty = nada()
         if tipo() == "Colon" {
             bump()
@@ -892,33 +1002,38 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
         }
         expect("Assign", "`=` y el valor inicial")
         fix init = expr(0)
-        return dos("Let", "${nombre} ${if palabra.tipo == "Mut" { "mut" } else { "fix" }}", ty, init)
+        return dos("Let", "${nt.valor} ${if palabra.tipo == "Mut" { "mut" } else { "fix" }}", ty, init).en(rango(palabra).to(rg(init))).nom(rango(nt))
     }
 
     fn assignStmt() -> Nodo {
-        fix nombre = expectIdent("el nombre de la variable")
+        fix nt = expectIdentT("el nombre de la variable")
         fix op = ASIGNA.obtiene(bump().tipo) ?: "="
-        return uno("Assign", "${nombre} ${op}", expr(0))
+        fix valor = expr(0)
+        return uno("Assign", "${nt.valor} ${op}", valor).en(rango(nt).to(rg(valor))).nom(rango(nt))
     }
 
     fn ifStmt() -> Nodo {
-        bump()
+        fix inicio = rango(bump())
         fix cond = condicion()
         fix entonces = bloque()
+        mut fin = rg(entonces)
         mut otro = nada()
         if tipo() == "Else" {
             bump()
             if tipo() == "If" {
-                otro = con("Block", "", listaDe1(ifStmt()))
+                fix anidado = ifStmt()
+                fin = rg(anidado)
+                otro = con("Block", "", listaDe1(anidado)).en(fin)
             } else {
                 otro = bloque()
+                fin = rg(otro)
             }
         }
-        return tres("If", "", cond, entonces, otro)
+        return tres("If", "", cond, entonces, otro).en(inicio.to(fin))
     }
 
     /// Lambda `{ a, b: Int -> cuerpo }`; el `{` ya se consumió. Sin `->` no tiene parámetros.
-    fn lambda() -> Nodo {
+    fn lambda(abre: Rango) -> Nodo {
         fix guardado = pos
         mut params = lambdaParams()
         if params == nil {
@@ -931,11 +1046,11 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
         loopDepth = 0
         fix trailAntes = noTrailing
         noTrailing = false
-        fix cuerpo = bloqueResto()
+        fix cuerpo = bloqueResto(abre)
         noTrailing = trailAntes
         fnDepth = fnAntes
         loopDepth = loopAntes
-        return dos("Lambda", "", con("LParams", "", params ?: Lista<Nodo>()), cuerpo)
+        return dos("Lambda", "", con("LParams", "", params ?: Lista<Nodo>()), cuerpo).en(rg(cuerpo))
     }
 
     /// `a, b: Int ->`; nil si lo que sigue no es una lista de parámetros.
@@ -948,7 +1063,8 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
         }
         while true {
             if tipo() != "Ident" { return nil }
-            fix nombre = bump().valor
+            fix nt = bump()
+            fix nombre = nt.valor
             if nombres.contiene(nombre) { return nil }
             nombres.agrega(nombre)
             mut ty = nada()
@@ -962,7 +1078,7 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
                 }
                 if !ok { return nil }
             }
-            params.agrega(uno("LParam", nombre, ty))
+            params.agrega(uno("LParam", nombre, ty).nom(rango(nt)))
             if tipo() == "Comma" {
                 bump()
             } else if tipo() == "Arrow" {
@@ -976,41 +1092,43 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
     }
 
     fn whileStmt() -> Nodo {
-        bump()
+        fix inicio = rango(bump())
         fix cond = condicion()
         loopDepth += 1
         fix cuerpo = bloque()
         loopDepth -= 1
-        return dos("While", "", cond, cuerpo)
+        return dos("While", "", cond, cuerpo).en(inicio.to(rg(cuerpo)))
     }
 
     fn returnStmt() -> Nodo {
-        bump()
-        if fnDepth == 0 { fail ErrorParse("`return` solo se puede usar dentro de una función") }
+        fix palabra = rango(bump())
+        if fnDepth == 0 { fail ErrorParse("`return` solo se puede usar dentro de una función", palabra) }
         fix t = tipo()
-        if t == "Newline" || t == "RBrace" || t == "Eof" { return uno("Return", "", nada()) }
-        return uno("Return", "", expr(0))
+        if t == "Newline" || t == "RBrace" || t == "Eof" { return uno("Return", "", nada()).en(palabra) }
+        fix valor = expr(0)
+        return uno("Return", "", valor).en(palabra.to(rg(valor)))
     }
 
     fn jumpStmt() -> Nodo {
         fix palabra = bump()
         if loopDepth == 0 {
-            fail ErrorParse("`${TEXTOS.obtiene(palabra.tipo) ?: ""}` solo se puede usar dentro de un `while`")
+            fail ErrorParse("`${TEXTOS.obtiene(palabra.tipo) ?: ""}` solo se puede usar dentro de un `while`", rango(palabra))
         }
-        return vacio(palabra.tipo)
+        return vacio(palabra.tipo).en(rango(palabra))
     }
 
     fn showStmt() -> Nodo {
-        bump()
+        fix inicio = rango(bump())
         expect("LParen", "`(` después de `show`")
         fix valor = expr(0)
-        expect("RParen", "`)`")
-        return uno("Show", "", valor)
+        fix cierreS = rango(expect("RParen", "`)`"))
+        return uno("Show", "", valor).en(inicio.to(cierreS))
     }
 
     fn fnDecl() -> Nodo {
-        bump()
-        fix nombre = expectIdent("el nombre de la función")
+        fix inicio = rango(bump())
+        fix nt = expectIdentT("el nombre de la función")
+        fix nombre = nt.valor
         fix tparams = typeParams()
         fix params = parametros()
         mut ret = nada()
@@ -1025,12 +1143,12 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
             cuerpo = bloque()
         } else if exprBody {
             bump()
-            cuerpo = con("Block", "", listaDe1(uno("Return", "", expr(0))))
+            cuerpo = devuelve(expr(0))
         } else {
-            fail ErrorParse("se esperaba `{` o `=` para el cuerpo de la función, pero se encontró ${describe(peek())}")
+            fail aqui("se esperaba `{` o `=` para el cuerpo de la función, pero se encontró ${describe(peek())}")
         }
         fnDepth -= 1
-        return cuatro("Fn", "${nombre} ${exprBody}", tparams, params, ret, cuerpo)
+        return cuatro("Fn", "${nombre} ${exprBody}", tparams, params, ret, cuerpo).en(inicio.to(rg(cuerpo))).nom(rango(nt))
     }
 
     // ------------------------------------------------------------ expresiones
@@ -1038,34 +1156,39 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
     /// Pratt: `minBp` es el poder de enlace mínimo que debe tener un operador para seguir.
     fn expr(minBp: Int) -> Nodo {
         fix token = bump()
+        fix r = rango(token)
         mut lhs = nada()
         match token.tipo {
-            "Int" -> lhs = hoja("Int", token.valor)
-            "Float" -> lhs = hoja("Float", token.valor)
-            "True" -> lhs = hoja("Bool", "true")
-            "False" -> lhs = hoja("Bool", "false")
-            "Str" -> lhs = cadenaExpr(token.partes)
-            "LBracket" -> lhs = arreglo()
-            "Minus", "Bang" -> lhs = uno("Unary", if token.tipo == "Minus" { "Neg" } else { "Not" }, expr(13))
+            "Int" -> lhs = hoja("Int", token.valor).en(r)
+            "Float" -> lhs = hoja("Float", token.valor).en(r)
+            "True" -> lhs = hoja("Bool", "true").en(r)
+            "False" -> lhs = hoja("Bool", "false").en(r)
+            "Str" -> lhs = cadenaExpr(token.partes, r)
+            "LBracket" -> lhs = arreglo(r)
+            "Minus", "Bang" -> {
+                fix operando = expr(13)
+                lhs = uno("Unary", if token.tipo == "Minus" { "Neg" } else { "Not" }, operando).en(r.to(rg(operando)))
+            }
             "LParen" -> {
                 lhs = exprAnidada()
                 expect("RParen", "`)`")
             }
-            "LBrace" -> lhs = lambda()
-            "Match" -> lhs = matchExpr()
-            "If" -> lhs = ifExpr()
-            "This" -> lhs = vacio("This")
-            "Nil" -> lhs = vacio("Nil")
+            "LBrace" -> lhs = lambda(r)
+            "Match" -> lhs = matchExpr(r)
+            "If" -> lhs = ifExpr(r)
+            "This" -> lhs = vacio("This").en(r)
+            "Nil" -> lhs = vacio("Nil").en(r)
             "Super" -> {
                 expect("Dot", "`.` después de `super`")
-                fix nombre = expectIdent("el nombre de un método de la clase padre")
+                fix nt = expectIdentT("el nombre de un método de la clase padre")
                 if tipo() != "LParen" {
-                    fail ErrorParse("`super` solo se usa para llamar métodos: `super.metodo(...)`")
+                    fail aqui("`super` solo se usa para llamar métodos: `super.metodo(...)`")
                 }
-                lhs = uno("SuperCall", nombre, con("Args", "", callArgs()))
+                fix args = callArgs()
+                lhs = uno("SuperCall", nt.valor, con("Args", "", args)).en(r.to(cierre)).nom(rango(nt))
             }
-            "Ident" -> lhs = identificador(token.valor)
-            _ -> fail ErrorParse("se esperaba una expresión, pero se encontró ${describe(token)}")
+            "Ident" -> lhs = identificador(token.valor, r)
+            _ -> fail ErrorParse("se esperaba una expresión, pero se encontró ${describe(token)}", r)
         }
 
         // Postfijos `a[i]`, `a.campo` y `a.metodo(args)`, los más fuertes de todos.
@@ -1074,22 +1197,27 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
             if t == "LBracket" {
                 bump()
                 fix indice = exprAnidada()
-                expect("RBracket", "`]`")
-                lhs = dos("Index", "", lhs, indice)
+                fix cierreI = rango(expect("RBracket", "`]`"))
+                lhs = dos("Index", "", lhs, indice).en(rg(lhs).to(cierreI))
             } else if t == "LParen" {
                 // `f(1)(2)`, `obj.campo(1)(2)`: llama al valor de tipo función de la izquierda.
-                lhs = dos("CallValue", "", lhs, con("Args", "", callArgsTrailing()))
+                fix args = callArgsTrailing()
+                lhs = dos("CallValue", "", lhs, con("Args", "", args)).en(rg(lhs).to(cierre))
             } else if t == "QDot" {
                 bump()
-                fix nombre = expectIdent("el nombre de un campo o método después de `?.`")
+                fix nt = expectIdentT("el nombre de un campo o método después de `?.`")
+                fix nsp = rango(nt)
                 if tipo() == "LParen" || puedeTrail() {
-                    lhs = dos("SafeCall", nombre, lhs, con("Args", "", callArgsTrailing()))
+                    fix args = callArgsTrailing()
+                    lhs = dos("SafeCall", nt.valor, lhs, con("Args", "", args)).en(rg(lhs).to(cierre)).nom(nsp)
                 } else {
-                    lhs = uno("SafeField", nombre, lhs)
+                    lhs = uno("SafeField", nt.valor, lhs).en(rg(lhs).to(nsp)).nom(nsp)
                 }
             } else if t == "Dot" {
                 bump()
-                fix nombre = expectIdent("el nombre de un campo o método después de `.`")
+                fix nt = expectIdentT("el nombre de un campo o método después de `.`")
+                fix nombre = nt.valor
+                fix nsp = rango(nt)
                 // `obj.metodo<Int>(x)`; si no encaja, `<` era una comparación.
                 mut targs = Lista<Nodo>()
                 if tipo() == "Lt" {
@@ -1102,12 +1230,13 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
                     }
                 }
                 if tipo() == "LParen" || puedeTrail() {
-                    lhs = tres("MethodCall", nombre, lhs, con("TArgs", "", targs), con("Args", "", callArgsTrailing()))
+                    fix args = callArgsTrailing()
+                    lhs = tres("MethodCall", nombre, lhs, con("TArgs", "", targs), con("Args", "", args)).en(rg(lhs).to(cierre)).nom(nsp)
                 } else if lhs.tag == "Var" && enums.contiene(lhs.attrs) {
                     // `Color.Rojo`: la constante global de esa variante.
-                    lhs = hoja("Var", "${lhs.attrs}.${nombre}")
+                    lhs = hoja("Var", "${lhs.attrs}.${nombre}").en(rg(lhs).to(nsp))
                 } else {
-                    lhs = uno("Field", nombre, lhs)
+                    lhs = uno("Field", nombre, lhs).en(rg(lhs).to(nsp)).nom(nsp)
                 }
             } else {
                 break
@@ -1120,51 +1249,54 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
             if t == "Is" || t == "As" {
                 if (if t == "Is" { 7 } else { 14 }) < minBp { break }
                 bump()
-                lhs = dos(if t == "Is" { "Is" } else { "Cast" }, "", lhs, typeRef())
+                fix ty = typeRef()
+                lhs = dos(if t == "Is" { "Is" } else { "Cast" }, "", lhs, ty).en(rg(lhs).to(rg(ty)))
                 continue
             }
             // `a ?: b`, el operador de menor precedencia.
             if t == "Elvis" {
                 if 0 < minBp { break }
                 bump()
-                lhs = dos("Elvis", "", lhs, expr(1))
+                fix derecha = expr(1)
+                lhs = dos("Elvis", "", lhs, derecha).en(rg(lhs).to(rg(derecha)))
                 continue
             }
             fix izq = bpIzq(t)
             if izq == 0 || izq < minBp { break }
             bump()
-            lhs = dos("Binary", BIN.obtiene(t) ?: t, lhs, expr(izq + 1))
+            fix derecha = expr(izq + 1)
+            lhs = dos("Binary", BIN.obtiene(t) ?: t, lhs, derecha).en(rg(lhs).to(rg(derecha)))
         }
         return lhs
     }
 
     /// Un identificador al principio de una expresión: variable, llamada o llamada con lambda final.
-    fn identificador(nombre: Str) -> Nodo {
-        if tipo() == "LParen" { return llamada(nombre, vacio("TArgs")) }
+    fn identificador(nombre: Str, r: Rango) -> Nodo {
+        if tipo() == "LParen" { return llamada(nombre, vacio("TArgs"), r) }
         fix lambdaFinal = trailingLambda()
         if lambdaFinal != nil {
             // `repite { ... }`: llamada cuyo único argumento es la lambda.
-            return dos("Call", nombre, vacio("TArgs"), uno("Args", "", lambdaFinal))
+            return dos("Call", nombre, vacio("TArgs"), uno("Args", "", lambdaFinal)).en(r.to(rg(lambdaFinal)))
         }
         if tipo() == "Lt" {
             // `f<Int>(x)` o `Lista<Int>()`; si no encaja, era una comparación.
             fix guardado = pos
             fix targs = tryTypeArgs()
-            if targs != nil { return llamada(nombre, con("TArgs", "", targs)) }
+            if targs != nil { return llamada(nombre, con("TArgs", "", targs), r) }
             pos = guardado
         }
-        return hoja("Var", nombre)
+        return hoja("Var", nombre).en(r)
     }
 
     /// Lambda final (`lista.map { x -> x }`) si el siguiente token es `{` y está permitida.
     fn trailingLambda() -> Nodo? {
         if !puedeTrail() { return nil }
-        bump()
-        return lambda()
+        fix abre = rango(bump())
+        return lambda(abre)
     }
 
     /// Cadena literal: sin interpolaciones es `Str`; con ellas, `Interp`.
-    fn cadenaExpr(partes: Lista<Parte>) -> Nodo {
+    fn cadenaExpr(partes: Lista<Parte>, r: Rango) -> Nodo {
         fix salida = Lista<Nodo>()
         partes.paraCada { p ->
             if !p.esCodigo {
@@ -1173,19 +1305,19 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
                 fix interno = Parser(p.codigo, enums, cont, fnDepth, loopDepth)
                 fix e = interno.expr(0)
                 if interno.tipo() != "RBrace" {
-                    fail ErrorParse("la interpolación `\${...}` admite una sola expresión, pero se encontró ${describe(interno.peek())}")
+                    fail interno.aqui("la interpolación `\${...}` admite una sola expresión, pero se encontró ${describe(interno.peek())}")
                 }
                 salida.agrega(e)
             }
         }
         if salida.tam() == 1 && salida.obtiene(0).tag == "Text" {
-            return hoja("Str", salida.obtiene(0).attrs)
+            return hoja("Str", salida.obtiene(0).attrs).en(r)
         }
-        return con("Interp", "", salida)
+        return con("Interp", "", salida).en(r)
     }
 
     /// Literal `[a, b, c]`; el `[` ya se consumió. Admite saltos de línea entre elementos.
-    fn arreglo() -> Nodo {
+    fn arreglo(abre: Rango) -> Nodo {
         fix elems = Lista<Nodo>()
         while true {
             skipNewlines()
@@ -1199,19 +1331,29 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
             }
         }
         skipNewlines()
-        expect("RBracket", "`,` o `]`")
-        return con("Array", "", elems)
+        fix cierreA = rango(expect("RBracket", "`,` o `]`"))
+        return con("Array", "", elems).en(abre.to(cierreA))
     }
 
     /// Llamada `nombre(args)`; el nombre ya se consumió y el siguiente token es `(`.
-    fn llamada(nombre: Str, targs: Nodo) -> Nodo = dos("Call", nombre, targs, con("Args", "", callArgsTrailing()))
+    fn llamada(nombre: Str, targs: Nodo, r: Rango) -> Nodo {
+        fix args = callArgsTrailing()
+        return dos("Call", nombre, targs, con("Args", "", args)).en(r.to(cierre))
+    }
 
     /// Argumentos `(a, b)` y/o una lambda final: `f(a) { ... }`, `x.m { ... }`.
     fn callArgsTrailing() -> Lista<Nodo> {
         mut args = Lista<Nodo>()
-        if tipo() == "LParen" { args = callArgs() }
+        if tipo() == "LParen" {
+            args = callArgs()
+        } else {
+            cierre = rango(peek())
+        }
         fix lambdaFinal = trailingLambda()
-        if lambdaFinal != nil { args.agrega(lambdaFinal) }
+        if lambdaFinal != nil {
+            cierre = rg(lambdaFinal)
+            args.agrega(lambdaFinal)
+        }
         return args
     }
 
@@ -1229,7 +1371,7 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
                 }
             }
         }
-        expect("RParen", "`,` o `)`")
+        cierre = rango(expect("RParen", "`,` o `)`"))
         return args
     }
 }
@@ -1237,11 +1379,11 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
 // ---------------------------------------------------------------- volcado
 
 fn vuelca(n: Nodo, sangria: Str, salida: Lista<Str>) {
-    if n.attrs == "" {
-        salida.agrega("${sangria}${n.tag}")
-    } else {
-        salida.agrega("${sangria}${n.tag} ${n.attrs}")
-    }
+    mut linea = "${sangria}${n.tag}"
+    if n.attrs != "" { linea += " ${n.attrs}" }
+    if n.d >= 0 { linea += " @${n.d}-${n.h}" }
+    if n.nd >= 0 { linea += " #${n.nd}-${n.nh}" }
+    salida.agrega(linea)
     n.kids.paraCada { k -> vuelca(k, sangria + "  ", salida) }
 }
 
@@ -1278,8 +1420,8 @@ fn main() {
         vuelca(p.programa(), "", salida)
         show(une(salida, "\n"))
     } rescue e: ErrorLexico {
-        show("Error ${e.msg}")
+        show("Error ${e.msg} @${e.desde}-${e.hasta}")
     } rescue e: ErrorParse {
-        show("Error ${e.msg}")
+        show("Error ${e.msg} @${e.donde.a}-${e.donde.b}")
     }
 }

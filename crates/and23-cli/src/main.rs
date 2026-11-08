@@ -182,7 +182,13 @@ fn dump_tokens(path: &str) -> u8 {
             0
         }
         Err(d) => {
-            println!("Error {}", d.message);
+            let at = |b: usize| src[..b.min(src.len())].chars().count();
+            println!(
+                "Error {} @{}-{}",
+                d.message,
+                at(d.span.start),
+                at(d.span.end)
+            );
             0
         }
     }
@@ -199,8 +205,16 @@ fn dump_ast(path: &str) -> u8 {
     };
     let src = src.strip_prefix('\u{feff}').unwrap_or(&src).to_string();
     match and23_syntax::parse(&src) {
-        Ok(program) => print!("{}", and23_syntax::astdump::dump_program(&program)),
-        Err(d) => println!("Error {}", d.message),
+        Ok(program) => print!("{}", and23_syntax::astdump::dump_program(&program, &src)),
+        Err(d) => {
+            let at = |b: usize| src[..b.min(src.len())].chars().count();
+            println!(
+                "Error {} @{}-{}",
+                d.message,
+                at(d.span.start),
+                at(d.span.end)
+            );
+        }
     }
     0
 }

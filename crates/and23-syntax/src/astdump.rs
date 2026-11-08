@@ -1,20 +1,58 @@
-//! Volcado del AST en texto, sin posiciones. Sirve para comparar este parser con el escrito en And23
+//! Volcado del AST en texto, con posiciones en caracteres. Sirve para comparar este parser con el escrito en And23
 //! (`mn/parser.jb`): los dos tienen que producir exactamente las mismas líneas.
 //!
 //! Cada nodo es una línea `Etiqueta atributo atributo...` y sus hijos van debajo, con dos espacios más de
 //! sangría. Un hijo opcional que falta es un nodo `None`. Los textos con espacios o escapes van entre comillas.
+//! Al final de la línea van `@desde-hasta` (el nodo) y `#desde-hasta` (su nombre), si los tiene.
 
 use crate::ast::*;
 use crate::lexer::escape_dump;
+use crate::span::Span;
 
 struct N {
     tag: &'static str,
     attrs: Vec<String>,
     kids: Vec<N>,
+    /// `@desde-hasta` del nodo y `#desde-hasta` de su nombre, en caracteres; vacíos si no los tiene.
+    span: String,
+    name: String,
+}
+
+thread_local! {
+    /// Índice de byte -> índice de carácter del texto que se vuelca.
+    static AT: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn chars(span: Span) -> (usize, usize) {
+    AT.with(|at| {
+        let at = at.borrow();
+        let last = at.len() - 1;
+        (at[span.start.min(last)], at[span.end.min(last)])
+    })
+}
+
+impl N {
+    fn at(mut self, span: Span) -> N {
+        let (a, b) = chars(span);
+        self.span = format!("@{a}-{b}");
+        self
+    }
+
+    fn named(mut self, span: Span) -> N {
+        let (a, b) = chars(span);
+        self.name = format!("#{a}-{b}");
+        self
+    }
 }
 
 fn n(tag: &'static str, attrs: Vec<String>, kids: Vec<N>) -> N {
-    N { tag, attrs, kids }
+    N {
+        tag,
+        attrs,
+        kids,
+        span: String::new(),
+        name: String::new(),
+    }
 }
 
 fn quoted(s: &str) -> String {
@@ -36,6 +74,12 @@ fn write(node: &N, depth: usize, out: &mut String) {
         out.push(' ');
         out.push_str(a);
     }
+    for extra in [&node.span, &node.name] {
+        if !extra.is_empty() {
+            out.push(' ');
+            out.push_str(extra);
+        }
+    }
     out.push('\n');
     for k in &node.kids {
         write(k, depth + 1, out);
@@ -43,7 +87,21 @@ fn write(node: &N, depth: usize, out: &mut String) {
 }
 
 /// El programa completo como texto.
-pub fn dump_program(p: &Program) -> String {
+pub fn dump_program(p: &Program, src: &str) -> String {
+    AT.with(|at| {
+        let mut at = at.borrow_mut();
+        at.clear();
+        at.resize(src.len() + 1, 0);
+        let mut count = 0;
+        for (b, c) in src.char_indices() {
+            at[b] = count;
+            count += 1;
+            for k in 1..c.len_utf8() {
+                at[b + k] = count;
+            }
+        }
+        at[src.len()] = count;
+    });
     let uses = n(
         "Uses",
         vec![],
@@ -58,6 +116,7 @@ pub fn dump_program(p: &Program) -> String {
                     ],
                     vec![],
                 )
+                .at(u.span)
             })
             .collect(),
     );
@@ -67,7 +126,7 @@ pub fn dump_program(p: &Program) -> String {
         vec![],
         p.tests
             .iter()
-            .map(|t| n("Test", vec![quoted(&t.name), t.func.clone()], vec![]))
+            .map(|t| n("Test", vec![quoted(&t.name), t.func.clone()], vec![]).at(t.span))
             .collect(),
     );
     let stmts = n("Stmts", vec![], p.stmts.iter().map(stmt).collect());
@@ -83,6 +142,7 @@ fn ty(t: &TypeRef) -> N {
         vec![t.name.clone()],
         t.args.iter().map(ty).collect(),
     )
+    .at(t.span)
 }
 
 fn targs(list: &[TypeRef]) -> N {
@@ -98,7 +158,11 @@ fn tparams(list: &[TypeParam]) -> N {
         "TypeParams",
         vec![],
         list.iter()
-            .map(|p| n("TypeParam", vec![p.name.clone()], vec![opt(&p.bound, ty)]))
+            .map(|p| {
+                n("TypeParam", vec![p.name.clone()], vec![opt(&p.bound, ty)])
+                    .at(p.span)
+                    .named(p.name_span)
+            })
             .collect(),
     )
 }
@@ -108,13 +172,13 @@ fn params(list: &[Param]) -> N {
         "Params",
         vec![],
         list.iter()
-            .map(|p| n("Param", vec![p.name.clone()], vec![ty(&p.ty)]))
+            .map(|p| n("Param", vec![p.name.clone()], vec![ty(&p.ty)]).at(p.span))
             .collect(),
     )
 }
 
 fn block(b: &Block) -> N {
-    n("Block", vec![], b.stmts.iter().map(stmt).collect())
+    n("Block", vec![], b.stmts.iter().map(stmt).collect()).at(b.span)
 }
 
 fn assign_op(op: Option<BinOp>) -> String {
@@ -122,6 +186,19 @@ fn assign_op(op: Option<BinOp>) -> String {
 }
 
 fn expr(e: &Expr) -> N {
+    let node = expr_node(e);
+    let node = node.at(e.span());
+    match e {
+        Expr::SafeField { name_span, .. }
+        | Expr::SafeCall { name_span, .. }
+        | Expr::SuperCall { name_span, .. }
+        | Expr::Field { name_span, .. }
+        | Expr::MethodCall { name_span, .. } => node.named(*name_span),
+        _ => node,
+    }
+}
+
+fn expr_node(e: &Expr) -> N {
     match e {
         Expr::Int(v, _) => n("Int", vec![v.to_string()], vec![]),
         Expr::Float(v, _) => n("Float", vec![format!("{v:?}")], vec![]),
@@ -200,7 +277,10 @@ fn expr(e: &Expr) -> N {
                     "LParams",
                     vec![],
                     ps.iter()
-                        .map(|p| n("LParam", vec![p.name.clone()], vec![opt(&p.ty, ty)]))
+                        .map(|p| {
+                            n("LParam", vec![p.name.clone()], vec![opt(&p.ty, ty)])
+                                .named(p.name_span)
+                        })
                         .collect(),
                 ),
                 block(body),
@@ -210,6 +290,17 @@ fn expr(e: &Expr) -> N {
 }
 
 fn stmt(s: &Stmt) -> N {
+    let node = stmt_node(s);
+    match s {
+        Stmt::Let { name_span, .. }
+        | Stmt::Assign { name_span, .. }
+        | Stmt::FieldAssign { name_span, .. } => node.at(s.span()).named(*name_span),
+        Stmt::Expr(_) | Stmt::Fn(_) | Stmt::Thing(_) | Stmt::Kind(_) => node,
+        _ => node.at(s.span()),
+    }
+}
+
+fn stmt_node(s: &Stmt) -> N {
     match s {
         Stmt::Show(e, _) => n("Show", vec![], vec![expr(e)]),
         Stmt::Expr(e) => n("ExprStmt", vec![], vec![expr(e)]),
@@ -292,6 +383,8 @@ fn stmt(s: &Stmt) -> N {
                                 ],
                                 vec![ty(&p.ty)],
                             )
+                            .at(p.span)
+                            .named(p.name_span)
                         })
                         .collect(),
                 ),
@@ -306,6 +399,8 @@ fn stmt(s: &Stmt) -> N {
                                 vec![s.name.clone()],
                                 vec![targs(&s.type_args), opt(&s.args, |a| args(a))],
                             )
+                            .at(s.span)
+                            .named(s.name_span)
                         })
                         .collect(),
                 ),
@@ -320,12 +415,16 @@ fn stmt(s: &Stmt) -> N {
                                 vec![f.name.clone(), if f.mutable { "mut" } else { "fix" }.into()],
                                 vec![opt(&f.ty, ty), expr(&f.init)],
                             )
+                            .at(f.span)
+                            .named(f.name_span)
                         })
                         .collect(),
                 ),
                 n("Methods", vec![], d.methods.iter().map(fn_decl).collect()),
             ],
-        ),
+        )
+        .at(d.span)
+        .named(d.name_span),
         Stmt::Kind(d) => n(
             "Kind",
             vec![d.name.clone()],
@@ -342,11 +441,15 @@ fn stmt(s: &Stmt) -> N {
                                 vec![m.name.clone()],
                                 vec![params(&m.params), opt(&m.ret, ty)],
                             )
+                            .at(m.span)
+                            .named(m.name_span)
                         })
                         .collect(),
                 ),
             ],
-        ),
+        )
+        .at(d.span)
+        .named(d.name_span),
         Stmt::Attempt { body, rescues, .. } => n(
             "Attempt",
             vec![],
@@ -357,6 +460,8 @@ fn stmt(s: &Stmt) -> N {
                         vec![r.name.clone()],
                         vec![ty(&r.ty), block(&r.body)],
                     )
+                    .at(r.span)
+                    .named(r.name_span)
                 }))
                 .collect(),
         ),
@@ -375,4 +480,6 @@ fn fn_decl(d: &FnDecl) -> N {
             block(&d.body),
         ],
     )
+    .at(d.span)
+    .named(d.name_span)
 }

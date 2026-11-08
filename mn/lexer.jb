@@ -8,7 +8,7 @@
 // Las posiciones (`@desde-hasta`) son índices de carácter, no de byte: en And23 un texto se recorre por
 // caracteres (ver DESIGN.md, «Mn»).
 
-open thing ErrorLexico(m: Str) : Fallo(m)
+open thing ErrorLexico(m: Str, fix desde: Int, fix hasta: Int) : Fallo(m)
 
 /// Un trozo de cadena: texto literal, o los tokens de una interpolación `${...}`.
 open thing Parte(fix esCodigo: Bool, fix texto: Str, fix codigo: Lista<Token>)
@@ -63,7 +63,7 @@ thing Lexer(fix cs: Lista<Str>) {
 
     /// Lee tokens desde la posición actual. Con `interp`, se detiene en la `}` que cierra una interpolación
     /// y la consume; si no, lee hasta el final.
-    fn corre(interp: Bool) -> Lista<Token> {
+    fn corre(interp: Bool, abre: Int) -> Lista<Token> {
         fix tokens = Lista<Token>()
         mut profundidad = 0
         while i < cs.tam() {
@@ -102,11 +102,11 @@ thing Lexer(fix cs: Lista<Str>) {
                     mut pista = ""
                     if c == "&" { pista = " (¿quisiste escribir `&&`?)" }
                     if c == "|" { pista = " (¿quisiste escribir `||`?)" }
-                    fail ErrorLexico("carácter inesperado `${c}`${pista}")
+                    fail ErrorLexico("carácter inesperado `${c}`${pista}", i, i + 1)
                 }
             }
         }
-        if interp { fail ErrorLexico("esta interpolación no se cierra: falta `}`") }
+        if interp { fail ErrorLexico("esta interpolación no se cierra: falta `}`", abre, abre + 2) }
         return tokens
     }
 
@@ -158,7 +158,7 @@ thing Lexer(fix cs: Lista<Str>) {
             return Token("Float", "${x}", SIN_PARTES, ini, j)
         }
         fix n = Int.parse(texto)
-        if n == nil { fail ErrorLexico("entero fuera de rango (i64)") }
+        if n == nil { fail ErrorLexico("entero fuera de rango (i64)", ini, j) }
         return Token("Int", "${n}", SIN_PARTES, ini, j)
     }
 
@@ -180,7 +180,7 @@ thing Lexer(fix cs: Lista<Str>) {
         fix partes = Lista<Parte>()
         mut texto = ""
         while true {
-            if i >= cs.tam() { fail ErrorLexico("esta cadena no se cierra: falta `\"`") }
+            if i >= cs.tam() { fail ErrorLexico("esta cadena no se cierra: falta `\"`", ini, ini + 1) }
             fix c = cs.obtiene(i)
             if c == "\"" {
                 i += 1
@@ -193,7 +193,7 @@ thing Lexer(fix cs: Lista<Str>) {
                     texto = ""
                 }
                 i += 2
-                fix codigo = corre(true)
+                fix codigo = corre(true, i - 2)
                 codigo.agrega(simple("RBrace", i - 1, i))
                 partes.agrega(Parte(true, "", codigo))
             } else {
@@ -208,6 +208,7 @@ thing Lexer(fix cs: Lista<Str>) {
     /// El carácter que representa el escape que empieza en la posición actual (`\`); avanza la posición.
     fn escape() -> Str {
         fix e = car(i + 1)
+        mut fin = minimo(i + 2, cs.tam())
         if e == "n" { i += 2; return "\n" }
         if e == "t" { i += 2; return "\t" }
         if e == "r" { i += 2; return "\r" }
@@ -229,6 +230,7 @@ thing Lexer(fix cs: Lista<Str>) {
                 }
                 j += 1
             }
+            fin = if j < cs.tam() { j + 1 } else { cs.tam() }
             if j < cs.tam() && valido {
                 fix ch = desdeCodigo(valor)
                 if ch != nil {
@@ -237,14 +239,14 @@ thing Lexer(fix cs: Lista<Str>) {
                 }
             }
         }
-        fail ErrorLexico("escape no válido en la cadena (usa \\n, \\t, \\r, \\0, \\\\, \\\", \\$ o \\u{...})")
+        fail ErrorLexico("escape no válido en la cadena (usa \\n, \\t, \\r, \\0, \\\\, \\\", \\$ o \\u{...})", i, fin)
     }
 }
 
 /// Los tokens de un texto, terminados en `Eof`. Falla con `ErrorLexico` si no se puede leer.
 open fn lexea(texto: Str) -> Lista<Token> {
     fix cs = texto.caracteres()
-    fix tokens = Lexer(cs).corre(false)
+    fix tokens = Lexer(cs).corre(false, 0)
     tokens.agrega(simple("Eof", cs.tam(), cs.tam()))
     return tokens
 }
@@ -309,6 +311,6 @@ fn main() {
         volcar(tokens, "", salida)
         show(une(salida, "\n"))
     } rescue e: ErrorLexico {
-        show("Error ${e.msg}")
+        show("Error ${e.msg} @${e.desde}-${e.hasta}")
     }
 }

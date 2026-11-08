@@ -551,7 +551,7 @@ fix m = Mapa<Str, Int>()                                                // expl�
 Plan: reescribir el compilador en And23 por etapas, comprobando cada una contra la de Rust. Etapa 1, el lexer; etapa 2, el parser.
 
 - **Etapa 1: `mn/lexer.jb`.** El lexer de And23 escrito en And23 (unas 330 líneas). Hace lo mismo que `lexer.rs` y vuelca los tokens con el
-  formato de `and23 --tokens archivo.jb` (una línea por token; las cadenas con sus partes sangradas; `Error mensaje` si el código no se puede
+  formato de `and23 --tokens archivo.jb` (una línea por token; las cadenas con sus partes sangradas; `Error mensaje @desde-hasta` si el código no se puede
   leer). `and23 mn/lexer.jb archivo.jb` y `and23 --tokens archivo.jb` tienen que dar exactamente lo mismo: el test
   `el_lexer_escrito_en_and23_coincide_con_el_de_rust` lo exige sobre todos los ejemplos, el preludio, el propio `mn/lexer.jb` y 20 casos
   límite de `mn/casos` (escapes, `${}` anidadas, Unicode, exponentes, CRLF, BOM, archivo vacío y cada error de lexer).
@@ -579,14 +579,17 @@ mismo retroceso para `f<Int>(x)` y las lambdas, las mismas traducciones de `enum
 de error. Usa `mn/lexer.jb` (`use "lexer.jb"`; por eso el lexer declara `open` lo que el parser necesita).
 
 - **Cómo se compara.** `and23 --ast archivo.jb` vuelca el AST de Rust como texto (`astdump.rs`): una línea por nodo (`Etiqueta atributos`) con
-  sus hijos sangrados, sin posiciones; `and23 mn/parser.jb archivo.jb` produce exactamente el mismo texto. Si el código no se puede analizar,
-  los dos imprimen `Error mensaje`. El test `el_parser_escrito_en_and23_coincide_con_el_de_rust` lo exige sobre el preludio, los ejemplos,
+  sus hijos sangrados y al final de la línea la posición del nodo (`@desde-hasta`) y la de su nombre (`#desde-hasta`), en caracteres;
+  `and23 mn/parser.jb archivo.jb` produce exactamente el mismo texto. Si el código no se puede analizar,
+  los dos imprimen `Error mensaje @desde-hasta`. El test `el_parser_escrito_en_and23_coincide_con_el_de_rust` lo exige sobre el preludio, los ejemplos,
   `mn/lexer.jb`, el propio `mn/parser.jb`, los casos del lexer y 84 casos propios en `mn/casos_parser` (cada construcción y cada mensaje de
   error).
 - **Árbol uniforme.** En vez de una clase por nodo, el parser construye `Nodo(tag, attrs, kids)`: es el mismo formato del volcado, así que
   construir el árbol y mostrarlo son lo mismo, y el port cabe en una fracción del código. Es una decisión de ahorro, no de diseño final: el
   verificador de tipos puede recorrer este árbol por etiquetas, o esa etapa puede introducir un AST con clases y `match` por tipo.
-- **No hay posiciones** en los nodos ni en los errores (solo se compara el mensaje). Lo necesitará el verificador para sus mensajes.
+- **Posiciones.** Cada nodo lleva `d`/`h` (y `nd`/`nh` para su nombre) y cada error (`ErrorParse`, `ErrorLexico`) su rango; salen del mismo cálculo
+  que en Rust (`Rango.to` es el `Span::to`), incluidos los nodos que crean `enum`, `match` e `if` como valor. Así el verificador podrá dar
+  la posición exacta de sus errores.
 - **Lo que mostró del lenguaje.** `enum`, `match` e `if` como valor hicieron el port mucho más legible (la tabla de precedencias es un `match`
   de una línea por grupo). Se echaron de menos: tuplas o varios valores de retorno (se usaron objetos y listas de salida), `Lista<T>` con
   literal, y que `?:` y el estrechamiento de `T?` conviven mal con variables `mut` (hay que copiar a un `fix` antes de comprobar `nil`).
