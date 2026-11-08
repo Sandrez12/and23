@@ -504,6 +504,9 @@ fix m = Mapa<Str, Int>()                                                // expl�
   marca como visto. Al terminar el programa, `and23` llama a `_fallosPerdidos()`: si quedó alguno sin ver, escribe
   `error: N tarea(s) fallaron y nadie las esperó: mensajes` y sale con código 1. Con `--prueba` se revisa al terminar cada prueba, y esa
   prueba falla. Solo cuentan las tareas que llegaron a ejecutarse: las que siguen pendientes cuando termina `main` se descartan.
+- **Probar el GC.** `--gc-stress` recolecta en cada punto seguro. Los tests lo aplican a todo el corpus ejecutable y al lexer y parser de Mn;
+  el verificador y el compilador de Mn no entran porque así tardan minutos (264 s el verificador sobre un archivo), ya que cada punto seguro
+  recorre el heap entero con el preludio cargado.
 - **Límites previstos.** Sin expulsión por tiempo (un bucle que no cede bloquea al resto); `leeLinea` bloquea toda la VM; (un `Fallo` de una tarea que nadie espera ya no se pierde: ver «Errores»); el REPL descarta las
   tareas pendientes al terminar cada entrada; el intérprete de árbol no conoce las tareas.
 

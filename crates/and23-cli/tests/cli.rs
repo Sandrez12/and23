@@ -1719,3 +1719,29 @@ prueba \"limpia\" { afirma(true) }\n",
     assert!(text.contains("prueba \"limpia\" ... ok"), "{text}");
     assert_eq!(out.status.code(), Some(1));
 }
+
+/// Mn con el recolector en cada punto seguro: el lexer y el parser escritos en And23 (programas grandes, con mucha asignación)
+/// dan lo mismo con `--gc-stress` que sin él. El verificador y el compilador de Mn tardan minutos así (revisan el preludio
+/// entero en cada punto seguro), por eso no entran.
+#[test]
+fn el_lexer_y_el_parser_de_mn_dan_lo_mismo_con_gc_stress() {
+    let root = raiz_del_repo();
+    for programa in ["mn/lexer.jb", "mn/parser.jb"] {
+        let ejecuta = |stress: bool| {
+            let mut cmd = Command::new(env!("CARGO_BIN_EXE_and23"));
+            if stress {
+                cmd.arg("--gc-stress");
+            }
+            let out = cmd
+                .args([programa, "examples/aritmetica.jb"])
+                .current_dir(&root)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{programa}: {}", stderr(&out));
+            stdout(&out)
+        };
+        let normal = ejecuta(false);
+        assert!(normal.lines().count() > 20, "{programa}: salida corta");
+        assert_eq!(normal, ejecuta(true), "{programa} cambia con --gc-stress");
+    }
+}

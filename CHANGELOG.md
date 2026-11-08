@@ -6,6 +6,9 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). L
 ## Sin publicar
 
 ### Añadido
+- **El GC no cambia ningún programa:** `crates/and23-vm/tests/gc_corpus.rs` ejecuta cada programa ejecutable del repositorio (ejemplos y
+  casos) con la recolección normal y con `--gc-stress` y exige la misma salida y el mismo resultado; otro test hace lo mismo con el lexer y
+  el parser de Mn. Como son tests normales, el CI de los tres sistemas los corre.
 - **Fuzzing del verificador, el compilador y la VM** (`crates/and23-vm/tests/fuzz.rs`): programas del repositorio mutados (con cambios que
   conservan los tipos y otros que no) se analizan, verifican, compilan y ejecutan; nada puede entrar en pánico ni colgarse, y una de cada
   ocho ejecuciones va con `--gc-stress`. El corpus excluye todo lo que toque disco, entorno o entrada. 3 000 programas en cada `cargo test`;
