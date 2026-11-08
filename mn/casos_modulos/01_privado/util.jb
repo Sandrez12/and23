@@ -1,0 +1,2 @@
+open fn doble(x: Int) -> Int = x * 2
+fn ayuda() -> Int = 1

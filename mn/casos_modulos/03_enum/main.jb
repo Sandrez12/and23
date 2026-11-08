@@ -1,0 +1,9 @@
+use "col"
+use "col" como c
+fn main() {
+    fix x = Color.Rojo
+    fix y = c.Color.Verde
+    show(x.nombre)
+    show(y.orden)
+    show(Color.todos.tam())
+}

@@ -1,0 +1,3 @@
+use "u"
+use "v"
+fn main() { show(f()) }

@@ -1,0 +1,3 @@
+use "u"
+fn f() -> Int = 3
+fn main() {}

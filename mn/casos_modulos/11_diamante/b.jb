@@ -1,0 +1,2 @@
+use "c"
+open fn fb() -> Int = base() + 1

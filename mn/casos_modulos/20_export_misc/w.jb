@@ -1,0 +1,2 @@
+open fn h<T>(x: T) -> T = x
+open fix base2 = 7

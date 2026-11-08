@@ -1,0 +1,32 @@
+kind Forma { fn area() -> Float }
+thing Base(fix a: Int, mut b: Int) : Forma {
+    mut c = 3
+    fn area() -> Float = 1.0
+    fn suma() -> Int = a + b + c
+    fn cambia() { b = 7
+        c += 1 }
+    fn hola() -> Str = "hola"
+}
+thing Hijo(fix d: Int, fix cb: (Int) -> Int) : Base(1, 2) {
+    fn hola() -> Str = super.hola() + "!"
+    fn usa() -> Int = cb(d) + suma()
+    fn otra() -> Int = this.suma()
+}
+fn main() {
+    fix h = Hijo(5, { x -> x + 1 })
+    show(h.usa())
+    show(h.cb(3))
+    show(h.hola())
+    fix n: Hijo? = nil
+    show(n?.d)
+    show(n?.suma())
+    h.b = 9
+    fix k = "abc".largo()
+    fix p = "1".mayus() + "x"
+    fix q = Int.parse("4")
+    fix r = Float.parse("4.5")
+    fix f = h.cb
+    show(f(2))
+    fix xs = "a,b".parte(",")
+    show(xs.tam())
+}

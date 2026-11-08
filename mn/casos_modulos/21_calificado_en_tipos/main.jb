@@ -1,0 +1,8 @@
+use "u" como m
+fn f(a: m.Caja<Int>, b: [m.Caja<Str>], c: (m.Caja<Int>) -> m.Caja<Int>?) -> m.Caja<Int>? = nil
+fn main() {
+    fix x = m.Caja<Int>(1)
+    fix y = m.crea<Int>(2)
+    show(x.v)
+}
+thing Hijo<T : m.Caja<Int>>() : m.Caja<Int>(1)

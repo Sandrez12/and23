@@ -1,0 +1,9 @@
+fn usa(g: (Int) -> Unit) { g(1) }
+fn main() {
+    usa({ x -> x + 1 })
+    usa({ x -> show(x) })
+    fix l = Lista<Int>()
+    l.paraCada({ x -> x * 2 })
+    fix m = { y: Int -> y }
+    show(m(2))
+}

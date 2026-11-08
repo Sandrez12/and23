@@ -1,0 +1,2 @@
+use "b"
+open fn fa() -> Int = 1

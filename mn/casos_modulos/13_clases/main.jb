@@ -1,0 +1,13 @@
+use "fig" como f
+use "fig"
+thing Cuadrado(fix l: Float) : Forma {
+    fn area() -> Float = l * l
+}
+fn main() {
+    fix a: f.Forma = Cuadrado(2.0)
+    fix c = Circulo(1.0)
+    if a is Cuadrado { show((a as Cuadrado).l) }
+    attempt { fail f.Mala("x") } rescue e: f.Mala { show(e.msg) }
+    show(c.area())
+    show(c.describe())
+}

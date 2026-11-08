@@ -1,0 +1,3 @@
+use "u"
+prueba "uno" { afirma(f() == 1) }
+fn main() {}

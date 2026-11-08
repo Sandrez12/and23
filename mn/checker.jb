@@ -173,7 +173,8 @@ thing Sig(fix tparams: Lista<TParam>, fix params: Lista<Tipo>, mut ret: Tipo?)
 /// Variable: tipo, si es mutable y, si es un estrechamiento (`if x != nil`), su tipo declarado `T?`.
 thing VarE(mut ty: Tipo, fix mutable: Bool, mut declarado: Tipo?)
 
-thing FieldInfo(fix nombre: Str, mut ty: Tipo, fix mutable: Bool)
+/// Un campo; `indice` es su posición entre todos los campos de la clase (los heredados primero), o -1 si no se calculó.
+thing FieldInfo(fix nombre: Str, mut ty: Tipo, fix mutable: Bool, fix indice: Int)
 
 /// Una clase o interfaz nombrada con sus argumentos de tipo (el padre y las interfaces de una clase).
 thing Ref(fix nombre: Str, fix args: Lista<Tipo>)
@@ -191,9 +192,10 @@ thing Hallado(fix clave: Str, fix mapa: Mapa<Str, Tipo>)
 /// El contexto de lo que se verifica: ámbitos locales, retorno esperado, estrechamientos del nivel superior,
 /// la clase si es un método y dónde empieza el ámbito de parámetros de cada lambda abierta.
 /// `retK` es `Script`, `Declared` o `Infer`; `retTy` es el tipo declarado o el inferido hasta ahora.
-thing Ctx(fix scopes: Lista<Mapa<Str, VarE>>, mut retK: Str, mut retTy: Tipo?, fix scriptNarrow: Mapa<Str, Tipo>, fix esto: Str?, fix marks: Lista<Int>)
+thing Ctx(fix scopes: Lista<Mapa<Str, VarE>>, mut retK: Str, mut retTy: Tipo?, mut retNil: Rango?, fix scriptNarrow: Mapa<Str, Tipo>, fix esto: Str?, fix marks: Lista<Int>)
 
-thing Vista(fix ty: Tipo, fix mutable: Bool)
+/// Lo que `lookup` encuentra: el tipo, si se puede asignar y, si es un campo de `this`, su índice (si no, -1).
+thing Vista(fix ty: Tipo, fix mutable: Bool, fix campo: Int)
 
 /// Lo que el contexto sabe de una lambda: el tipo de cada parámetro y el del resultado (si los sabe).
 thing EsperadoL(fix params: Lista<Tipo?>, fix ret: Tipo?)
@@ -210,7 +212,7 @@ thing Hechos(fix cierto: Lista<Str>, fix falso: Lista<Str>)
 
 thing EntradaE(fix nombre: Str, fix v: VarE)
 
-fn nuevoCtx(retK: Str, retTy: Tipo?, esto: Str?) -> Ctx = Ctx(Lista<Mapa<Str, VarE>>(), retK, retTy, Mapa<Str, Tipo>(), esto, Lista<Int>())
+fn nuevoCtx(retK: Str, retTy: Tipo?, esto: Str?) -> Ctx = Ctx(Lista<Mapa<Str, VarE>>(), retK, retTy, nil, Mapa<Str, Tipo>(), esto, Lista<Int>())
 
 // ---------------------------------------------------------------- nativas
 
@@ -268,6 +270,9 @@ fn attr(n: Nodo, i: Int) -> Str = n.attrs.parte(" ").obtiene(i)
 fn nombreR(n: Nodo) -> Rango = Rango(n.nd, n.nh)
 
 fn err(msg: Str, r: Rango) -> ErrorTipo = ErrorTipo(msg, r)
+
+/// La clave de una posición en las tablas de resoluciones.
+fn claveR(r: Rango) -> Str = "${r.a}-${r.b}"
 
 // ---------------------------------------------------------------- análisis de asignaciones
 
@@ -521,16 +526,85 @@ fn nilTest(lhs: Nodo, rhs: Nodo) -> Str? {
 
 // ---------------------------------------------------------------- el verificador
 
+/// Una decisión del verificador con su posición y su orden (para escribirlas ordenadas).
+thing Reg(fix a: Int, fix b: Int, fix orden: Int, fix texto: Str)
+
+/// Un `Reg` de la clave `desde-hasta`.
+fn reg(clave: Str, orden: Int, nombre: Str, extra: Str) -> Reg {
+    fix p = clave.parte("-")
+    fix a = Int.parse(p.obtiene(0)) ?: 0
+    fix b = Int.parse(p.obtiene(1)) ?: 0
+    return Reg(a, b, orden, "${nombre} @${clave}${if extra == "" { "" } else { " " + extra }}")
+}
+
+fn antes(x: Reg, y: Reg) -> Bool {
+    if x.a != y.a { return x.a < y.a }
+    if x.b != y.b { return x.b < y.b }
+    return x.orden < y.orden
+}
+
+/// Ordena por posición y, a igual posición, por orden (mezcla).
+fn ordenaRegs(l: Lista<Reg>) -> Lista<Reg> {
+    if l.tam() <= 1 { return l }
+    fix mitad = l.tam() / 2
+    fix izq = Lista<Reg>()
+    fix der = Lista<Reg>()
+    mut i = 0
+    while i < l.tam() {
+        if i < mitad { izq.agrega(l.obtiene(i)) } else { der.agrega(l.obtiene(i)) }
+        i += 1
+    }
+    fix a = ordenaRegs(izq)
+    fix b = ordenaRegs(der)
+    fix salida = Lista<Reg>()
+    mut x = 0
+    mut y = 0
+    while x < a.tam() && y < b.tam() {
+        if antes(b.obtiene(y), a.obtiene(x)) {
+            salida.agrega(b.obtiene(y))
+            y += 1
+        } else {
+            salida.agrega(a.obtiene(x))
+            x += 1
+        }
+    }
+    while x < a.tam() {
+        salida.agrega(a.obtiene(x))
+        x += 1
+    }
+    while y < b.tam() {
+        salida.agrega(b.obtiene(y))
+        y += 1
+    }
+    return salida
+}
+
+/// Las tablas de un `Checker` en un momento dado (ver `Checker.foto`).
+thing Foto(fix funcs: Mapa<Str, Sig>, fix classes: Mapa<Str, ClassInfo>, fix kinds: Mapa<Str, KindInfo>, fix globals: Mapa<Str, VarE>, fix overridable: Mapa<Str, Bool>, fix fnAssigned: Mapa<Str, Bool>)
+
+/// Una copia de un `Mapa` (los valores son los mismos objetos).
+fn copiaMapa<V>(m: Mapa<Str, V>) -> Mapa<Str, V> {
+    fix otra = Mapa<Str, V>()
+    fix ks = m.claves()
+    fix vs = m.valores()
+    mut i = 0
+    while i < ks.tam() {
+        otra.pone(ks.obtiene(i), vs.obtiene(i))
+        i += 1
+    }
+    return otra
+}
+
 /// El estado del verificador: recuerda las funciones, clases y globales de lo ya verificado (el preludio).
 thing Checker() {
-    fix funcs = Mapa<Str, Sig>()
-    fix classes = Mapa<Str, ClassInfo>()
-    fix kinds = Mapa<Str, KindInfo>()
-    fix globals = Mapa<Str, VarE>()
+    mut funcs = Mapa<Str, Sig>()
+    mut classes = Mapa<Str, ClassInfo>()
+    mut kinds = Mapa<Str, KindInfo>()
+    mut globals = Mapa<Str, VarE>()
     /// Funciones del preludio: un programa puede definir otra con el mismo nombre.
-    fix overridable = Mapa<Str, Bool>()
+    mut overridable = Mapa<Str, Bool>()
     /// Globales `mut` que alguna función, método o lambda asigna: una llamada puede cambiarlas, así que no se estrechan.
-    fix fnAssigned = Mapa<Str, Bool>()
+    mut fnAssigned = Mapa<Str, Bool>()
     /// Parámetros de tipo a la vista (los de la clase o función que se está declarando o verificando).
     mut scopeParams = Lista<TParam>()
     // Lo que sigue es de cada programa que se verifica.
@@ -540,10 +614,32 @@ thing Checker() {
     mut things = Mapa<Str, Nodo>()
     mut classState = Mapa<Str, Str>()
     mut lambdaCache = Mapa<Str, Tipo>()
+    /// Lo que el verificador decidió y el compilador necesita, por posición `desde-hasta` (ver `resoluciones`).
+    mut resCampos = Mapa<Str, Int>()
+    mut resMetodos = Mapa<Str, Str>()
+    mut resVirtuales = Mapa<Str, Str>()
+    mut resLlamadasValor = Mapa<Str, Bool>()
+    mut resDescartes = Mapa<Str, Bool>()
+    mut resRedirige = Mapa<Str, Str>()
 
     /// Marca las funciones definidas hasta ahora (el preludio) como redefinibles por el programa.
     fn sellaPreludio() {
         funcs.claves().paraCada { k -> overridable.pone(k, true) }
+    }
+
+    /// Copia del estado que sobrevive entre programas (el preludio y lo ya verificado).
+    fn foto() -> Foto = Foto(copiaMapa(funcs), copiaMapa(classes), copiaMapa(kinds), copiaMapa(globals), copiaMapa(overridable), copiaMapa(fnAssigned))
+
+    /// Vuelve al estado de `f`: lo que un programa fallido (o uno ya verificado) dejó se olvida. Se puede restaurar
+    /// varias veces la misma foto.
+    fn restaura(f: Foto) {
+        funcs = copiaMapa(f.funcs)
+        classes = copiaMapa(f.classes)
+        kinds = copiaMapa(f.kinds)
+        globals = copiaMapa(f.globals)
+        overridable = copiaMapa(f.overridable)
+        fnAssigned = copiaMapa(f.fnAssigned)
+        scopeParams = Lista<TParam>()
     }
 
     /// Verifica un programa (la raíz `Program` de `analiza`). Falla con `ErrorTipo`.
@@ -554,7 +650,29 @@ thing Checker() {
         things = Mapa<Str, Nodo>()
         classState = Mapa<Str, Str>()
         lambdaCache = Mapa<Str, Tipo>()
+        resCampos = Mapa<Str, Int>()
+        resMetodos = Mapa<Str, Str>()
+        resVirtuales = Mapa<Str, Str>()
+        resLlamadasValor = Mapa<Str, Bool>()
+        resDescartes = Mapa<Str, Bool>()
+        resRedirige = Mapa<Str, Str>()
         programa(prog)
+    }
+
+    /// Lo que el verificador decidió y el compilador necesita, una línea por decisión y ordenado por posición:
+    /// `campo @a-b índice`, `metodo @a-b Clase.metodo`, `virtual @a-b nombre`, `llamadaValor @a-b`, `descarta @a-b` y
+    /// `redirige @a-b función receptor`. Es lo mismo que escribe `and23 --resuelve`.
+    fn resoluciones() -> Lista<Str> {
+        fix regs = Lista<Reg>()
+        resCampos.claves().paraCada { k -> regs.agrega(reg(k, 0, "campo", "${resCampos.obtiene(k) ?: 0}")) }
+        resMetodos.claves().paraCada { k -> regs.agrega(reg(k, 1, "metodo", resMetodos.obtiene(k) ?: "")) }
+        resVirtuales.claves().paraCada { k -> regs.agrega(reg(k, 2, "virtual", resVirtuales.obtiene(k) ?: "")) }
+        resLlamadasValor.claves().paraCada { k -> regs.agrega(reg(k, 3, "llamadaValor", "")) }
+        resDescartes.claves().paraCada { k -> regs.agrega(reg(k, 4, "descarta", "")) }
+        resRedirige.claves().paraCada { k -> regs.agrega(reg(k, 5, "redirige", resRedirige.obtiene(k) ?: "")) }
+        fix salida = Lista<Str>()
+        ordenaRegs(regs).paraCada { r -> salida.agrega(r.texto) }
+        return salida
     }
 
     fn sigDe(clave: Str) -> Sig {
@@ -841,7 +959,7 @@ thing Checker() {
         if padre != nil {
             allFields(padre.nombre, substLista(padre.args, mapa)).paraCada { f -> campos.agrega(f) }
         }
-        info.campos.paraCada { f -> campos.agrega(FieldInfo(f.nombre, subst(f.ty, mapa), f.mutable)) }
+        info.campos.paraCada { f -> campos.agrega(FieldInfo(f.nombre, subst(f.ty, mapa), f.mutable, campos.tam())) }
         return campos
     }
 
@@ -1079,7 +1197,7 @@ thing Checker() {
                 if heredados.alguno({ f -> f.nombre == attr(p, 0) }) {
                     fail err("el campo `${attr(p, 0)}` ya existe en la clase padre", nombreR(p))
                 }
-                campos.agrega(FieldInfo(attr(p, 0), ty, mutab == "mut"))
+                campos.agrega(FieldInfo(attr(p, 0), ty, mutab == "mut", -1))
             }
         }
         fix fieldsN = kid(decl, 3).kids
@@ -1092,7 +1210,7 @@ thing Checker() {
                 fail err("el campo `${nombre}` está repetido", nombreR(f))
             }
             fix ty = if esNada(kid(f, 0)) { T_UNIT } else { resolve(kid(f, 0)) }
-            campos.agrega(FieldInfo(nombre, ty, attr(f, 1) == "mut"))
+            campos.agrega(FieldInfo(nombre, ty, attr(f, 1) == "mut", -1))
         }
         fix metodos = kid(decl, 4).kids
         i = 0
@@ -1224,6 +1342,7 @@ thing Checker() {
         fix cuerpo = kid(d.nodo, 3)
         block(ctx, cuerpo)
         if ctx.retK == "Infer" {
+            noNilRet(ctx)
             sig.ret = ctx.retTy ?: T_UNIT
         } else if ctx.retK == "Declared" {
             fix declarado = ctx.retTy
@@ -1233,6 +1352,34 @@ thing Checker() {
         }
         state.pone(clave, "Done")
         scopeParams = guardado
+    }
+
+    /// El error de una función sin tipo declarado cuyos únicos valores devueltos son `nil`.
+    fn noNilRet(ctx: Ctx) {
+        fix ty = ctx.retTy
+        fix r = ctx.retNil
+        if ty != nil && ty.k == "Nil" && r != nil {
+            noNil(ty, r)
+        }
+    }
+
+    /// Anota un valor devuelto en una función o lambda sin tipo de retorno declarado. `T` y `nil` juntos dan `T?`;
+    /// el resto de los valores deben coincidir con el primero.
+    fn registraRet(ctx: Ctx, hallado: Tipo, r: Rango) {
+        if ctx.retK != "Infer" { return }
+        fix previo = ctx.retTy
+        if previo == nil {
+            ctx.retTy = hallado
+            if hallado.k == "Nil" { ctx.retNil = r }
+        } else if previo.k == "Nil" {
+            if hallado.k != "Nil" { ctx.retTy = opcional(hallado) }
+        } else if hallado.k == "Nil" {
+            ctx.retTy = opcional(previo)
+        } else if hallado.k == "Nullable" && assignable(hallado, previo) {
+            ctx.retTy = hallado
+        } else {
+            expect(previo, hallado, r)
+        }
     }
 
     fn block(ctx: Ctx, bloque: Nodo) {
@@ -1260,8 +1407,8 @@ thing Checker() {
                 // ejecutarse cuando ya no vale lo que se probó al crearla.
                 fix capturada = !ctx.marks.vacia() && i < ctx.marks.obtiene(ctx.marks.tam() - 1)
                 fix declarado = v.declarado
-                if capturada && v.mutable && declarado != nil { return Vista(declarado, true) }
-                return Vista(v.ty, v.mutable)
+                if capturada && v.mutable && declarado != nil { return Vista(declarado, true, -1) }
+                return Vista(v.ty, v.mutable, -1)
             }
             i -= 1
         }
@@ -1270,19 +1417,42 @@ thing Checker() {
             fix campos = allFields(esto, identityArgs(esto))
             mut j = 0
             while j < campos.tam() {
-                if campos.obtiene(j).nombre == nombre { return Vista(campos.obtiene(j).ty, campos.obtiene(j).mutable) }
+                if campos.obtiene(j).nombre == nombre {
+                    // Un campo `fix` que se probó como no nulo (ver `narrowing`) lo sigue siendo.
+                    fix estrecho = entradaDeCampo(ctx, nombre)
+                    return Vista(if estrecho != nil { estrecho.ty } else { campos.obtiene(j).ty }, campos.obtiene(j).mutable, j)
+                }
                 j += 1
             }
         }
         fix estrechada = ctx.scriptNarrow.obtiene(nombre)
-        if estrechada != nil { return Vista(estrechada, false) }
+        if estrechada != nil { return Vista(estrechada, false, -1) }
         fix g = globals.obtiene(nombre)
         if g == nil { return nil }
-        return Vista(g.ty, g.mutable)
+        return Vista(g.ty, g.mutable, -1)
+    }
+
+    /// La entrada de ámbito que estrecha el campo `nombre` (se guarda con la clave `@campo:nombre`).
+    fn entradaDeCampo(ctx: Ctx, nombre: Str) -> VarE? {
+        mut i = ctx.scopes.tam() - 1
+        while i >= 0 {
+            fix v = ctx.scopes.obtiene(i).obtiene("@campo:${nombre}")
+            if v != nil { return v }
+            i -= 1
+        }
+        return nil
+    }
+
+    /// Si `nombre` se refiere a un campo de `this` y no a un local.
+    fn narrowField(ctx: Ctx, nombre: Str) -> Bool {
+        fix esto = ctx.esto
+        if esto == nil { return false }
+        if ctx.scopes.alguno({ s -> s.contiene(nombre) }) { return false }
+        return allFields(esto, identityArgs(esto)).alguno({ f -> f.nombre == nombre })
     }
 
     /// Como `lookup` pero solo para estrechar: tipo, mutabilidad, tipo declarado si ya estaba estrechada y si
-    /// es un local (los campos no se estrechan).
+    /// es un local o un campo `fix` (los campos `mut` no se estrechan: cualquier llamada puede cambiarlos).
     fn narrowable(ctx: Ctx, nombre: Str) -> Estrechable? {
         mut i = ctx.scopes.tam() - 1
         while i >= 0 {
@@ -1292,7 +1462,17 @@ thing Checker() {
         }
         fix esto = ctx.esto
         if esto != nil {
-            if allFields(esto, identityArgs(esto)).alguno({ f -> f.nombre == nombre }) { return nil }
+            fix campos = allFields(esto, identityArgs(esto))
+            mut j = 0
+            while j < campos.tam() {
+                if campos.obtiene(j).nombre == nombre {
+                    if campos.obtiene(j).mutable { return nil }
+                    fix estrecho = entradaDeCampo(ctx, nombre)
+                    if estrecho != nil { return Estrechable(estrecho.ty, false, estrecho.declarado, true) }
+                    return Estrechable(campos.obtiene(j).ty, false, nil, true)
+                }
+                j += 1
+            }
         }
         if ctx.scriptNarrow.contiene(nombre) { return nil }
         // Una global `mut` que ninguna función ni lambda asigna solo cambia por el código que se ve, así que en
@@ -1319,7 +1499,9 @@ thing Checker() {
                 if !n.local { continue }
                 if cuerpo != nil && assignedInLoop(cuerpo, nombre) { continue }
             }
-            salida.agrega(EntradaE(nombre, VarE(n.ty.args.obtiene(0), n.mutable, n.declarado ?: n.ty)))
+            // Un campo no es una variable: su estrechamiento se guarda con otra clave (ver `lookup`).
+            fix clave = if narrowField(ctx, nombre) { "@campo:${nombre}" } else { nombre }
+            salida.agrega(EntradaE(clave, VarE(n.ty.args.obtiene(0), n.mutable, n.declarado ?: n.ty)))
         }
         return salida
     }
@@ -1402,7 +1584,10 @@ thing Checker() {
         fix campos = allFields(base.nombre, base.args)
         mut i = 0
         while i < campos.tam() {
-            if campos.obtiene(i).nombre == nombre { return campos.obtiene(i) }
+            if campos.obtiene(i).nombre == nombre {
+                fix c = campos.obtiene(i)
+                return FieldInfo(c.nombre, c.ty, c.mutable, i)
+            }
             i += 1
         }
         fail err("la clase `${base.nombre}` no tiene el campo `${nombre}`", nombreRango)
@@ -1497,6 +1682,7 @@ thing Checker() {
                 if !lk.mutable {
                     fail err("no se puede asignar a `${nombre}` porque es inmutable; decláralo con `mut`", nombreR(s))
                 }
+                if lk.campo >= 0 { resCampos.pone(claveR(nombreR(s)), lk.campo) }
                 // Una variable estrechada acepta lo que admite su tipo declarado; si el valor puede ser nil, deja
                 // de estar estrechada.
                 mut declarado: Tipo? = nil
@@ -1533,6 +1719,7 @@ thing Checker() {
                 if !campo.mutable {
                     fail err("no se puede asignar al campo `${nombre}` porque es inmutable; decláralo con `mut`", nombreR(s))
                 }
+                resCampos.pone(claveR(nombreR(s)), campo.indice)
                 assigned(ctx, campo.ty, attr(s, 1), kid(s, 1), rg(s))
             }
             "IndexAssign" -> {
@@ -1596,17 +1783,39 @@ thing Checker() {
                 fix valor = kid(s, 0)
                 mut esperado: Tipo? = nil
                 if ctx.retK == "Declared" || ctx.retK == "Infer" { esperado = ctx.retTy }
+                if esperado != nil && esperado.k == "Nil" { esperado = nil }
                 fix esp = esperado
-                if !esNada(valor) && esp != nil {
+                if ctx.retK == "Infer" && valor.tag == "Nil" {
+                    registraRet(ctx, T_NIL, rg(valor))
+                } else if !esNada(valor) && esp != nil {
                     if esp.k == "Unit" && ctx.retK != "Infer" {
                         fix hallado = expr(ctx, valor)
                         fail err("la función no declara un tipo de retorno, pero devuelve ${muestra(hallado)}; añade `-> ${muestra(hallado)}`", rg(valor))
                     }
-                    exprAs(ctx, valor, esp)
+                    if ctx.retK == "Infer" {
+                        // En una función sin tipo declarado, un valor opcional ensancha el tipo deducido.
+                        attempt {
+                            exprAs(ctx, valor, esp)
+                        } rescue er: ErrorTipo {
+                            mut hallado0: Tipo? = nil
+                            attempt {
+                                hallado0 = expr(ctx, valor)
+                            } rescue er2: ErrorTipo {
+                                fail er
+                            }
+                            fix hallado = hallado0
+                            if hallado != nil && hallado.k == "Nullable" && assignable(hallado, esp) {
+                                registraRet(ctx, hallado, rg(valor))
+                            } else {
+                                fail er
+                            }
+                        }
+                    } else {
+                        exprAs(ctx, valor, esp)
+                    }
                 } else if !esNada(valor) {
                     fix hallado = expr(ctx, valor)
-                    noNil(hallado, rg(valor))
-                    if ctx.retK == "Infer" { ctx.retTy = hallado }
+                    if ctx.retK == "Infer" { registraRet(ctx, hallado, rg(valor)) } else { noNil(hallado, rg(valor)) }
                 } else if esp != nil {
                     expect(esp, T_UNIT, rg(s))
                 } else if ctx.retK == "Infer" {
@@ -1739,6 +1948,7 @@ thing Checker() {
             "Var" -> {
                 fix v = lookup(ctx, e.attrs)
                 if v == nil { return functionValue(e.attrs, rg(e)) }
+                if v.campo >= 0 { resCampos.pone(claveR(rg(e)), v.campo) }
                 return v.ty
             }
             "This" -> {
@@ -1750,7 +1960,9 @@ thing Checker() {
                 fix destino = kid(e, 0)
                 fix destinoTy = expr(ctx, destino)
                 ensureClassOf(destinoTy)
-                return fieldOf(destinoTy, e.attrs, nombreR(e), rg(destino)).ty
+                fix campo = fieldOf(destinoTy, e.attrs, nombreR(e), rg(destino))
+                resCampos.pone(claveR(rg(e)), campo.indice)
+                return campo.ty
             }
             "MethodCall" -> return methodCall(ctx, e)
             "SuperCall" -> {
@@ -1769,6 +1981,7 @@ thing Checker() {
                 if h == nil {
                     fail err("la clase padre `${muestra(padreTy)}` no tiene el método `${e.attrs}`", nombreR(e))
                 }
+                resMetodos.pone(claveR(rg(e)), h.clave)
                 return callSig(ctx, h.clave, e.attrs, "el método", kid(e, 0).kids, Lista<Nodo>(), rg(e), h.mapa, nil)
             }
             "Is" -> {
@@ -1861,7 +2074,9 @@ thing Checker() {
                 fix destinoTy = expr(ctx, destino)
                 fix dentro = if destinoTy.k == "Nullable" { destinoTy.args.obtiene(0) } else { destinoTy }
                 ensureClassOf(dentro)
-                return opcional(fieldOf(dentro, e.attrs, nombreR(e), rg(destino)).ty)
+                fix campo = fieldOf(dentro, e.attrs, nombreR(e), rg(destino))
+                resCampos.pone(claveR(rg(e)), campo.indice)
+                return opcional(campo.ty)
             }
             "SafeCall" -> {
                 fix destino = kid(e, 0)
@@ -1872,6 +2087,7 @@ thing Checker() {
                 if h == nil {
                     fail err("`${muestra(receptor)}` no tiene el método `${e.attrs}`", nombreR(e))
                 }
+                resVirtuales.pone(claveR(rg(e)), e.attrs)
                 fix ret = callSig(ctx, h.clave, e.attrs, "el método", kid(e, 1).kids, Lista<Nodo>(), rg(e), h.mapa, nil)
                 return if ret.k == "Unit" { ret } else { opcional(ret) }
             }
@@ -1911,11 +2127,14 @@ thing Checker() {
             }
             fix campo = campoFn
             if campo != nil && campo.ty.k == "Fn" {
+                resCampos.pone(claveR(rg(e)), campo.indice)
+                resLlamadasValor.pone(claveR(rg(e)), true)
                 return callValue(ctx, nombre, paramsDe(campo.ty), retDe(campo.ty), args, rg(e))
             }
             fix que = if receptor.k == "Obj" && kinds.contiene(receptor.nombre) { "la interfaz" } else { "la clase" }
             fail err("${que} `${muestra(receptor)}` no tiene el método `${nombre}`", nombreR(e))
         }
+        resVirtuales.pone(claveR(rg(e)), nombre)
         return callSig(ctx, h.clave, nombre, "el método", args, targs, rg(e), h.mapa, nil)
     }
 
@@ -2017,6 +2236,7 @@ thing Checker() {
         fix todos = Lista<Nodo>()
         if receptor != nil { todos.agrega(receptor) }
         args.paraCada { a -> todos.agrega(a) }
+        resRedirige.pone(claveR(r), "${clave} ${receptor != nil}")
         return callSig(ctx, clave, nombre, "el método", todos, targs, r, Mapa<Str, Tipo>(), nil)
     }
 
@@ -2057,7 +2277,11 @@ thing Checker() {
         if !classes.contiene(nombre) && !kinds.contiene(nombre) {
             fix lk = lookup(ctx, nombre)
             if lk != nil {
-                if lk.ty.k == "Fn" { return callValue(ctx, nombre, paramsDe(lk.ty), retDe(lk.ty), args, r) }
+                if lk.ty.k == "Fn" {
+                    if lk.campo >= 0 { resCampos.pone(claveR(r), lk.campo) }
+                    resLlamadasValor.pone(claveR(r), true)
+                    return callValue(ctx, nombre, paramsDe(lk.ty), retDe(lk.ty), args, r)
+                }
                 if lk.ty.k == "Nullable" && lk.ty.args.obtiene(0).k == "Fn" {
                     fail err("`${nombre}` es una función opcional y puede ser nil: comprueba `if ${nombre} != nil` antes de llamarla", r)
                 }
@@ -2087,6 +2311,7 @@ thing Checker() {
             fix esteTy = obj(esto, identityArgs(esto))
             fix h = findMethod(esteTy, nombre)
             if h != nil {
+                resVirtuales.pone(claveR(r), nombre)
                 return callSig(ctx, h.clave, nombre, "el método", args, Lista<Nodo>(), r, h.mapa, nil)
             }
         }
@@ -2215,8 +2440,10 @@ thing Checker() {
         fix retEsperado = retEsperado0
         fix retK0 = ctx.retK
         fix retTy0 = ctx.retTy
+        fix retNil0 = ctx.retNil
         ctx.retK = if retEsperado != nil { "Declared" } else { "Infer" }
         ctx.retTy = retEsperado
+        ctx.retNil = nil
         ctx.marks.agrega(ctx.scopes.tam())
         ctx.scopes.agrega(ambito)
         attempt {
@@ -2226,14 +2453,20 @@ thing Checker() {
             ctx.marks.quita()
             ctx.retK = retK0
             ctx.retTy = retTy0
+            ctx.retNil = retNil0
             fail er
         }
         ctx.scopes.quita()
         ctx.marks.quita()
         fix usadoK = ctx.retK
         fix usadoTy = ctx.retTy
+        fix usadoNil = ctx.retNil
         ctx.retK = retK0
         ctx.retTy = retTy0
+        ctx.retNil = retNil0
+        if retEsperado == nil && usadoK == "Infer" && usadoTy != nil && usadoTy.k == "Nil" && usadoNil != nil {
+            fail err("no se puede deducir el tipo de `nil`; anótalo, por ejemplo `fix x: Perro? = nil`", usadoNil)
+        }
         mut ret = T_UNIT
         if retEsperado != nil {
             ret = retEsperado
@@ -2256,20 +2489,12 @@ thing Checker() {
         if hayCola {
             fix cola = kid(cuerpo.kids.obtiene(n - 1), 0)
             if ret != nil && ret.k == "Unit" {
-                expr(ctx, cola)
+                if expr(ctx, cola).k != "Unit" { resDescartes.pone(claveR(rg(cola)), true) }
             } else if ret != nil {
                 exprAs(ctx, cola, ret)
             } else {
                 fix hallado = expr(ctx, cola)
-                noNil(hallado, rg(cola))
-                mut previo0: Tipo? = nil
-                if ctx.retK == "Infer" { previo0 = ctx.retTy }
-                fix previo = previo0
-                if previo != nil {
-                    expect(previo, hallado, rg(cola))
-                } else if ctx.retK == "Infer" {
-                    ctx.retTy = hallado
-                }
+                registraRet(ctx, hallado, rg(cola))
             }
         } else if ret != nil {
             if ret.k != "Unit" && !blockReturns(cuerpo) {
@@ -2445,29 +2670,63 @@ thing Checker() {
 // ---------------------------------------------------------------- main
 
 fn main() {
-    fix a = argumentos()
-    if a.tam() != 1 {
-        show("uso: and23 mn/checker.jb archivo.jb")
+    fix todos = argumentos()
+    // Con `--resoluciones`, cada archivo escribe su resultado, las decisiones del verificador y una línea `---`.
+    fix conRes = !todos.vacia() && todos.obtiene(0) == "--resoluciones"
+    fix a = Lista<Str>()
+    mut k = if conRes { 1 } else { 0 }
+    while k < todos.tam() {
+        a.agrega(todos.obtiene(k))
+        k += 1
+    }
+    if a.tam() == 0 {
+        show("uso: and23 mn/checker.jb [--resoluciones] archivo.jb [archivo.jb...]")
         return
     }
+    fix c = Checker()
     attempt {
-        fix c = Checker()
-        fix preludio = analiza("thing Fallo(fix msg: Str)\n" + leeArchivo("crates/and23-syntax/prelude.jb"))
+        fix preludio = analiza("thing Fallo(fix msg: Str)
+" + leeArchivo("crates/and23-syntax/prelude.jb"))
         attempt {
             c.check(preludio)
         } rescue e: ErrorTipo {
             show("PRELUDIO: ${e.msg} @${e.donde.a}-${e.donde.b}")
             return
         }
-        c.sellaPreludio()
-        fix prog = analiza(leeArchivo(a.obtiene(0)))
-        c.check(prog)
-        show("ok")
     } rescue e: ErrorLexico {
-        show("Error ${e.msg} @${e.desde}-${e.hasta}")
+        show("PRELUDIO: ${e.msg} @${e.desde}-${e.hasta}")
+        return
     } rescue e: ErrorParse {
-        show("Error ${e.msg} @${e.donde.a}-${e.donde.b}")
+        show("PRELUDIO: ${e.msg} @${e.donde.a}-${e.donde.b}")
+        return
+    }
+    c.sellaPreludio()
+    // Con varios archivos, cada uno se verifica sobre el preludio solo: lo que deja uno (o su fallo) se olvida.
+    fix foto = c.foto()
+    mut i = 0
+    while i < a.tam() {
+        c.restaura(foto)
+        fix r = verifica(c, a.obtiene(i))
+        show(r)
+        if conRes {
+            if r == "ok" { c.resoluciones().paraCada { l -> show(l) } }
+            show("---")
+        }
+        i += 1
+    }
+}
+
+/// El resultado de verificar un archivo: `ok` o `Error mensaje @desde-hasta`.
+fn verifica(c: Checker, ruta: Str) -> Str {
+    attempt {
+        fix prog = analiza(leeArchivo(ruta))
+        c.check(prog)
+        return "ok"
+    } rescue e: ErrorLexico {
+        return "Error ${e.msg} @${e.desde}-${e.hasta}"
+    } rescue e: ErrorParse {
+        return "Error ${e.msg} @${e.donde.a}-${e.donde.b}"
     } rescue e: ErrorTipo {
-        show("Error ${e.msg} @${e.donde.a}-${e.donde.b}")
+        return "Error ${e.msg} @${e.donde.a}-${e.donde.b}"
     }
 }

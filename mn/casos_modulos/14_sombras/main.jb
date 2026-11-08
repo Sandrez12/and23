@@ -1,0 +1,16 @@
+use "u"
+use "u" como m
+fn main() {
+    fix doble = 3
+    show(doble)
+    fix f = { doble: Int -> doble + 1 }
+    show(f(1))
+    show(m.doble(4))
+    fix m = 2
+    show(m)
+}
+thing T(fix doble: Int) {
+    fn z() -> Int = doble
+    fn w() -> Int = doble2()
+}
+fn doble2() -> Int = 1

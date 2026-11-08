@@ -1,0 +1,3 @@
+use "../otro/lib"
+use "local" como l
+fn main() { show(libf(l.g())) }

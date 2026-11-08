@@ -244,6 +244,20 @@ thing Lexer(fix cs: Lista<Str>) {
 }
 
 /// Los tokens de un texto, terminados en `Eof`. Falla con `ErrorLexico` si no se puede leer.
+/// Los mismos tokens con las posiciones movidas `base` caracteres (para unir varios archivos en un solo espacio).
+open fn desplaza(tokens: Lista<Token>, base: Int) -> Lista<Token> {
+    if base == 0 { return tokens }
+    fix salida = Lista<Token>()
+    tokens.paraCada { t ->
+        fix partes = Lista<Parte>()
+        t.partes.paraCada { p ->
+            partes.agrega(if p.esCodigo { Parte(true, p.texto, desplaza(p.codigo, base)) } else { p })
+        }
+        salida.agrega(Token(t.tipo, t.valor, if partes.vacia() { t.partes } else { partes }, t.desde + base, t.hasta + base))
+    }
+    return salida
+}
+
 open fn lexea(texto: Str) -> Lista<Token> {
     fix cs = texto.caracteres()
     fix tokens = Lexer(cs).corre(false, 0)

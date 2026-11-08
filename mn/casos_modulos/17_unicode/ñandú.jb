@@ -1,0 +1,3 @@
+// canción ñ 日本
+open fn añade(s: Str) -> Str = s + "ü"
+fn privada() {}

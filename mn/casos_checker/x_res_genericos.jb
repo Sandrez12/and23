@@ -1,0 +1,12 @@
+thing Caja<T>(fix v: T, mut siguiente: Caja<T>?) {
+    fn mira() -> T = v
+    fn enlaza(o: Caja<T>) { siguiente = o }
+}
+fn dup<T>(c: Caja<T>) -> T = c.mira()
+fn main() {
+    fix c = Caja<Int>(1, nil)
+    c.enlaza(Caja<Int>(2, nil))
+    show(dup(c))
+    fix s = c.siguiente
+    show(s?.v)
+}

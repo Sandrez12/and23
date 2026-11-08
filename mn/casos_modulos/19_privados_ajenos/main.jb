@@ -1,0 +1,6 @@
+use "u"
+use "v"
+fn main() { show(oculta()) }
+thing T() : Padre() {
+    fn m(x: Priv) {}
+}

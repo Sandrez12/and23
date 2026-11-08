@@ -1,0 +1,4 @@
+open fn pub() -> Int = 1
+fn oculta() -> Int = 2
+thing Priv()
+thing Padre()

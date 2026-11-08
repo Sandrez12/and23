@@ -1,0 +1,2 @@
+open enum Color { Rojo, Verde }
+enum Privado { A, B }

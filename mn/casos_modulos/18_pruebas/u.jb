@@ -1,0 +1,2 @@
+open fn f() -> Int = 1
+prueba "dentro" { afirma(false) }

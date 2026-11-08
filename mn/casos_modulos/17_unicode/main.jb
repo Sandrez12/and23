@@ -1,0 +1,2 @@
+use "ñandú" como n
+fn main() { show(n.añade("é")) }

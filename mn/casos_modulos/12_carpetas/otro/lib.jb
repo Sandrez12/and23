@@ -1,0 +1,2 @@
+use "../sub/local" como q
+open fn libf(x: Int) -> Int = x + q.g()

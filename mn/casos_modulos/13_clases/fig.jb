@@ -1,0 +1,7 @@
+open kind Forma { fn area() -> Float }
+open thing Circulo(fix r: Float) : Forma {
+    fn area() -> Float = 3.0 * r * r
+    fn describe() -> Str = "c${area()}"
+}
+open thing Mala(m: Str) : Fallo(m)
+fn oculta() {}

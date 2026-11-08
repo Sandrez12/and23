@@ -1,0 +1,4 @@
+use "u" como m
+fn main() {
+    m.x = 1
+}

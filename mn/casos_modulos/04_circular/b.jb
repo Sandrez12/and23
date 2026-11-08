@@ -1,0 +1,2 @@
+use "a"
+open fn fb() -> Int = 2

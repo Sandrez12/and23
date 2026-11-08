@@ -27,7 +27,7 @@ open thing ErrorParse(m: Str, fix donde: Rango) : Fallo(m)
 /// Un nombre (posiblemente cualificado) y dónde está.
 thing Nom(fix nombre: Str, fix r: Rango)
 
-open thing Nodo(fix tag: Str, fix attrs: Str, fix kids: Lista<Nodo>) {
+open thing Nodo(mut tag: Str, mut attrs: Str, fix kids: Lista<Nodo>) {
     /// Posición del nodo y de su nombre; -1 si no la tiene.
     mut d = -1
     mut h = -1
@@ -53,13 +53,13 @@ open fn rg(n: Nodo) -> Rango = Rango(n.d, n.h)
 /// La posición de una sentencia: una expresión suelta ocupa lo que su expresión.
 open fn spanDe(n: Nodo) -> Rango = if n.tag == "ExprStmt" { rg(n.kids.obtiene(0)) } else { rg(n) }
 
-fn hoja(tag: Str, attrs: Str) -> Nodo = Nodo(tag, attrs, Lista<Nodo>())
+open fn hoja(tag: Str, attrs: Str) -> Nodo = Nodo(tag, attrs, Lista<Nodo>())
 
-fn vacio(tag: Str) -> Nodo = Nodo(tag, "", Lista<Nodo>())
+open fn vacio(tag: Str) -> Nodo = Nodo(tag, "", Lista<Nodo>())
 
 fn nada() -> Nodo = hoja("None", "")
 
-fn con(tag: Str, attrs: Str, kids: Lista<Nodo>) -> Nodo = Nodo(tag, attrs, kids)
+open fn con(tag: Str, attrs: Str, kids: Lista<Nodo>) -> Nodo = Nodo(tag, attrs, kids)
 
 fn uno(tag: Str, attrs: Str, a: Nodo) -> Nodo {
     fix k = Lista<Nodo>()
@@ -1378,7 +1378,7 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
 
 // ---------------------------------------------------------------- volcado
 
-fn vuelca(n: Nodo, sangria: Str, salida: Lista<Str>) {
+open fn vuelca(n: Nodo, sangria: Str, salida: Lista<Str>) {
     mut linea = "${sangria}${n.tag}"
     if n.attrs != "" { linea += " ${n.attrs}" }
     if n.d >= 0 { linea += " @${n.d}-${n.h}" }
@@ -1411,6 +1411,16 @@ fn enumerados(toks: Lista<Token>) -> Mapa<Str, Lista<Str>> {
 open fn analiza(texto: Str) -> Nodo {
     fix toks = lexea(texto)
     return Parser(toks, enumerados(toks), Contador(), 0, 0).programa()
+}
+
+/// Como `analiza`, con todas las posiciones (del árbol y de los errores) movidas `base` caracteres.
+open fn analizaEn(texto: Str, base: Int) -> Nodo {
+    attempt {
+        fix toks = desplaza(lexea(texto), base)
+        return Parser(toks, enumerados(toks), Contador(), 0, 0).programa()
+    } rescue e: ErrorLexico {
+        fail ErrorLexico(e.msg, e.desde + base, e.hasta + base)
+    }
 }
 
 fn main() {

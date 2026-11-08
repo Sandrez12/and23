@@ -1,0 +1,2 @@
+open thing Caja<T>(fix v: T)
+open fn crea<T>(v: T) -> Caja<T> = Caja<T>(v)

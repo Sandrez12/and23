@@ -1,0 +1,2 @@
+use "c"
+open fn fa() -> Int = base()

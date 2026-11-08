@@ -1,0 +1,8 @@
+use "u"
+fn main() {
+    fix l = listaDe([1])
+    show(g(1))
+    show(Vacia().n)
+    show(K)
+    show(contador)
+}

@@ -1,0 +1,5 @@
+use "w"
+open fn g<T>(x: T) -> T = h(x)
+open thing Vacia() { mut n = 0 }
+open fix K = base2
+open fix contador = Vacia().n

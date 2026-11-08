@@ -1,0 +1,2 @@
+open fn pub2() -> Int = 1
+fn oculta() -> Int = 3

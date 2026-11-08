@@ -1,0 +1,3 @@
+open thing Punto(fix x: Int, fix y: Int)
+open fn suma(a: Int, b: Int) -> Int = a + b
+open fix CONST = 5

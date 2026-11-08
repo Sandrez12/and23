@@ -1,0 +1,621 @@
+// Mn, módulos: carga los archivos que importa un programa (`use "ruta"`), comprueba qué es público (`open`) y los une
+// en un único programa. Es el port de `crates/and23-syntax/src/modules.rs`.
+//
+// Las declaraciones de cada archivo, salvo las del principal, se renombran a `ruta.nombre` (`util.ayuda`), así dos
+// archivos pueden tener un `ayuda` privado sin chocar y el resto del compilador no sabe que existen módulos. Todos los
+// archivos comparten un espacio de posiciones (cada uno empieza donde acabó el anterior más uno), de modo que un error
+// sabe a qué archivo pertenece. El árbol es el de `parser.jb`; se renombra en el sitio.
+//
+// Uso (para compararlo con Rust):
+//   and23 mn/modulos.jb archivo.jb      escribe lo mismo que `and23 --unido archivo.jb`
+
+use "lexer.jb"
+use "parser.jb"
+
+/// Un error de la carga con su posición en el espacio común.
+open thing ErrorCarga(m: Str, fix donde: Rango) : Fallo(m)
+
+/// No se pudo leer un archivo.
+open thing ErrorLectura(m: Str) : Fallo(m)
+
+/// Un archivo leído y dónde empieza en el espacio común.
+open thing Fuente(fix nombre: Str, fix texto: Str, fix base: Int)
+
+/// Un programa ya unido, los archivos de los que salió y los avisos de «es privado» (posición → texto).
+open thing Cargado(fix programa: Nodo, fix fuentes: Lista<Fuente>, fix avisos: Mapa<Int, Str>)
+
+/// Lo que otros archivos ven de uno ya cargado.
+thing Info(fix id: Str, fix exports: Mapa<Str, Str>, fix privados: Lista<Str>)
+
+thing Alias(fix id: Str, fix exports: Mapa<Str, Str>)
+
+// ---------------------------------------------------------------- rutas
+
+/// Quita los `.` y resuelve los `..` sin tocar el disco.
+fn normaliza(ruta: Str) -> Str {
+    fix partes = ruta.reemplaza("\\", "/").parte("/")
+    fix salida = Lista<Str>()
+    mut i = 0
+    while i < partes.tam() {
+        fix p = partes.obtiene(i)
+        i += 1
+        // Un componente vacío en medio (`a//b`) y `.` no cuentan; el primero vacío es la raíz de una ruta absoluta.
+        if p == "." || (p == "" && i > 1) { continue }
+        if p == ".." {
+            if !salida.vacia() && salida.obtiene(salida.tam() - 1) != ".." && salida.obtiene(salida.tam() - 1) != "" {
+                salida.quita()
+                continue
+            }
+        }
+        salida.agrega(p)
+    }
+    return une(salida, "/")
+}
+
+/// La carpeta de un archivo (`""` si está en la carpeta actual).
+fn padre(ruta: Str) -> Str {
+    mut i = ruta.largo() - 1
+    while i >= 0 {
+        if ruta[i] == "/" { return ruta.trozo(0, i) }
+        i -= 1
+    }
+    return ""
+}
+
+fn unePath(dir: Str, ruta: Str) -> Str {
+    if ruta.empiezaCon("/") || dir == "" { return ruta }
+    return "${dir}/${ruta}"
+}
+
+/// Identificador del módulo: su ruta sin extensión, relativa a la carpeta del archivo principal.
+fn idDe(clave: Str, raiz: Str) -> Str {
+    mut rel = clave
+    if raiz != "" && clave.empiezaCon("${raiz}/") { rel = clave.trozo(raiz.largo() + 1, clave.largo()) }
+    // `with_extension("")`: quita la última extensión del último componente.
+    fix ultimo = rel.parte("/").obtiene(rel.parte("/").tam() - 1)
+    fix punto = ultimo.indiceDe(".")
+    if punto > 0 {
+        mut k = rel.largo() - 1
+        while k >= 0 {
+            if rel[k] == "." { return rel.trozo(0, k) }
+            k -= 1
+        }
+    }
+    return rel
+}
+
+// ---------------------------------------------------------------- qué significa cada nombre en un archivo
+
+/// Qué significa cada nombre del nivel superior dentro de un archivo.
+thing Alcance(fix id: Str, fix entrada: Bool) {
+    /// Nombre → nombre interno de lo que el archivo declara.
+    fix propios = Mapa<Str, Str>()
+    /// Nombre → nombre interno de lo que importó sin alias.
+    fix importados = Mapa<Str, Str>()
+    /// Alias de `use ... como alias`.
+    fix aliases = Mapa<Str, Alias>()
+    /// Nombre privado de un módulo importado → su identificador (solo para el aviso).
+    fix ajenos = Mapa<Str, Str>()
+
+    fn mangle(nombre: Str) -> Str = if entrada { nombre } else { "${id}.${nombre}" }
+
+    fn declara(s: Nodo) {
+        if s.tag == "Fn" || s.tag == "Thing" || s.tag == "Kind" || s.tag == "Let" {
+            fix nombre = s.attrs.parte(" ").obtiene(0)
+            propios.pone(nombre, mangle(nombre))
+        }
+    }
+
+    fn importa(u: Nodo, ruta: Str, alias: Str, dep: Info) {
+        dep.privados.paraCada { n -> if !ajenos.contiene(n) { ajenos.pone(n, dep.id) } }
+        if alias != "-" {
+            if propios.contiene(alias) || importados.contiene(alias) || aliases.contiene(alias) {
+                fail ErrorCarga("el alias `${alias}` ya está en uso en este archivo", rg(u))
+            }
+            aliases.pone(alias, Alias(dep.id, dep.exports))
+        } else {
+            fix nombres = dep.exports.claves()
+            mut i = 0
+            while i < nombres.tam() {
+                fix nombre = nombres.obtiene(i)
+                i += 1
+                fix interno = dep.exports.obtiene(nombre) ?: ""
+                if propios.contiene(nombre) || aliases.contiene(nombre) {
+                    fail ErrorCarga("`${nombre}` se declara en este archivo y también viene de `use \"${ruta}\"`", rg(u))
+                }
+                fix previo = importados.obtiene(nombre)
+                if previo != nil && previo != interno {
+                    fail ErrorCarga("`${nombre}` viene de dos `use` distintos; usa `como` para distinguirlos", rg(u))
+                }
+                importados.pone(nombre, interno)
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- el renombrado
+
+/// Recorre un archivo cambiando cada nombre del nivel superior por su nombre interno.
+thing Renombrador(fix alc: Alcance) {
+    /// Nombres locales visibles (parámetros, variables, campos, parámetros de tipo), por bloque.
+    fix locales = Lista<Mapa<Str, Bool>>()
+    mut error: ErrorCarga? = nil
+    fix avisos = Mapa<Int, Str>()
+
+    fn falla(r: Rango, m: Str) {
+        if error == nil { error = ErrorCarga(m, r) }
+    }
+
+    fn esLocal(n: Str) -> Bool = locales.alguno({ s -> s.contiene(n) })
+
+    fn empuja(nombres: Lista<Str>) {
+        fix m = Mapa<Str, Bool>()
+        nombres.paraCada { n -> m.pone(n, true) }
+        locales.agrega(m)
+    }
+
+    fn saca() {
+        locales.quita()
+    }
+
+    fn liga(n: Str) {
+        if !locales.vacia() { locales.obtiene(locales.tam() - 1).pone(n, true) }
+    }
+
+    /// Nombre interno de `nombre` tal como se usa en este punto (`d` es dónde empieza, para el aviso).
+    fn resuelve(nombre: Str, d: Int) -> Str {
+        if esLocal(nombre) { return nombre }
+        fix propio = alc.propios.obtiene(nombre)
+        if propio != nil { return propio }
+        fix importado = alc.importados.obtiene(nombre)
+        if importado != nil { return importado }
+        fix id = alc.ajenos.obtiene(nombre)
+        if id != nil { avisos.pone(d, " (`${nombre}` es privado en `${id}`: declárala con `open` allí)") }
+        return nombre
+    }
+
+    /// `alias.nombre` → nombre interno, si `alias` es un alias de `use` que nada tapa.
+    fn calificado(alias: Str, miembro: Str, r: Rango) -> Str? {
+        if esLocal(alias) || alc.propios.contiene(alias) || alc.importados.contiene(alias) { return nil }
+        fix a = alc.aliases.obtiene(alias)
+        if a == nil { return nil }
+        fix m = a.exports.obtiene(miembro)
+        if m != nil { return m }
+        falla(r, "`${a.id}` no tiene `${miembro}` abierto (se declara con `open`)")
+        return miembro
+    }
+
+    /// Nombre interno de una declaración propia del archivo.
+    fn propio(nombre: Str) -> Str = alc.propios.obtiene(nombre) ?: nombre
+
+    /// `attrs` con el primer componente cambiado.
+    fn conNombre(attrs: Str, nuevo: Str) -> Str {
+        fix i = attrs.indiceDe(" ")
+        if i < 0 { return nuevo }
+        return nuevo + attrs.trozo(i, attrs.largo())
+    }
+
+    /// Un nombre posiblemente cualificado (`alias.Nombre`) de un tipo o un padre: devuelve el interno.
+    fn nombreTipo(nombre: Str, d: Int, r: Rango) -> Str {
+        fix i = nombre.indiceDe(".")
+        if i >= 0 {
+            fix m = calificado(nombre.trozo(0, i), nombre.trozo(i + 1, nombre.largo()), r)
+            if m != nil { return m }
+            return nombre
+        }
+        return resuelve(nombre, d)
+    }
+
+    fn ty(t: Nodo) {
+        t.kids.paraCada { a -> ty(a) }
+        t.attrs = nombreTipo(t.attrs, t.d, rg(t))
+    }
+
+    fn tipoOpcional(t: Nodo) {
+        if t.tag == "Type" { ty(t) }
+    }
+
+    fn tipos(lista: Nodo) {
+        lista.kids.paraCada { t -> ty(t) }
+    }
+
+    fn exprs(lista: Nodo) {
+        lista.kids.paraCada { e -> expr(e) }
+    }
+
+    fn nombresDe(lista: Nodo) -> Lista<Str> {
+        fix salida = Lista<Str>()
+        lista.kids.paraCada { n -> salida.agrega(n.attrs.parte(" ").obtiene(0)) }
+        return salida
+    }
+
+    fn typeParams(lista: Nodo) {
+        lista.kids.paraCada { p -> tipoOpcional(p.kids.obtiene(0)) }
+    }
+
+    // ------------------------------------------------------------ declaraciones
+
+    fn top(s: Nodo) {
+        if s.tag == "Fn" {
+            fnDecl(s, true, Lista<Str>())
+        } else if s.tag == "Thing" {
+            cosa(s)
+        } else if s.tag == "Kind" {
+            kindDecl(s)
+        } else if s.tag == "Let" {
+            tipoOpcional(s.kids.obtiene(0))
+            expr(s.kids.obtiene(1))
+            s.attrs = conNombre(s.attrs, propio(s.attrs.parte(" ").obtiene(0)))
+        } else {
+            stmt(s)
+        }
+    }
+
+    fn fnDecl(d: Nodo, esTop: Bool, extra: Lista<Str>) {
+        if esTop { d.attrs = conNombre(d.attrs, propio(d.attrs.parte(" ").obtiene(0))) }
+        fix nombres = Lista<Str>()
+        extra.paraCada { n -> nombres.agrega(n) }
+        nombresDe(d.kids.obtiene(0)).paraCada { n -> nombres.agrega(n) }
+        nombresDe(d.kids.obtiene(1)).paraCada { n -> nombres.agrega(n) }
+        empuja(nombres)
+        typeParams(d.kids.obtiene(0))
+        d.kids.obtiene(1).kids.paraCada { p -> ty(p.kids.obtiene(0)) }
+        tipoOpcional(d.kids.obtiene(2))
+        bloque(d.kids.obtiene(3))
+        saca()
+    }
+
+    fn kindDecl(d: Nodo) {
+        d.attrs = conNombre(d.attrs, propio(d.attrs.parte(" ").obtiene(0)))
+        empuja(nombresDe(d.kids.obtiene(0)))
+        typeParams(d.kids.obtiene(0))
+        d.kids.obtiene(1).kids.paraCada { m ->
+            m.kids.obtiene(0).kids.paraCada { p -> ty(p.kids.obtiene(0)) }
+            tipoOpcional(m.kids.obtiene(1))
+        }
+        saca()
+    }
+
+    fn cosa(d: Nodo) {
+        d.attrs = conNombre(d.attrs, propio(d.attrs.parte(" ").obtiene(0)))
+        fix tparams = nombresDe(d.kids.obtiene(0))
+        // Cabecera, padres y campos ven los parámetros del constructor.
+        fix inicio = Lista<Str>()
+        tparams.paraCada { n -> inicio.agrega(n) }
+        nombresDe(d.kids.obtiene(1)).paraCada { n -> inicio.agrega(n) }
+        empuja(inicio)
+        typeParams(d.kids.obtiene(0))
+        d.kids.obtiene(1).kids.paraCada { p -> ty(p.kids.obtiene(0)) }
+        d.kids.obtiene(2).kids.paraCada { s -> superRef(s) }
+        d.kids.obtiene(3).kids.paraCada { f ->
+            tipoOpcional(f.kids.obtiene(0))
+            expr(f.kids.obtiene(1))
+        }
+        saca()
+        // Los métodos ven los campos (y los parámetros de tipo), no los parámetros sueltos.
+        fix miembros = Lista<Str>()
+        tparams.paraCada { n -> miembros.agrega(n) }
+        d.kids.obtiene(1).kids.paraCada { p -> if p.attrs.parte(" ").obtiene(1) != "-" { miembros.agrega(p.attrs.parte(" ").obtiene(0)) } }
+        nombresDe(d.kids.obtiene(3)).paraCada { n -> miembros.agrega(n) }
+        d.kids.obtiene(4).kids.paraCada { m -> fnDecl(m, false, miembros) }
+    }
+
+    fn superRef(s: Nodo) {
+        tipos(s.kids.obtiene(0))
+        s.attrs = nombreTipo(s.attrs, s.nd, Rango(s.nd, s.nh))
+        fix args = s.kids.obtiene(1)
+        if args.tag != "None" { exprs(args) }
+    }
+
+    // ------------------------------------------------------------ sentencias
+
+    fn bloque(b: Nodo) {
+        empuja(Lista<Str>())
+        b.kids.paraCada { s -> stmt(s) }
+        saca()
+    }
+
+    fn stmt(s: Nodo) {
+        fix t = s.tag
+        if t == "Show" || t == "Fail" || t == "ExprStmt" {
+            expr(s.kids.obtiene(0))
+        } else if t == "Return" {
+            if s.kids.obtiene(0).tag != "None" { expr(s.kids.obtiene(0)) }
+        } else if t == "Let" {
+            tipoOpcional(s.kids.obtiene(0))
+            expr(s.kids.obtiene(1))
+            liga(s.attrs.parte(" ").obtiene(0))
+        } else if t == "Assign" {
+            fix partes = s.attrs.parte(" ")
+            s.attrs = "${resuelve(partes.obtiene(0), s.nd)} ${partes.obtiene(1)}"
+            expr(s.kids.obtiene(0))
+        } else if t == "IndexAssign" {
+            expr(s.kids.obtiene(0))
+            expr(s.kids.obtiene(1))
+            expr(s.kids.obtiene(2))
+        } else if t == "FieldAssign" {
+            fix objetivo = s.kids.obtiene(0)
+            if objetivo.tag == "Var" {
+                fix alias = objetivo.attrs
+                if alc.aliases.contiene(alias) && !esLocal(alias) && !alc.propios.contiene(alias) {
+                    falla(Rango(s.nd, s.nh), "no se puede asignar a una declaración de otro archivo")
+                }
+            }
+            expr(objetivo)
+            expr(s.kids.obtiene(1))
+        } else if t == "If" {
+            expr(s.kids.obtiene(0))
+            bloque(s.kids.obtiene(1))
+            if s.kids.obtiene(2).tag != "None" { bloque(s.kids.obtiene(2)) }
+        } else if t == "While" {
+            expr(s.kids.obtiene(0))
+            bloque(s.kids.obtiene(1))
+        } else if t == "Attempt" {
+            bloque(s.kids.obtiene(0))
+            mut i = 1
+            while i < s.kids.tam() {
+                fix r = s.kids.obtiene(i)
+                i += 1
+                ty(r.kids.obtiene(0))
+                fix un = Lista<Str>()
+                un.agrega(r.attrs.parte(" ").obtiene(0))
+                empuja(un)
+                bloque(r.kids.obtiene(1))
+                saca()
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ expresiones
+
+    /// `e` pasa a ser la variable `nombre` (sin hijos ni posición de nombre).
+    fn aVar(e: Nodo, nombre: Str) {
+        e.tag = "Var"
+        e.attrs = nombre
+        while !e.kids.vacia() { e.kids.quita() }
+        e.nd = -1
+        e.nh = -1
+    }
+
+    fn expr(e: Nodo) {
+        fix t = e.tag
+        if t == "Field" {
+            fix objetivo = e.kids.obtiene(0)
+            // `alias.Color.Rojo`: una variante de un enumerado de otro archivo.
+            if objetivo.tag == "Field" && objetivo.kids.obtiene(0).tag == "Var" {
+                fix alias = objetivo.kids.obtiene(0).attrs
+                if !esLocal(alias) && !alc.propios.contiene(alias) && !alc.importados.contiene(alias) {
+                    fix a = alc.aliases.obtiene(alias)
+                    if a != nil {
+                        fix m = a.exports.obtiene("${objetivo.attrs}.${e.attrs}")
+                        if m != nil {
+                            aVar(e, m)
+                            return
+                        }
+                    }
+                }
+            }
+            if objetivo.tag == "Var" {
+                fix alias = objetivo.attrs
+                fix m = calificado(alias, e.attrs, Rango(e.nd, e.nh))
+                if m != nil {
+                    aVar(e, m)
+                    return
+                }
+                // `Color.Rojo`: una variante de un enumerado (se declara como `Color.Rojo`).
+                if !esLocal(alias) {
+                    fix completo = "${alias}.${e.attrs}"
+                    if alc.propios.contiene(completo) || alc.importados.contiene(completo) {
+                        aVar(e, resuelve(completo, e.d))
+                        return
+                    }
+                }
+            }
+            expr(objetivo)
+        } else if t == "MethodCall" {
+            fix objetivo = e.kids.obtiene(0)
+            if objetivo.tag == "Var" {
+                fix m = calificado(objetivo.attrs, e.attrs, Rango(e.nd, e.nh))
+                if m != nil {
+                    tipos(e.kids.obtiene(1))
+                    exprs(e.kids.obtiene(2))
+                    e.tag = "Call"
+                    e.attrs = m
+                    e.kids.quitaEn(0)
+                    e.nd = -1
+                    e.nh = -1
+                    return
+                }
+            }
+            expr(objetivo)
+            tipos(e.kids.obtiene(1))
+            exprs(e.kids.obtiene(2))
+        } else if t == "Var" {
+            e.attrs = resuelve(e.attrs, e.d)
+        } else if t == "Interp" {
+            e.kids.paraCada { p -> if p.tag != "Text" { expr(p) } }
+        } else if t == "Array" {
+            e.kids.paraCada { x -> expr(x) }
+        } else if t == "Index" || t == "Binary" || t == "Elvis" {
+            expr(e.kids.obtiene(0))
+            expr(e.kids.obtiene(1))
+        } else if t == "Unary" || t == "SafeField" {
+            expr(e.kids.obtiene(0))
+        } else if t == "Call" {
+            e.attrs = resuelve(e.attrs, e.d)
+            tipos(e.kids.obtiene(0))
+            exprs(e.kids.obtiene(1))
+        } else if t == "SafeCall" {
+            expr(e.kids.obtiene(0))
+            exprs(e.kids.obtiene(1))
+        } else if t == "SuperCall" {
+            exprs(e.kids.obtiene(0))
+        } else if t == "Is" || t == "Cast" {
+            expr(e.kids.obtiene(0))
+            ty(e.kids.obtiene(1))
+        } else if t == "CallValue" {
+            expr(e.kids.obtiene(0))
+            exprs(e.kids.obtiene(1))
+        } else if t == "Lambda" {
+            fix params = e.kids.obtiene(0)
+            params.kids.paraCada { p -> tipoOpcional(p.kids.obtiene(0)) }
+            empuja(nombresDe(params))
+            bloque(e.kids.obtiene(1))
+            saca()
+        }
+    }
+}
+
+// ---------------------------------------------------------------- el cargador
+
+/// Los avisos como `Aviso @posición texto`, por posición.
+fn ordenadas(claves: Lista<Int>) -> Lista<Int> {
+    fix salida = Lista<Int>()
+    claves.paraCada { c ->
+        mut i = salida.tam()
+        salida.agrega(c)
+        while i > 0 && salida.obtiene(i - 1) > c {
+            salida.pone(i, salida.obtiene(i - 1))
+            i -= 1
+        }
+        salida.pone(i, c)
+    }
+    return salida
+}
+
+thing Cargador() {
+    fix fuentes = Lista<Fuente>()
+    fix avisos = Mapa<Int, Str>()
+    fix hechos = Mapa<Str, Info>()
+    fix stmts = Lista<Nodo>()
+    fix pruebas = Lista<Nodo>()
+    mut raiz = ""
+
+    /// Carga `entrada` y todo lo que importa.
+    fn carga(entrada: Str) -> Cargado {
+        fix clave = normaliza(entrada)
+        raiz = padre(clave)
+        visita(clave, entrada, true, Lista<Str>())
+        fix todo = Lista<Nodo>()
+        todo.agrega(vacio("Uses"))
+        todo.agrega(hoja("Exports", ""))
+        todo.agrega(con("Tests", "", pruebas))
+        todo.agrega(con("Stmts", "", stmts))
+        return Cargado(con("Program", "", todo), fuentes, avisos)
+    }
+
+    fn visita(clave: Str, mostrado: Str, esEntrada: Bool, pila: Lista<Str>) {
+        mut leido = ""
+        attempt {
+            leido = leeArchivo(clave)
+        } rescue e: ErrorES {
+            fail ErrorLectura("error: no se pudo leer `${mostrado}`: ${e.msg}")
+        }
+        fix texto = leido
+        // Un carácter de separación para que el fin de un archivo no coincida con el inicio del siguiente.
+        mut base = 0
+        if !fuentes.vacia() {
+            fix ultima = fuentes.obtiene(fuentes.tam() - 1)
+            base = ultima.base + ultima.texto.largo() + 1
+        }
+        fuentes.agrega(Fuente(mostrado, texto, base))
+        fix prog = analizaEn(texto, base)
+        pila.agrega(clave)
+
+        fix id = idDe(clave, raiz)
+        if esEntrada { prog.kids.obtiene(2).kids.paraCada { p -> pruebas.agrega(p) } }
+        fix alc = Alcance(id, esEntrada)
+        fix cuerpo = prog.kids.obtiene(3)
+        cuerpo.kids.paraCada { s -> alc.declara(s) }
+        fix exportados = Mapa<Str, Bool>()
+        prog.kids.obtiene(1).attrs.parte(" ").paraCada { n -> if n != "" { exportados.pone(n, true) } }
+
+        fix usos = prog.kids.obtiene(0)
+        mut i = 0
+        while i < usos.kids.tam() {
+            fix u = usos.kids.obtiene(i)
+            i += 1
+            // attrs: `"ruta" alias`
+            fix partes = u.attrs.parte(" ")
+            fix alias = partes.obtiene(partes.tam() - 1)
+            fix crudo = u.attrs.trozo(1, u.attrs.largo() - alias.largo() - 2)
+            fix depRuta = if crudo.terminaCon(".jb") { crudo } else { "${crudo}.jb" }
+            fix depClave = normaliza(unePath(padre(clave), depRuta))
+            fix en = pila.indiceDe(depClave)
+            if en >= 0 {
+                fix cadena = Lista<Str>()
+                mut k = en
+                while k < pila.tam() {
+                    cadena.agrega(idDe(pila.obtiene(k), raiz))
+                    k += 1
+                }
+                cadena.agrega(idDe(depClave, raiz))
+                fail ErrorCarga("dependencia circular entre archivos: ${une(cadena, " -> ")}", rg(u))
+            }
+            if !hechos.contiene(depClave) {
+                attempt {
+                    visita(depClave, depClave, false, pila)
+                } rescue e: ErrorLectura {
+                    fail ErrorCarga("no se encontró el archivo `${depClave}` (de `use \"${crudo}\"`)", rg(u))
+                }
+            }
+            fix dep = hechos.obtiene(depClave)
+            if dep == nil { fail Fallo("mn: falta el módulo `${depClave}`") }
+            alc.importa(u, crudo, alias, dep)
+        }
+
+        fix ren = Renombrador(alc)
+        cuerpo.kids.paraCada { s -> ren.top(s) }
+        fix fallo = ren.error
+        if fallo != nil { fail fallo }
+        fix claves = ren.avisos.claves()
+        claves.paraCada { c -> avisos.pone(c, ren.avisos.obtiene(c) ?: "") }
+
+        fix exports = Mapa<Str, Str>()
+        fix privados = Lista<Str>()
+        alc.propios.claves().paraCada { n ->
+            if exportados.contiene(n) {
+                exports.pone(n, alc.propios.obtiene(n) ?: n)
+            } else {
+                privados.agrega(n)
+            }
+        }
+        cuerpo.kids.paraCada { s -> stmts.agrega(s) }
+        hechos.pone(clave, Info(id, exports, privados))
+        pila.quita()
+    }
+}
+
+/// Carga `entrada` y todo lo que importa.
+open fn cargaModulos(entrada: Str) -> Cargado = Cargador().carga(entrada)
+
+/// Con las posiciones del espacio común, el texto de los archivos unidos (sirve para localizar un error).
+open fn fuentesUnidas(fuentes: Lista<Fuente>) -> Str {
+    fix partes = Lista<Str>()
+    fuentes.paraCada { f -> partes.agrega(f.texto) }
+    return une(partes, "\n")
+}
+
+fn main() {
+    fix a = argumentos()
+    if a.tam() != 1 {
+        show("uso: and23 mn/modulos.jb archivo.jb")
+        return
+    }
+    attempt {
+        fix c = cargaModulos(a.obtiene(0))
+        fix salida = Lista<Str>()
+        vuelca(c.programa, "", salida)
+        show(une(salida, "
+"))
+        ordenadas(c.avisos.claves()).paraCada { pos -> show("Aviso @${pos}${c.avisos.obtiene(pos) ?: ""}") }
+    } rescue e: ErrorLexico {
+        show("Error ${e.msg} @${e.desde}-${e.hasta}")
+    } rescue e: ErrorParse {
+        show("Error ${e.msg} @${e.donde.a}-${e.donde.b}")
+    } rescue e: ErrorCarga {
+        show("Error ${e.msg} @${e.donde.a}-${e.donde.b}")
+    } rescue e: ErrorLectura {
+        show(e.msg)
+    }
+}

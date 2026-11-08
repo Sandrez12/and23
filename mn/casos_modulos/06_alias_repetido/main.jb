@@ -1,0 +1,3 @@
+use "u" como x
+use "v" como x
+fn main() {}

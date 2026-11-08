@@ -1,0 +1,7 @@
+use "util" como u
+fn main() {
+    fix p: u.Punto = u.Punto(1, 2)
+    show(u.suma(p.x, p.y))
+    show(u.CONST)
+    show(u.noExiste(1))
+}
