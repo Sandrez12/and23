@@ -1745,3 +1745,46 @@ fn el_lexer_y_el_parser_de_mn_dan_lo_mismo_con_gc_stress() {
         assert_eq!(normal, ejecuta(true), "{programa} cambia con --gc-stress");
     }
 }
+
+/// Los programas de `benchmarks/` (los que mide `scripts/rendimiento.sh`) tienen que seguir ejecutándose sin error.
+#[test]
+fn los_benchmarks_se_ejecutan() {
+    let root = raiz_del_repo();
+    for nombre in ["bucle", "colecciones", "cadenas", "tareas"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_and23"))
+            .arg(format!("benchmarks/{nombre}.jb"))
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{nombre}: {}", stderr(&out));
+        assert!(!stdout(&out).is_empty(), "{nombre} no escribe nada");
+    }
+}
+
+/// Dividir un texto grande en muchos trozos es lineal: con 60 000 trozos tarda décimas de segundo (cuando costaba O(n·k)
+/// eran varios segundos, y con los 100 000 del benchmark, 24 s).
+#[test]
+fn partir_un_texto_grande_no_es_cuadratico() {
+    let inicio = std::time::Instant::now();
+    let out = run_source(
+        "parte_grande",
+        "fn main() {
+    fix p = Lista<Str>()
+    mut i = 0
+    while i < 60000 {
+        p.agrega(\"elemento ${i}\")
+        i += 1
+    }
+    fix t = une(p, \",\")
+    show(t.parte(\",\").tam())
+    show(t.parte(\"\").tam())
+}",
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "60000\n888889\n");
+    assert!(
+        inicio.elapsed() < std::time::Duration::from_secs(5),
+        "tardó {:?}",
+        inicio.elapsed()
+    );
+}

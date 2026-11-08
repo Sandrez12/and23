@@ -359,6 +359,19 @@ pub fn call(
                 .join(&sep);
             joined
         }
+        // _parte(s, sep): los trozos de `s` separados por `sep` (uno por carácter si `sep` es vacío), en una sola pasada.
+        // Hacerlo con `_busca` y `_trozo` costaba O(n) por trozo (convertir posiciones carácter-byte), es decir O(n·k).
+        39 => {
+            let s = text(heap, a(0)).to_string();
+            let sep = text(heap, a(1)).to_string();
+            let parts: Vec<String> = if sep.is_empty() {
+                s.chars().map(String::from).collect()
+            } else {
+                s.split(sep.as_str()).map(String::from).collect()
+            };
+            let items: Vec<Value> = parts.into_iter().map(|p| heap.alloc_str(p)).collect();
+            return Ok(heap.alloc_array(items));
+        }
         _ => return Err(format!("función nativa desconocida: {id}")),
     };
     Ok(heap.alloc_str(result))

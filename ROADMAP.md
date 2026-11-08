@@ -29,7 +29,7 @@ Lo que más protege a un usuario y menos cuesta.
   *Terminado cuando:* sin pánicos del verificador ni del compilador, y la VM solo falla con `Diagnostic`, nunca con pánico.
 - [x] **0.4 `--gc-stress` sobre todo el corpus en CI.** (S) Ejecutar los ejemplos y los casos de ejecución con GC en cada punto
   seguro. *Terminado cuando:* un job de CI lo hace y pasa.
-- [ ] **0.5 Línea de referencia de rendimiento.** (S) Un script que mida compilar `mn/compilador.jb`, un bucle numérico, una
+- [x] **0.5 Línea de referencia de rendimiento.** (S) Un script que mida compilar `mn/compilador.jb`, un bucle numérico, una
   carga de `Lista`/`Mapa` y una de tareas, y guarde los tiempos en `docs/rendimiento.md`. *Terminado cuando:* existe y se puede
   repetir con un comando.
 

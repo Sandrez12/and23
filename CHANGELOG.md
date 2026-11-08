@@ -6,6 +6,9 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). L
 ## Sin publicar
 
 ### Añadido
+- **Línea de referencia de rendimiento:** `scripts/rendimiento.sh [--escribe]` mide (mediana de 5) un bucle numérico, `Lista`/`Mapa`, texto,
+  tareas y canales, y las cargas de Rust y de Mn (incluido el punto fijo); `docs/rendimiento.md` guarda los tiempos de esta máquina y
+  `benchmarks/` las cargas.
 - **El GC no cambia ningún programa:** `crates/and23-vm/tests/gc_corpus.rs` ejecuta cada programa ejecutable del repositorio (ejemplos y
   casos) con la recolección normal y con `--gc-stress` y exige la misma salida y el mismo resultado; otro test hace lo mismo con el lexer y
   el parser de Mn. Como son tests normales, el CI de los tres sistemas los corre.
@@ -42,6 +45,8 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). L
 - `listaDe(arreglo)` (una `Lista` desde un arreglo literal) y `Dupla<A, B>` (dos valores juntos) en la biblioteca base.
 
 ### Cambiado
+- `s.parte(sep)` es lineal: pasó a una nativa (`_parte`) en vez de repetir `_busca` y `_trozo`, que costaba O(n) por trozo. Partir 1,4 MB en
+  100 000 trozos tardaba 24 s; ahora 0,1 s.
 - Cadenas con interpolaciones muy anidadas (`"${"${"${...`) ya no cuestan el cuadrado de la profundidad al analizarlas: el código de cada
   interpolación se comparte con `Arc` en vez de copiarse al consumir cada token, y los enumerados del parser también.
 - Un `Fallo` de una tarea que nadie espera (`espera()`) ya no se pierde: al terminar el programa se avisa (`error: N tarea(s) fallaron y

@@ -1,0 +1,19 @@
+// Texto: construir, interpolar, buscar y partir.
+fn main() {
+    fix partes = Lista<Str>()
+    mut i = 0
+    while i < 100000 {
+        partes.agrega("elemento ${i}")
+        i += 1
+    }
+    fix todo = une(partes, ",")
+    show(todo.largo())
+    show(todo.parte(",").tam())
+    mut cuenta = 0
+    i = 0
+    while i < 20000 {
+        if partes.obtiene(i).contiene("9") { cuenta += 1 }
+        i += 1
+    }
+    show(cuenta)
+}

@@ -1,0 +1,38 @@
+// Tareas y canales: un productor, cuatro trabajadores y 100 mil mensajes.
+fn main() {
+    fix entrada = Canal<Int>(16)
+    fix salida = Canal<Int>(16)
+    fix productor = lanza {
+        mut i = 0
+        while i < 100000 {
+            entrada.envia(i)
+            i += 1
+        }
+        entrada.cierra()
+    }
+    fix trabajadores = Lista<Tarea>()
+    mut k = 0
+    while k < 4 {
+        trabajadores.agrega(lanza {
+            mut n = entrada.recibe()
+            while n != nil {
+                salida.envia(n + 1)
+                n = entrada.recibe()
+            }
+        })
+        k += 1
+    }
+    fix cierre = lanza {
+        productor.espera()
+        trabajadores.paraCada { t -> t.espera() }
+        salida.cierra()
+    }
+    mut suma = 0
+    mut r = salida.recibe()
+    while r != nil {
+        suma += r
+        r = salida.recibe()
+    }
+    cierre.espera()
+    show(suma)
+}

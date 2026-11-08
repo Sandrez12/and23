@@ -1,0 +1,13 @@
+// Aritmética y llamadas: un bucle de 30 millones de vueltas y 3 millones de llamadas recursivas.
+fn fib(n: Int) -> Int = if n < 2 { n } else { fib(n - 1) + fib(n - 2) }
+
+fn main() {
+    mut i = 0
+    mut s = 0
+    while i < 30000000 {
+        s = s + i % 7
+        i += 1
+    }
+    show(s)
+    show(fib(30))
+}

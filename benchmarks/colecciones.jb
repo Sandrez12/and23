@@ -1,0 +1,23 @@
+// Lista y Mapa (escritos en el propio lenguaje): 300 mil inserciones y lecturas.
+fn main() {
+    fix l = Lista<Int>()
+    mut i = 0
+    while i < 300000 {
+        l.agrega(i * 2)
+        i += 1
+    }
+    fix m = Mapa<Int, Int>()
+    i = 0
+    while i < 300000 {
+        m.pone(i, l.obtiene(i))
+        i += 1
+    }
+    mut suma = 0
+    i = 0
+    while i < 300000 {
+        suma += m.obtiene(i) ?: 0
+        i += 1
+    }
+    show(suma)
+    show(m.tam())
+}

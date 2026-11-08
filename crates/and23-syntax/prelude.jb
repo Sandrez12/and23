@@ -306,26 +306,7 @@ fn _str_reemplaza(s: Str, de: Str, por: Str) -> Str = _reemplaza(s, de, por)
 fn _str_trozo(s: Str, desde: Int, hasta: Int) -> Str = _trozo(s, desde, hasta)
 
 /// Trozos de `s` separados por `sep`; con `sep` vacío, un trozo por carácter.
-fn _str_parte(s: Str, sep: Str) -> Lista<Str> {
-    fix partes = Lista<Str>()
-    if len(sep) == 0 {
-        mut i = 0
-        while i < len(s) {
-            partes.agrega(s[i])
-            i += 1
-        }
-        return partes
-    }
-    mut desde = 0
-    while true {
-        fix i = _busca(s, sep, desde)
-        if i < 0 { break }
-        partes.agrega(_trozo(s, desde, i))
-        desde = i + len(sep)
-    }
-    partes.agrega(_trozo(s, desde, len(s)))
-    return partes
-}
+fn _str_parte(s: Str, sep: Str) -> Lista<Str> = listaDe(_parte(s, sep))
 
 /// Las líneas de `s` (separadas por "\n" o "\r\n"); un salto final no crea una línea vacía.
 fn _str_lineas(s: Str) -> Lista<Str> {
