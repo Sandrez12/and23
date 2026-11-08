@@ -1,0 +1,4 @@
+thing A(fix n: Int)
+thing B()
+fn f<T: A>(x: T) { }
+f(B())

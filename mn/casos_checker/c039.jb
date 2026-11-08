@@ -1,0 +1,3 @@
+fix s = "hola"
+show(s + " mundo")
+show("x = ${1 + 2}")

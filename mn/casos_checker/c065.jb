@@ -1,0 +1,2 @@
+show(P(1).x)
+thing P(fix x: Int)

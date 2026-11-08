@@ -10,6 +10,8 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). L
   variante o tipo (`c: Circulo -> ...`) como sentencia y como expresión, con comprobación de que cubre todas las variantes de un enumerado
   del mismo archivo, e `if c { a } else { b }` como valor. Nuevas palabras clave: `enum` y `match`. Ver `examples/enumerados.jb`.
 - `and23 --tokens` muestra la posición de cada token (`@desde-hasta`) y la del error; `and23 --ast` hace lo mismo con los nodos.
+- **Mn, etapa 3.** `mn/checker.jb`, el verificador de tipos de And23 escrito en And23, comparado con el de Rust (`and23 --check`) sobre el
+  preludio, los ejemplos, los archivos de `mn`, 297 programas de los tests del verificador y 108 casos propios; y se verifica a sí mismo.
 - **Mn, etapa 2.** `mn/parser.jb`, el parser de And23 escrito en And23, comparado árbol por árbol con el de Rust (`and23 --ast`) sobre el
   preludio, los ejemplos, el propio parser y 84 casos propios (válidos y cada mensaje de error), con las posiciones de cada nodo y de cada error.
 - **Mn, etapa 1.** `mn/lexer.jb`, el lexer de And23 escrito en And23, comparado token por token con el de Rust (`and23 --tokens`).

@@ -1,0 +1,2 @@
+kind K { }
+thing A() : K, K

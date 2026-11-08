@@ -1,0 +1,8 @@
+fn f(p: P?) -> Int {
+ mut q = p
+ if q != nil {
+ q = nil
+ return q.n
+ }
+ return 0
+}

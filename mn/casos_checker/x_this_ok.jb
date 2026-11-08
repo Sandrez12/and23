@@ -1,0 +1,4 @@
+thing P(fix x: Int) {
+ fn f() -> P = this
+}
+show(P(1).f().x)

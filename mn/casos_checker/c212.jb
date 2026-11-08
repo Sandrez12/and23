@@ -1,0 +1,3 @@
+fix l: Lista<Str> = Lista()
+l.agrega("a")
+show(l.obtiene(0) + "b")

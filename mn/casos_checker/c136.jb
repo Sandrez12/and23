@@ -1,0 +1,2 @@
+kind K { fn f()
+ fn f() }

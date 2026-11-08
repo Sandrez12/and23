@@ -1,0 +1,3 @@
+fn f(x: Int) { fix x = x + 1
+ show(x) }
+f(1)

@@ -1,0 +1,1 @@
+thing A(n: Int) { fix n = 1 }

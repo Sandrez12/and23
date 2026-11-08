@@ -1,0 +1,5 @@
+attempt {
+ fail Fallo("x")
+} rescue e: Fallo {
+ show(e.msg)
+}

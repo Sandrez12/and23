@@ -1,0 +1,2 @@
+kind K<T> { fn f() -> T }
+thing A() : K { fn f() -> Int = 1 }

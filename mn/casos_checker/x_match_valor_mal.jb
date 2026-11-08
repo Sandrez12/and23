@@ -1,0 +1,4 @@
+fn f(a: Int) -> Str = match a {
+ 1 -> "x"
+ _ -> 2
+}

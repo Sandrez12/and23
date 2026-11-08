@@ -1,0 +1,4 @@
+fn ap(f: (Int) -> Int) -> Int = f(1)
+show(ap({ x -> x }))
+fn t(n: Int) -> Int = n
+show(ap(t))

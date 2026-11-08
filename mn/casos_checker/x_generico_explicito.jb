@@ -1,0 +1,3 @@
+fn id<T>(x: T) = x
+show(id<Int>(1))
+show(id<Int, Int>(1))

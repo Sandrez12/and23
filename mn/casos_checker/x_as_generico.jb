@@ -1,0 +1,2 @@
+thing C<T>(fix t: T)
+fn g(a: Fallo) { show(a as C<Int>) }

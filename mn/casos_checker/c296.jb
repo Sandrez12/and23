@@ -1,0 +1,2 @@
+fn a(x: Int) -> Int = x
+fix f: (Int) -> Unit = a

@@ -1,0 +1,4 @@
+thing A(fix x: Int)
+thing B() : A(1)
+fix a: A = B()
+show(a.x)

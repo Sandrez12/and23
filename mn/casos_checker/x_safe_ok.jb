@@ -1,0 +1,7 @@
+thing P(fix x: Int) {
+ fn m() = x
+}
+fn g(p: P?) {
+ show(p?.x)
+ show(p?.m())
+}

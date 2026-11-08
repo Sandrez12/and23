@@ -1,0 +1,2 @@
+fn g(f: (Int) -> Int) = f(1)
+g({ a, b -> a })

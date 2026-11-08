@@ -1,0 +1,2 @@
+thing Q(fix a: Int)
+show(Q(1).zz)

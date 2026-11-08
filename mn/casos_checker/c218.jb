@@ -1,0 +1,2 @@
+thing A(fix n: Int)
+fn f<T: A>(x: T) -> Int = x.n

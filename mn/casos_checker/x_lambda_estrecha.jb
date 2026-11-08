@@ -1,0 +1,6 @@
+fn g(a: Int?) {
+ if a != nil {
+  fix f = { -> a + 1 }
+  show(f())
+ }
+}

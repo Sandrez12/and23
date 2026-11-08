@@ -1,0 +1,2 @@
+mut total = 1
+fn doble(x: Int) = x * 2

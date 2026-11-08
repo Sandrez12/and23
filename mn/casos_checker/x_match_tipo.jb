@@ -1,0 +1,7 @@
+thing A()
+thing B() : A()
+fn f(a: A) -> Int = match a {
+ b: B -> 1
+ _ -> 2
+}
+show(f(B()))

@@ -1,0 +1,2 @@
+fix l = Lista<Int>()
+fix m: Lista<Str> = l.map { x -> "a" }

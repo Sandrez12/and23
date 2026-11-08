@@ -1,0 +1,2 @@
+fix f: ((Int) -> Int)? = nil
+f(1)

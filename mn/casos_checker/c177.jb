@@ -1,0 +1,2 @@
+fix n: Int = 5
+show(n?.x)

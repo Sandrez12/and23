@@ -1,0 +1,4 @@
+fn f(p: P?) -> Int {
+ if p != nil { show(1) }
+ return p.n
+}

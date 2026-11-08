@@ -1,0 +1,5 @@
+thing P(fix x: Int) {
+ fix y = x + 1
+ mut z = y * 2
+}
+show(P(1).z)

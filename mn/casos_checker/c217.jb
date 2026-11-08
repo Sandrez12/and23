@@ -1,0 +1,5 @@
+kind O<T> { fn antes(o: T) -> Bool }
+fn min<T: O<T>>(a: T, b: T) -> T {
+ if a.antes(b) { return a }
+ return b
+}

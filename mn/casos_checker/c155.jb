@@ -1,0 +1,2 @@
+thing P(fix n: Int)
+fn f(p: P?) -> Bool = p == nil || p.n > 1

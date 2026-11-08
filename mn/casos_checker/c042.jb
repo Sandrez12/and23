@@ -1,0 +1,7 @@
+fn suma(v: [Int]) -> Int {
+ mut t = 0
+ mut i = 0
+ while i < len(v) { t += v[i]
+ i += 1 }
+ return t }
+show(suma([1, 2]))

@@ -1,0 +1,4 @@
+prueba "algo" {
+ afirma(1 + 1 == 2)
+ afirmaIgual(2, 1 + 1)
+}

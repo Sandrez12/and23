@@ -1,0 +1,2 @@
+thing C() { mut items: [Int] = [] }
+C().items[0] = 1

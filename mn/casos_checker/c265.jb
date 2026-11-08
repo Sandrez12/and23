@@ -1,0 +1,2 @@
+thing A<T>(fix v: T)
+fix x: T = 1

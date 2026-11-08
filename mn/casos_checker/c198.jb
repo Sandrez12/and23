@@ -1,0 +1,3 @@
+kind K { }
+thing X() : K
+fail X()

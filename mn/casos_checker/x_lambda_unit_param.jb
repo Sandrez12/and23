@@ -1,0 +1,2 @@
+fn g() { }
+fix f = { x: Unit -> 1 }

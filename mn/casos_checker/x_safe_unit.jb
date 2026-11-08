@@ -1,0 +1,4 @@
+thing P() {
+ fn u() { }
+}
+fn g(p: P?) { p?.u() }

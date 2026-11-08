@@ -1,0 +1,3 @@
+fix a: [Int] = []
+push(a, 1)
+show(a)

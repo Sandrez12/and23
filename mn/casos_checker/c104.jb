@@ -1,0 +1,4 @@
+fn f() = Dos().x
+thing Uno() { fix a = f() }
+thing Dos() { fix x = 5 }
+show(Uno().a + 1)

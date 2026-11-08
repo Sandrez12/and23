@@ -1,0 +1,2 @@
+thing Base<T>(fix x: T) { fn dame() -> T = x }
+thing H() : Base<Int>(1) { fn dame() -> Str = "" }

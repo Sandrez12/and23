@@ -1,0 +1,1 @@
+fn len(a: Int) = a

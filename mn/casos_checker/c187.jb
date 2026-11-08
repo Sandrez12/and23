@@ -1,0 +1,5 @@
+mut g: P? = nil
+fn f() -> Int {
+ if g != nil { return g.n }
+ return 0
+}

@@ -1,0 +1,2 @@
+fix l = Lista<Int>()
+show(l is Lista<Int>)

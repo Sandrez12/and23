@@ -1,0 +1,3 @@
+fix m = Mapa<Str, Int>()
+m.pone("a", 1)
+show((m.obtiene("a") ?: 0) + 1)

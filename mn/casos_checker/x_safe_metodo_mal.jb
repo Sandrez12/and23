@@ -1,0 +1,2 @@
+thing P(fix x: Int)
+fn g(p: P?) { p?.z() }

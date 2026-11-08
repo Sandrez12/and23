@@ -1178,3 +1178,83 @@ fn el_parser_escrito_en_and23_coincide_con_el_de_rust() {
         );
     }
 }
+
+/// Mn, etapa 3: el verificador de tipos escrito en And23 (`mn/checker.jb`) da el mismo resultado que el de Rust
+/// (`--check`): `ok` o el mismo error con el mismo mensaje y la misma posición. Se prueba con el preludio, los
+/// ejemplos, los archivos de `mn` y los casos de `mn/casos_checker` (los programas de los tests del verificador y
+/// uno por cada mensaje de error). Se reparte entre hilos porque cada caso arranca dos procesos.
+#[test]
+fn el_verificador_escrito_en_and23_coincide_con_el_de_rust() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut files = vec![
+        root.join("crates/and23-syntax/prelude.jb"),
+        root.join("mn/lexer.jb"),
+        root.join("mn/parser.jb"),
+        root.join("mn/checker.jb"),
+    ];
+    jb_files(&root.join("examples"), &mut files);
+    jb_files(&root.join("mn/casos_checker"), &mut files);
+    // Los tres archivos de Mn juntos y sin `use`: el verificador de And23 se verifica a sí mismo (y al lexer y
+    // al parser) con el mismo resultado que el de Rust.
+    let strip_main = |text: String| match text.find(
+        "
+fn main() {",
+    ) {
+        Some(i) => {
+            text[..i].to_string()
+                + "
+"
+        }
+        None => text,
+    };
+    let read = |name: &str| std::fs::read_to_string(root.join(name)).unwrap();
+    let combined = strip_main(read("mn/lexer.jb"))
+        + &strip_main(read("mn/parser.jb")).replace(
+            "use \"lexer.jb\"
+",
+            "",
+        )
+        + &read("mn/checker.jb")
+            .replace(
+                "use \"lexer.jb\"
+",
+                "",
+            )
+            .replace(
+                "use \"parser.jb\"
+",
+                "",
+            );
+    let combined_path = std::env::temp_dir().join("and23_mn_combinado.jb");
+    std::fs::write(&combined_path, combined).unwrap();
+    files.push(combined_path);
+    assert!(files.len() > 300, "{} archivos", files.len());
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
+    let chunk = files.len().div_ceil(threads);
+    std::thread::scope(|scope| {
+        for part in files.chunks(chunk) {
+            let root = &root;
+            scope.spawn(move || {
+                for file in part {
+                    let rust = Command::new(env!("CARGO_BIN_EXE_and23"))
+                        .arg("--check")
+                        .arg(file)
+                        .output()
+                        .unwrap();
+                    let and23 = Command::new(env!("CARGO_BIN_EXE_and23"))
+                        .arg("mn/checker.jb")
+                        .arg(file)
+                        .current_dir(root)
+                        .output()
+                        .unwrap();
+                    assert!(and23.status.success(), "{file:?}: {}", stderr(&and23));
+                    assert_eq!(
+                        stdout(&and23),
+                        stdout(&rust),
+                        "resultados distintos en {file:?}"
+                    );
+                }
+            });
+        }
+    });
+}

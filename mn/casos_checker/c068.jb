@@ -1,0 +1,3 @@
+thing C(n: Int) { fix d = n * 2
+ fix e = d + n }
+show(C(1).e)

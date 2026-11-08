@@ -1,0 +1,2 @@
+fix f = { a: Int -> a }
+f(true)

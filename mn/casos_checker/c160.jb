@@ -1,0 +1,2 @@
+thing P(fix n: Int) { fn m() -> Int = n }
+fix p: P? = nil

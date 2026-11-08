@@ -1,0 +1,4 @@
+kind K<T> { fn f() -> T }
+thing A() : K<Int> { fn f() -> Int = 1 }
+fix k: K<Int> = A()
+show(k.f() + 1)

@@ -1,0 +1,2 @@
+fn doble(x: Int) = x * 2
+show(doble(4))

@@ -1,0 +1,6 @@
+fn g(a: Int?) {
+ mut b: Int? = a
+ while b != nil {
+  b = nil
+ }
+}

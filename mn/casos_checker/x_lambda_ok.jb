@@ -1,0 +1,2 @@
+fix f = { x: Int -> x + 1 }
+show(f(2))

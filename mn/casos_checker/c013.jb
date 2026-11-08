@@ -1,0 +1,2 @@
+fn f(a: Int) = a
+show(f(1.5))

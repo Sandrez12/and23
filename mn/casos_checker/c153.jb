@@ -1,0 +1,5 @@
+thing P(fix n: Int)
+fn f(p: P?) -> Int {
+ if p == nil { return 0 }
+ return p.n
+}

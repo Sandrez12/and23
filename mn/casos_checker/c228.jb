@@ -1,0 +1,2 @@
+thing A()
+fix a: A<Int> = A()

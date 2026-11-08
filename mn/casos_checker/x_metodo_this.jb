@@ -1,0 +1,5 @@
+thing P() {
+ fn f() = 1
+ fn g() = f() + 1
+}
+show(P().g())

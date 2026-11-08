@@ -1,0 +1,8 @@
+fn g() {
+ mut a: Int? = 3
+ if a != nil {
+  fix f = { -> a = nil }
+  f()
+  show(a + 1)
+ }
+}

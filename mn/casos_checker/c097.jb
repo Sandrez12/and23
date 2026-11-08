@@ -1,0 +1,5 @@
+thing A(fix x: Int, mut y: Int) { fn f() { y += x } }
+fix a = A(1, 2)
+show(a.y)
+a.y = 3
+a.f()

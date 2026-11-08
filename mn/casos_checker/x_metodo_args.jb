@@ -1,0 +1,4 @@
+thing P() {
+ fn f(a: Int) = a
+}
+show(P().f())

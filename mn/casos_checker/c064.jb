@@ -1,0 +1,2 @@
+thing P(fix x: Int, mut y: Int) { fn suma() -> Int = x + y }
+show(P(1, 2).suma())

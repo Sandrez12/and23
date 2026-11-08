@@ -1,0 +1,4 @@
+thing Animal()
+thing Perro() : Animal()
+thing Caja<T>(fix v: T)
+thing CajaP() : Caja<Perro>(Perro())

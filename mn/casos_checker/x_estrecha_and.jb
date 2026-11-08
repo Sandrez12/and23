@@ -1,0 +1,5 @@
+thing P(fix x: Int)
+fn g(p: P?) -> Int {
+ if p != nil && p.x > 1 { return p.x }
+ return 0
+}

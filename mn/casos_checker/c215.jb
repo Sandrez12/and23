@@ -1,0 +1,4 @@
+thing Base<T>(fix x: T)
+thing Hijo<U>(y: U) : Base<U>(y)
+fix b: Base<Int> = Hijo(1)
+show(b.x + 1)

@@ -1,0 +1,3 @@
+thing C(mut v: Int) { fn dup() -> C = C(v) }
+fix xs: [C] = [C(1).dup()]
+show(xs[0].v)

@@ -1,0 +1,3 @@
+fix l: Lista<Int> = Lista()
+l.agrega(1)
+show(l.tam())

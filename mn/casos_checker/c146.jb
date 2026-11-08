@@ -1,0 +1,6 @@
+thing A(fix a: Int, fix b: Int)
+thing B() : A(1, 2) { mut c = 3 }
+fix x = B()
+show(x.a)
+show(x.b)
+show(x.c)

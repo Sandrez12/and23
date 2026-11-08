@@ -1,0 +1,3 @@
+fn doble(x: Int) = x * 2
+fn aplica(f: (Int) -> Int, x: Int) = f(x)
+show(aplica(doble, 3))

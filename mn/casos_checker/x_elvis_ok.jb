@@ -1,0 +1,2 @@
+fn g(a: Int?) = a ?: 0
+show(g(nil))

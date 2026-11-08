@@ -570,7 +570,7 @@ Plan: reescribir el compilador en And23 por etapas, comprobando cada una contra 
   - Enumerados y `match`: ahora existen (sección siguiente).
   - `if` como expresión: ahora existe.
   - Decimales fuera de rango: dan `inf`, como en Rust.
-- **Siguiente.** El verificador de tipos (etapa 3).
+- **Siguiente.** El verificador de tipos (etapa 3, abajo).
 
 #### Etapa 2: `mn/parser.jb`
 
@@ -595,6 +595,31 @@ de error. Usa `mn/lexer.jb` (`use "lexer.jb"`; por eso el lexer declara `open` l
   literal, y que `?:` y el estrechamiento de `T?` conviven mal con variables `mut` (hay que copiar a un `fix` antes de comprobar `nil`).
 - **Rendimiento.** Un archivo de 370 KB (el preludio 20 veces; 56 685 líneas de árbol): 0,65 s el lexer más el parser de And23 contra 0,33 s
   el de Rust incluido el arranque del proceso y la impresión, con salida idéntica.
+
+#### Etapa 3: `mn/checker.jb`
+
+El verificador de tipos de And23 escrito en And23 (unas 2 450 líneas contra unas 3 200 de Rust sin los tests): un port de `and23-types`
+con los mismos mensajes, las mismas posiciones y las mismas reglas (estrechamiento de `T?`, genéricos con cotas, inferencia por
+argumentos, lambdas con tipos del contexto, herencia e interfaces). Recorre el árbol de `mn/parser.jb` por etiquetas.
+
+- **Cómo se compara.** `and23 --check archivo.jb` verifica los tipos del archivo (sin cargar `use`) después del preludio y escribe `ok` o
+  `Error mensaje @desde-hasta`; `and23 mn/checker.jb archivo.jb` escribe exactamente lo mismo. El test
+  `el_verificador_escrito_en_and23_coincide_con_el_de_rust` lo exige sobre el preludio, los ejemplos, los tres archivos de `mn` y
+  `mn/casos_checker`: 297 programas sacados de los tests del verificador de Rust (91 válidos, 206 con error, unos 125 mensajes distintos) y
+  108 casos propios (`x_*.jb`) que tocan los mensajes que los otros no alcanzan. Además junta lexer, parser y verificador en un solo archivo
+  (4 200 líneas) y comprueba que el verificador de And23 lo acepta, igual que el de Rust: se verifica a sí mismo.
+- **Qué no hace (todavía).** No carga `use` (el módulo del lado Rust, `modules.rs`, no está portado; `--check` tampoco lo hace, así que se
+  comparan igual), no calcula las `Resolutions` que usa el compilador (índices de campo, llamadas virtuales...: eso es de la etapa del
+  compilador, que las puede dejar anotadas en los nodos) y no deshace su estado si una verificación falla (el REPL de Rust sí lo hace).
+- **Datos.** `Tipo(k, nombre, args)` uniforme, con `igual` estructural; el estado son `Mapa`s (`funcs`, `classes`, `kinds`, `globals`) y los
+  ámbitos son una `Lista<Mapa<Str, VarE>>`. Los errores son `fail ErrorTipo(mensaje, rango)`; donde Rust ignora un `Err` (`self.expr(..)`
+  dentro de una asignación estrechada), aquí hay un `attempt`/`rescue`. La tabla de funciones nativas está repetida como texto: si cambia
+  `natives.rs` hay que cambiarla también (el test de cada archivo que use una nativa lo notaría).
+- **Lo que mostró del lenguaje.** `kind`, `rescue`, `enum` y `match` son palabras clave: al nombrar variables hubo que cambiarlas. El nombre
+  `Entrada` ya lo usaba el preludio (el verificador avisó). Comparar `Str?` con `Str` no se permite (hay que `?: ""`), y un `if` usado como
+  valor entre `T` y `nil` no infiere `T?` (se usa una variable `mut` anotada).
+- **Rendimiento.** Verificar el preludio más un programa pequeño: 0,12 s con el de And23 (la mayor parte es leer y analizar el preludio) contra
+  0,04 s con el de Rust, que incluye arrancar el proceso. Verificar sus 4 200 líneas: 0,58 s contra 0,19 s.
 
 ### Enumerados, `match` e `if` como valor
 

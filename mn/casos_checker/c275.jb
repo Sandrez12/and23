@@ -1,0 +1,2 @@
+thing C<T>(fix v: T) { fn mapea<R>(f: (T) -> R) -> C<R> = C(f(v)) }
+fix c = C(1).mapea { x -> x > 0 }

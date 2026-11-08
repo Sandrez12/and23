@@ -1,0 +1,2 @@
+kind K { fn f() }
+fn g<T: K>(t: T) = t.f()

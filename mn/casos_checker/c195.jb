@@ -1,0 +1,4 @@
+thing P(fix n: Int)
+fix p: P? = P(1)
+if p == nil { fail Fallo("x") }
+fn f() -> Int = p.n

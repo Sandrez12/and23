@@ -1,0 +1,7 @@
+enum C { A, B }
+fn f(c: C) -> Int = match c {
+ C.A -> 1
+ C.B -> 2
+}
+show(f(C.A))
+show(C.todos.tam())

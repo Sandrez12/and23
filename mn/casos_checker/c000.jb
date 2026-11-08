@@ -1,0 +1,4 @@
+fix x = 1
+mut y: Float = 2.5
+y += 1
+show(x + y)

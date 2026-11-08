@@ -1,0 +1,3 @@
+thing A(fix b: B)
+thing B(fix a: Int)
+show(A(B(1)).b.a)

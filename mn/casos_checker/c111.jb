@@ -1,0 +1,5 @@
+thing A()
+thing B() : A()
+fix x: A = B()
+fix b = x as B
+show(b is A)

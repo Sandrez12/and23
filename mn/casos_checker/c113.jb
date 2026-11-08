@@ -1,0 +1,2 @@
+thing A(fix n: Int)
+thing B(m: Int) : A(m + 1) { fix k = m }

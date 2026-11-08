@@ -1,0 +1,2473 @@
+// Mn, paso 3: el verificador de tipos de And23 escrito en And23 (en curso).
+//
+// Hace lo mismo que `crates/and23-types/src/lib.rs`. Se prueba con
+//
+//     and23 mn/checker.jb archivo.jb
+//
+// que imprime `ok` o `Error mensaje @desde-hasta`, exactamente lo que da `and23 --check archivo.jb`. Como la
+// sesión de Rust, verifica primero el preludio (`crates/and23-syntax/prelude.jb`) y después el archivo.
+//
+// Recorre el árbol uniforme de `mn/parser.jb` (`Nodo`) por etiquetas. No calcula las `Resolutions` que usa el
+// compilador de Rust (índices de campo, llamadas virtuales...): eso es de la etapa del compilador.
+
+use "lexer.jb"
+use "parser.jb"
+
+thing ErrorTipo(m: Str, fix donde: Rango) : Fallo(m)
+
+// ---------------------------------------------------------------- tipos
+
+/// Un tipo. `k` es `Int`, `Float`, `Bool`, `Str`, `Unit`, `Array` (un argumento), `Obj` (nombre y argumentos),
+/// `Param` (nombre), `Nullable` (un argumento), `Fn` (los parámetros y al final el retorno) o `Nil`.
+thing Tipo(fix k: Str, fix nombre: Str, fix args: Lista<Tipo>)
+
+fix SIN_TIPOS = Lista<Tipo>()
+fix T_INT = Tipo("Int", "", SIN_TIPOS)
+fix T_FLOAT = Tipo("Float", "", SIN_TIPOS)
+fix T_BOOL = Tipo("Bool", "", SIN_TIPOS)
+fix T_STR = Tipo("Str", "", SIN_TIPOS)
+fix T_UNIT = Tipo("Unit", "", SIN_TIPOS)
+fix T_NIL = Tipo("Nil", "", SIN_TIPOS)
+
+fn lista1(t: Tipo) -> Lista<Tipo> {
+    fix l = Lista<Tipo>()
+    l.agrega(t)
+    return l
+}
+
+fn arrayDe(t: Tipo) -> Tipo = Tipo("Array", "", lista1(t))
+
+fn obj(nombre: Str, args: Lista<Tipo>) -> Tipo = Tipo("Obj", nombre, args)
+
+fn tparam(nombre: Str) -> Tipo = Tipo("Param", nombre, SIN_TIPOS)
+
+fn nullable(t: Tipo) -> Tipo = Tipo("Nullable", "", lista1(t))
+
+/// `T` visto como opcional (`T?`); un opcional se queda como está.
+fn opcional(t: Tipo) -> Tipo = if t.k == "Nullable" { t } else { nullable(t) }
+
+fn fnT(params: Lista<Tipo>, ret: Tipo) -> Tipo {
+    fix todos = Lista<Tipo>()
+    params.paraCada { p -> todos.agrega(p) }
+    todos.agrega(ret)
+    return Tipo("Fn", "", todos)
+}
+
+/// Los parámetros de un tipo función (todos los argumentos menos el último).
+fn paramsDe(t: Tipo) -> Lista<Tipo> {
+    fix ps = Lista<Tipo>()
+    mut i = 0
+    while i < t.args.tam() - 1 {
+        ps.agrega(t.args.obtiene(i))
+        i += 1
+    }
+    return ps
+}
+
+fn retDe(t: Tipo) -> Tipo = t.args.obtiene(t.args.tam() - 1)
+
+fn esNumerico(t: Tipo) -> Bool = t.k == "Int" || t.k == "Float"
+
+fn igual(a: Tipo, b: Tipo) -> Bool {
+    if a.k != b.k || a.nombre != b.nombre || a.args.tam() != b.args.tam() { return false }
+    mut i = 0
+    while i < a.args.tam() {
+        if !igual(a.args.obtiene(i), b.args.obtiene(i)) { return false }
+        i += 1
+    }
+    return true
+}
+
+fn igualLista(a: Lista<Tipo>, b: Lista<Tipo>) -> Bool {
+    if a.tam() != b.tam() { return false }
+    mut i = 0
+    while i < a.tam() {
+        if !igual(a.obtiene(i), b.obtiene(i)) { return false }
+        i += 1
+    }
+    return true
+}
+
+/// `None` con `None` y `Some` iguales.
+fn igualOpt(a: Tipo?, b: Tipo?) -> Bool {
+    if a == nil { return b == nil }
+    if b == nil { return false }
+    return igual(a, b)
+}
+
+fn muestraLista(ts: Lista<Tipo>) -> Str = une(ts.map { a -> muestra(a) }, ", ")
+
+fn muestra(t: Tipo) -> Str {
+    match t.k {
+        "Array" -> return "[${muestra(t.args.obtiene(0))}]"
+        "Obj" -> {
+            if t.args.vacia() { return t.nombre }
+            return "${t.nombre}<${muestraLista(t.args)}>"
+        }
+        "Param" -> return t.nombre
+        "Nullable" -> {
+            fix dentro = t.args.obtiene(0)
+            if dentro.k == "Fn" { return "(${muestra(dentro)})?" }
+            return "${muestra(dentro)}?"
+        }
+        "Fn" -> return "(${muestraLista(paramsDe(t))}) -> ${muestra(retDe(t))}"
+        "Nil" -> return "nil"
+        _ -> return t.k
+    }
+}
+
+/// Una clave de texto que distingue dos tipos cualesquiera.
+fn claveTipo(t: Tipo) -> Str = "${t.k}:${t.nombre}(${une(t.args.map { a -> claveTipo(a) }, ",")})"
+
+fn claveOpt(t: Tipo?) -> Str {
+    if t == nil { return "-" }
+    return claveTipo(t)
+}
+
+/// Parámetro de tipo con su cota (`T: Interfaz`).
+thing TParam(fix nombre: Str, fix cota: Tipo?)
+
+/// Qué tipo concreto toma cada parámetro de tipo.
+fn tmap(tparams: Lista<TParam>, args: Lista<Tipo>) -> Mapa<Str, Tipo> {
+    fix m = Mapa<Str, Tipo>()
+    mut i = 0
+    while i < tparams.tam() && i < args.tam() {
+        m.pone(tparams.obtiene(i).nombre, args.obtiene(i))
+        i += 1
+    }
+    return m
+}
+
+/// Sustituye los parámetros de tipo de `t` según `mapa`. Un opcional de un opcional se aplana.
+fn subst(t: Tipo, mapa: Mapa<Str, Tipo>) -> Tipo {
+    match t.k {
+        "Param" -> return mapa.obtiene(t.nombre) ?: t
+        "Array" -> return arrayDe(subst(t.args.obtiene(0), mapa))
+        "Fn" -> return Tipo("Fn", "", t.args.map { a -> subst(a, mapa) })
+        "Nullable" -> return opcional(subst(t.args.obtiene(0), mapa))
+        "Obj" -> return Tipo("Obj", t.nombre, t.args.map { a -> subst(a, mapa) })
+        _ -> return t
+    }
+}
+
+fn substLista(ts: Lista<Tipo>, mapa: Mapa<Str, Tipo>) -> Lista<Tipo> = ts.map { a -> subst(a, mapa) }
+
+/// Los parámetros de tipo de una declaración (`TypeParams`) sin cotas todavía.
+fn sinCotas(decls: Nodo) -> Lista<TParam> = decls.kids.map { d -> TParam(d.attrs, nil) }
+
+fn unen(a: Lista<TParam>, b: Lista<TParam>) -> Lista<TParam> {
+    fix todos = Lista<TParam>()
+    a.paraCada { x -> todos.agrega(x) }
+    b.paraCada { x -> todos.agrega(x) }
+    return todos
+}
+
+// ---------------------------------------------------------------- la información que se recuerda
+
+/// Una interfaz: sus parámetros de tipo y los nombres de sus métodos (las firmas están en `funcs` como
+/// `"Interfaz.metodo"`, escritas con los parámetros de la interfaz).
+thing KindInfo(mut tparams: Lista<TParam>, mut metodos: Lista<Str>)
+
+thing Sig(fix tparams: Lista<TParam>, fix params: Lista<Tipo>, mut ret: Tipo?)
+
+/// Variable: tipo, si es mutable y, si es un estrechamiento (`if x != nil`), su tipo declarado `T?`.
+thing VarE(mut ty: Tipo, fix mutable: Bool, mut declarado: Tipo?)
+
+thing FieldInfo(fix nombre: Str, mut ty: Tipo, fix mutable: Bool)
+
+/// Una clase o interfaz nombrada con sus argumentos de tipo (el padre y las interfaces de una clase).
+thing Ref(fix nombre: Str, fix args: Lista<Tipo>)
+
+/// Una clase: sus campos propios (los de la cabecera primero, luego los del cuerpo) y los tipos de su
+/// constructor. Las firmas de los métodos viven en `funcs` bajo `"Clase.metodo"`.
+thing ClassInfo(mut tparams: Lista<TParam>, mut campos: Lista<FieldInfo>, mut ctor: Lista<Tipo>, mut padre: Ref?, mut kinds: Lista<Ref>)
+
+/// Una función o método de este programa y su clase, si es método.
+thing Decl(fix nodo: Nodo, fix clase: Str?)
+
+/// Un método hallado: su clave `"Clase.metodo"` y cómo se sustituyen los parámetros de tipo de quien lo declara.
+thing Hallado(fix clave: Str, fix mapa: Mapa<Str, Tipo>)
+
+/// El contexto de lo que se verifica: ámbitos locales, retorno esperado, estrechamientos del nivel superior,
+/// la clase si es un método y dónde empieza el ámbito de parámetros de cada lambda abierta.
+/// `retK` es `Script`, `Declared` o `Infer`; `retTy` es el tipo declarado o el inferido hasta ahora.
+thing Ctx(fix scopes: Lista<Mapa<Str, VarE>>, mut retK: Str, mut retTy: Tipo?, fix scriptNarrow: Mapa<Str, Tipo>, fix esto: Str?, fix marks: Lista<Int>)
+
+thing Vista(fix ty: Tipo, fix mutable: Bool)
+
+/// Lo que el contexto sabe de una lambda: el tipo de cada parámetro y el del resultado (si los sabe).
+thing EsperadoL(fix params: Lista<Tipo?>, fix ret: Tipo?)
+
+/// Lo que hace falta para completar los argumentos de tipo de una llamada: de qué se trata (`que`, `mostrado`),
+/// los parámetros de tipo, los tipos de los parámetros y los argumentos, los argumentos de tipo explícitos, el
+/// tipo que produce la llamada con sus parámetros de tipo (solo los constructores), el tipo que pide el
+/// contexto y dónde está la llamada.
+thing Inf(fix que: Str, fix mostrado: Str, fix tparams: Lista<TParam>, fix params: Lista<Tipo>, fix args: Lista<Nodo>, fix explicitos: Lista<Nodo>, fix plantilla: Tipo?, fix esperado: Tipo?, fix r: Rango)
+
+thing Estrechable(fix ty: Tipo, fix mutable: Bool, fix declarado: Tipo?, fix local: Bool)
+
+thing Hechos(fix cierto: Lista<Str>, fix falso: Lista<Str>)
+
+thing EntradaE(fix nombre: Str, fix v: VarE)
+
+fn nuevoCtx(retK: Str, retTy: Tipo?, esto: Str?) -> Ctx = Ctx(Lista<Mapa<Str, VarE>>(), retK, retTy, Mapa<Str, Tipo>(), esto, Lista<Int>())
+
+// ---------------------------------------------------------------- nativas
+
+/// Las funciones nativas, `nombre:parámetros:retorno`, en el orden de `natives.rs` (el orden fija el id).
+fix NATIVAS_TEXTO = "_trozo:Str,Int,Int:Str _busca:Str,Str,Int:Int _mayus:Str:Str _minus:Str:Str _recorta:Str:Str _reemplaza:Str,Str,Str:Str _empieza:Str,Str:Bool _termina:Str,Str:Bool _parseInt:Str:OptInt _parseFloat:Str:OptFloat raiz:Float:Float potencia:Float,Float:Float piso:Float:Int techo:Float:Int redondea:Float:Int aFloat:Int:Float _leeArchivo:Str:OptStr _escribeArchivo:Str,Str:Bool _agregaArchivo:Str,Str:Bool existe:Str:Bool leeLinea::OptStr _errorES::Str _borraArchivo:Str:Bool _args::ArrStr _entorno:Str:OptStr _ahora::Int _pausa:Int:Unit _azar:Int:Int _azarF::Float _semilla:Int:Unit _listaDir:Str:OptArrStr _creaDir:Str:Bool _esDir:Str:Bool _esLetra:Str:Bool _esAlfanum:Str:Bool _esDigito:Str:Bool _caracteres:Str:ArrStr _desdeCodigo:Int:OptStr _une:ArrStr,Str:Str _lanza:Fn0:Unit cede::Unit _bloquea::Unit _avisa::Unit _hayListas::Bool"
+
+thing Nativa(fix id: Int, fix params: Lista<Str>, fix ret: Str)
+
+fix NATIVAS = cargaNativas()
+
+fn cargaNativas() -> Mapa<Str, Nativa> {
+    fix m = Mapa<Str, Nativa>()
+    fix entradas = NATIVAS_TEXTO.parte(" ")
+    mut i = 0
+    while i < entradas.tam() {
+        fix partes = entradas.obtiene(i).parte(":")
+        fix ps = if partes.obtiene(1) == "" { Lista<Str>() } else { partes.obtiene(1).parte(",") }
+        m.pone(partes.obtiene(0), Nativa(i, ps, partes.obtiene(2)))
+        i += 1
+    }
+    return m
+}
+
+/// El tipo de un tipo de las firmas nativas.
+fn tipoNativo(n: Str) -> Tipo {
+    match n {
+        "Int" -> return T_INT
+        "Float" -> return T_FLOAT
+        "Str" -> return T_STR
+        "Bool" -> return T_BOOL
+        "OptStr" -> return nullable(T_STR)
+        "OptInt" -> return nullable(T_INT)
+        "OptFloat" -> return nullable(T_FLOAT)
+        "ArrStr" -> return arrayDe(T_STR)
+        "OptArrStr" -> return nullable(arrayDe(T_STR))
+        "Unit" -> return T_UNIT
+        _ -> return fnT(SIN_TIPOS, T_UNIT)
+    }
+}
+
+/// ¿`n` es una función integrada (las de siempre o una nativa)?
+fn esBuiltin(n: Str) -> Bool = n == "len" || n == "push" || n == "pop" || n == "hash" || NATIVAS.contiene(n)
+
+/// Nombres que una clase no puede usar.
+fix RESERVADOS = tabla("Int~1 Float~1 Bool~1 Str~1 Unit~1 Array~1 Fn~1")
+
+// ---------------------------------------------------------------- árbol
+
+fn kid(n: Nodo, i: Int) -> Nodo = n.kids.obtiene(i)
+
+fn esNada(n: Nodo) -> Bool = n.tag == "None"
+
+fn attr(n: Nodo, i: Int) -> Str = n.attrs.parte(" ").obtiene(i)
+
+fn nombreR(n: Nodo) -> Rango = Rango(n.nd, n.nh)
+
+fn err(msg: Str, r: Rango) -> ErrorTipo = ErrorTipo(msg, r)
+
+// ---------------------------------------------------------------- análisis de asignaciones
+
+/// ¿El bloque siempre sale (`return`, `fail`, `break` o `continue`) antes de terminar?
+fn exits(bloque: Nodo) -> Bool {
+    mut i = 0
+    while i < bloque.kids.tam() {
+        fix s = bloque.kids.obtiene(i)
+        match s.tag {
+            "Return", "Fail", "Break", "Continue" -> return true
+            "If" -> {
+                if !esNada(kid(s, 2)) && exits(kid(s, 1)) && exits(kid(s, 2)) { return true }
+            }
+            _ -> {}
+        }
+        i += 1
+    }
+    return false
+}
+
+/// ¿Se asigna `nombre` dentro de algún `while` anidado en `bloque`?
+fn assignedInLoop(bloque: Nodo, nombre: Str) -> Bool {
+    mut i = 0
+    while i < bloque.kids.tam() {
+        fix s = bloque.kids.obtiene(i)
+        match s.tag {
+            "While" -> { if assigns(kid(s, 1), nombre) { return true } }
+            "If" -> {
+                if assignedInLoop(kid(s, 1), nombre) { return true }
+                if !esNada(kid(s, 2)) && assignedInLoop(kid(s, 2), nombre) { return true }
+            }
+            "Attempt" -> {
+                if assignedInLoop(kid(s, 0), nombre) { return true }
+                mut j = 1
+                while j < s.kids.tam() {
+                    if assignedInLoop(kid(kid(s, j), 1), nombre) { return true }
+                    j += 1
+                }
+            }
+            _ -> {}
+        }
+        i += 1
+    }
+    return false
+}
+
+/// ¿Se asigna `nombre` en algún punto de `bloque`, a cualquier profundidad (sin entrar en lambdas)?
+fn assigns(bloque: Nodo, nombre: Str) -> Bool {
+    mut i = 0
+    while i < bloque.kids.tam() {
+        fix s = bloque.kids.obtiene(i)
+        match s.tag {
+            "Assign" -> { if attr(s, 0) == nombre { return true } }
+            "While" -> { if assigns(kid(s, 1), nombre) { return true } }
+            "If" -> {
+                if assigns(kid(s, 1), nombre) { return true }
+                if !esNada(kid(s, 2)) && assigns(kid(s, 2), nombre) { return true }
+            }
+            "Attempt" -> {
+                if assigns(kid(s, 0), nombre) { return true }
+                mut j = 1
+                while j < s.kids.tam() {
+                    if assigns(kid(kid(s, j), 1), nombre) { return true }
+                    j += 1
+                }
+            }
+            _ -> {}
+        }
+        i += 1
+    }
+    return false
+}
+
+/// ¿Se asigna `nombre` en `bloque`, incluso dentro de las lambdas que contiene?
+fn blockAssignsDeep(bloque: Nodo, nombre: Str) -> Bool = blockAssignsWith(bloque, nombre, true)
+
+/// Con `directo == false` solo cuentan las asignaciones dentro de lambdas (las del propio código no).
+fn blockAssignsWith(bloque: Nodo, nombre: Str, directo: Bool) -> Bool {
+    mut i = 0
+    while i < bloque.kids.tam() {
+        if stmtAssignsWith(bloque.kids.obtiene(i), nombre, directo) { return true }
+        i += 1
+    }
+    return false
+}
+
+fn algunaExpr(es: Lista<Nodo>, nombre: Str) -> Bool {
+    mut i = 0
+    while i < es.tam() {
+        if exprAssigns(es.obtiene(i), nombre) { return true }
+        i += 1
+    }
+    return false
+}
+
+fn stmtAssignsWith(s: Nodo, nombre: Str, directo: Bool) -> Bool {
+    match s.tag {
+        "Assign" -> return (directo && attr(s, 0) == nombre) || exprAssigns(kid(s, 0), nombre)
+        "Show", "ExprStmt", "Fail" -> return exprAssigns(kid(s, 0), nombre)
+        "Let" -> return exprAssigns(kid(s, 1), nombre)
+        "IndexAssign" -> return exprAssigns(kid(s, 0), nombre) || exprAssigns(kid(s, 1), nombre) || exprAssigns(kid(s, 2), nombre)
+        "FieldAssign" -> return exprAssigns(kid(s, 0), nombre) || exprAssigns(kid(s, 1), nombre)
+        "If" -> {
+            if exprAssigns(kid(s, 0), nombre) || blockAssignsWith(kid(s, 1), nombre, directo) { return true }
+            return !esNada(kid(s, 2)) && blockAssignsWith(kid(s, 2), nombre, directo)
+        }
+        "While" -> return exprAssigns(kid(s, 0), nombre) || blockAssignsWith(kid(s, 1), nombre, directo)
+        "Return" -> return !esNada(kid(s, 0)) && exprAssigns(kid(s, 0), nombre)
+        "Attempt" -> {
+            if blockAssignsWith(kid(s, 0), nombre, directo) { return true }
+            mut j = 1
+            while j < s.kids.tam() {
+                if blockAssignsWith(kid(kid(s, j), 1), nombre, directo) { return true }
+                j += 1
+            }
+            return false
+        }
+        _ -> return false
+    }
+}
+
+fn exprAssigns(e: Nodo, nombre: Str) -> Bool {
+    match e.tag {
+        "Lambda" -> return blockAssignsDeep(kid(e, 1), nombre)
+        "Interp", "Array" -> return algunaExpr(e.kids, nombre)
+        "Index", "Binary", "Elvis" -> return exprAssigns(kid(e, 0), nombre) || exprAssigns(kid(e, 1), nombre)
+        "Unary", "Is", "Cast", "Field", "SafeField" -> return exprAssigns(kid(e, 0), nombre)
+        "CallValue" -> return exprAssigns(kid(e, 0), nombre) || algunaExpr(kid(e, 1).kids, nombre)
+        "Call" -> return algunaExpr(kid(e, 1).kids, nombre)
+        "SuperCall" -> return algunaExpr(kid(e, 0).kids, nombre)
+        "MethodCall" -> return exprAssigns(kid(e, 0), nombre) || algunaExpr(kid(e, 2).kids, nombre)
+        "SafeCall" -> return exprAssigns(kid(e, 0), nombre) || algunaExpr(kid(e, 1).kids, nombre)
+        _ -> return false
+    }
+}
+
+/// ¿Todos los caminos del bloque terminan en `return`?
+fn blockReturns(bloque: Nodo) -> Bool {
+    mut i = 0
+    while i < bloque.kids.tam() {
+        fix s = bloque.kids.obtiene(i)
+        match s.tag {
+            "Return", "Fail" -> return true
+            "Attempt" -> {
+                mut todos = blockReturns(kid(s, 0))
+                mut j = 1
+                while j < s.kids.tam() {
+                    if !blockReturns(kid(kid(s, j), 1)) { todos = false }
+                    j += 1
+                }
+                if todos { return true }
+            }
+            "If" -> {
+                if !esNada(kid(s, 2)) && blockReturns(kid(s, 1)) && blockReturns(kid(s, 2)) { return true }
+            }
+            _ -> {}
+        }
+        i += 1
+    }
+    return false
+}
+
+// ---------------------------------------------------------------- mensajes y operadores
+
+fn undefinedVariable(nombre: Str, r: Rango) -> ErrorTipo = err("la variable `${nombre}` no está definida", r)
+
+/// Mensaje cuando se usa `.` sobre algo que no es un objeto (con pista si es un opcional).
+fn notObject(t: Tipo, que: Str) -> Str {
+    if t.k == "Nullable" {
+        return "este valor es ${muestra(t)} y puede ser nil: usa `?.`, `?:` o comprueba `if x != nil` antes de acceder a los ${que} de ${muestra(t.args.obtiene(0))}"
+    }
+    return "solo los objetos tienen ${que}, pero esto es ${muestra(t)}"
+}
+
+/// `nil` no dice de qué tipo es: no se puede deducir el tipo de una variable, arreglo o campo.
+fn noNil(t: Tipo, r: Rango) {
+    if t.k == "Nil" {
+        fail err("no se puede deducir el tipo de `nil`; anótalo, por ejemplo `fix x: Perro? = nil`", r)
+    }
+}
+
+/// Tipo del resultado de un operador binario. Mezclar Int y Float en aritmética y comparaciones es válido y da
+/// Float; en asignaciones y argumentos no hay conversión.
+fn binaryType(op: Str, a: Tipo, b: Tipo, r: Rango) -> Tipo {
+    fix invalido = { pista: Str -> err("la operación `${op}` no admite ${muestra(a)} y ${muestra(b)}${pista}", r) }
+    if op == "+" && a.k == "Str" && b.k == "Str" { return T_STR }
+    if op == "+" || op == "-" || op == "*" || op == "/" || op == "%" {
+        if a.k == "Int" && b.k == "Int" { return T_INT }
+        if esNumerico(a) && esNumerico(b) { return T_FLOAT }
+        if op == "+" && (a.k == "Str" || b.k == "Str") {
+            fail invalido("; para unir texto con otros valores usa una interpolación: \"\${...}\"")
+        }
+        fail invalido("")
+    }
+    if op == "==" || op == "!=" {
+        if (a.k == "Nil" && (b.k == "Nullable" || b.k == "Nil")) || (a.k == "Nullable" && b.k == "Nil") { return T_BOOL }
+        if a.k == "Nil" || b.k == "Nil" { fail invalido("; ese valor nunca es nil, así que no hace falta compararlo") }
+        fix comparable = a.k != "Array" && a.k != "Obj" && a.k != "Nullable"
+        if (igual(a, b) && comparable) || (esNumerico(a) && esNumerico(b)) { return T_BOOL }
+        fail invalido("")
+    }
+    if op == "<" || op == "<=" || op == ">" || op == ">=" {
+        if (esNumerico(a) && esNumerico(b)) || (a.k == "Str" && b.k == "Str") { return T_BOOL }
+        fail invalido("")
+    }
+    // && y ||
+    if a.k != "Bool" { fail err("el operador `${op}` requiere Bool, pero recibió ${muestra(a)}", r) }
+    if b.k != "Bool" { fail err("el operador `${op}` requiere Bool, pero recibió ${muestra(b)}", r) }
+    return T_BOOL
+}
+
+/// Variables que `cond` prueba como no nulas cuando es verdadera y cuando es falsa.
+fn facts(cond: Nodo) -> Hechos {
+    if cond.tag == "Binary" {
+        fix op = cond.attrs
+        if op == "!=" {
+            fix t = Lista<Str>()
+            fix n = nilTest(kid(cond, 0), kid(cond, 1))
+            if n != nil { t.agrega(n) }
+            return Hechos(t, Lista<Str>())
+        }
+        if op == "==" {
+            fix f = Lista<Str>()
+            fix n = nilTest(kid(cond, 0), kid(cond, 1))
+            if n != nil { f.agrega(n) }
+            return Hechos(Lista<Str>(), f)
+        }
+        if op == "&&" {
+            fix t = facts(kid(cond, 0)).cierto.copia()
+            facts(kid(cond, 1)).cierto.paraCada { x -> t.agrega(x) }
+            return Hechos(t, Lista<Str>())
+        }
+        if op == "||" {
+            fix f = facts(kid(cond, 0)).falso.copia()
+            facts(kid(cond, 1)).falso.paraCada { x -> f.agrega(x) }
+            return Hechos(Lista<Str>(), f)
+        }
+    }
+    if cond.tag == "Unary" && cond.attrs == "Not" {
+        fix h = facts(kid(cond, 0))
+        return Hechos(h.falso, h.cierto)
+    }
+    return Hechos(Lista<Str>(), Lista<Str>())
+}
+
+fn nilTest(lhs: Nodo, rhs: Nodo) -> Str? {
+    if lhs.tag == "Var" && rhs.tag == "Nil" { return lhs.attrs }
+    if lhs.tag == "Nil" && rhs.tag == "Var" { return rhs.attrs }
+    return nil
+}
+
+// ---------------------------------------------------------------- el verificador
+
+/// El estado del verificador: recuerda las funciones, clases y globales de lo ya verificado (el preludio).
+thing Checker() {
+    fix funcs = Mapa<Str, Sig>()
+    fix classes = Mapa<Str, ClassInfo>()
+    fix kinds = Mapa<Str, KindInfo>()
+    fix globals = Mapa<Str, VarE>()
+    /// Funciones del preludio: un programa puede definir otra con el mismo nombre.
+    fix overridable = Mapa<Str, Bool>()
+    /// Globales `mut` que alguna función, método o lambda asigna: una llamada puede cambiarlas, así que no se estrechan.
+    fix fnAssigned = Mapa<Str, Bool>()
+    /// Parámetros de tipo a la vista (los de la clase o función que se está declarando o verificando).
+    mut scopeParams = Lista<TParam>()
+    // Lo que sigue es de cada programa que se verifica.
+    mut declared = Mapa<Str, Str>()
+    mut decls = Mapa<Str, Decl>()
+    mut state = Mapa<Str, Str>()
+    mut things = Mapa<Str, Nodo>()
+    mut classState = Mapa<Str, Str>()
+    mut lambdaCache = Mapa<Str, Tipo>()
+
+    /// Marca las funciones definidas hasta ahora (el preludio) como redefinibles por el programa.
+    fn sellaPreludio() {
+        funcs.claves().paraCada { k -> overridable.pone(k, true) }
+    }
+
+    /// Verifica un programa (la raíz `Program` de `analiza`). Falla con `ErrorTipo`.
+    fn check(prog: Nodo) {
+        declared = Mapa<Str, Str>()
+        decls = Mapa<Str, Decl>()
+        state = Mapa<Str, Str>()
+        things = Mapa<Str, Nodo>()
+        classState = Mapa<Str, Str>()
+        lambdaCache = Mapa<Str, Tipo>()
+        programa(prog)
+    }
+
+    fn sigDe(clave: Str) -> Sig {
+        fix s = funcs.obtiene(clave)
+        if s == nil { fail Fallo("mn: falta la firma `${clave}`") }
+        return s
+    }
+
+    fn claseDe(nombre: Str) -> ClassInfo {
+        fix c = classes.obtiene(nombre)
+        if c == nil { fail Fallo("mn: falta la clase `${nombre}`") }
+        return c
+    }
+
+    fn kindDe(nombre: Str) -> KindInfo {
+        fix k = kinds.obtiene(nombre)
+        if k == nil { fail Fallo("mn: falta la interfaz `${nombre}`") }
+        return k
+    }
+
+    fn thingDe(nombre: Str) -> Nodo {
+        fix t = things.obtiene(nombre)
+        if t == nil { fail Fallo("mn: falta la declaración de `${nombre}`") }
+        return t
+    }
+
+    /// Anota qué globales `mut` pueden cambiar dentro de una función, método o lambda.
+    fn findFnAssigned(prog: Nodo) {
+        fix stmts = kid(prog, 3).kids
+        fix candidatos = Lista<Str>()
+        fix ks = globals.claves()
+        mut i = 0
+        while i < ks.tam() {
+            fix v = globals.obtiene(ks.obtiene(i))
+            if v != nil && v.mutable { candidatos.agrega(ks.obtiene(i)) }
+            i += 1
+        }
+        i = 0
+        while i < stmts.tam() {
+            fix s = stmts.obtiene(i)
+            if s.tag == "Let" && attr(s, 1) == "mut" { candidatos.agrega(attr(s, 0)) }
+            i += 1
+        }
+        mut c = 0
+        while c < candidatos.tam() {
+            fix nombre = candidatos.obtiene(c)
+            mut hit = false
+            mut j = 0
+            while j < stmts.tam() && !hit {
+                fix s = stmts.obtiene(j)
+                if s.tag == "Fn" {
+                    hit = blockAssignsDeep(kid(s, 3), nombre)
+                } else if s.tag == "Thing" {
+                    fix metodos = kid(s, 4).kids
+                    fix campos = kid(s, 3).kids
+                    mut m = 0
+                    while m < metodos.tam() && !hit {
+                        hit = blockAssignsDeep(kid(metodos.obtiene(m), 3), nombre)
+                        m += 1
+                    }
+                    m = 0
+                    while m < campos.tam() && !hit {
+                        hit = exprAssigns(kid(campos.obtiene(m), 1), nombre)
+                        m += 1
+                    }
+                } else {
+                    hit = stmtAssignsWith(s, nombre, false)
+                }
+                j += 1
+            }
+            if hit { fnAssigned.pone(nombre, true) }
+            c += 1
+        }
+    }
+
+    fn programa(prog: Nodo) {
+        findFnAssigned(prog)
+        fix stmts = kid(prog, 3).kids
+        // Los nombres de clase primero: los tipos de campos, parámetros y firmas pueden nombrarlas.
+        mut i = 0
+        while i < stmts.tam() {
+            fix s = stmts.obtiene(i)
+            i += 1
+            if s.tag != "Thing" && s.tag != "Kind" { continue }
+            fix nombre = s.attrs
+            if esBuiltin(nombre) || RESERVADOS.contiene(nombre) || funcs.contiene(nombre) || classes.contiene(nombre) || kinds.contiene(nombre) {
+                fail err("el nombre `${nombre}` ya está en uso o está reservado", nombreR(s))
+            }
+            if s.tag == "Thing" {
+                classes.pone(nombre, ClassInfo(sinCotas(kid(s, 0)), Lista<FieldInfo>(), Lista<Tipo>(), nil, Lista<Ref>()))
+                things.pone(nombre, s)
+                classState.pone(nombre, "Unchecked")
+                declared.pone(nombre, "Unchecked")
+            } else {
+                kinds.pone(nombre, KindInfo(sinCotas(kid(s, 0)), Lista<Str>()))
+            }
+        }
+
+        // Las firmas se registran antes: las funciones pueden usarse antes de su definición.
+        i = 0
+        while i < stmts.tam() {
+            fix s = stmts.obtiene(i)
+            i += 1
+            if s.tag != "Fn" { continue }
+            fix nombre = attr(s, 0)
+            if esBuiltin(nombre) {
+                fail err("`${nombre}` es una función integrada y no se puede redefinir", nombreR(s))
+            }
+            if (funcs.contiene(nombre) && !overridable.quita(nombre)) || classes.contiene(nombre) || kinds.contiene(nombre) {
+                fail err("la función `${nombre}` ya está definida", nombreR(s))
+            }
+            fix sig = signature(s)
+            funcs.pone(nombre, sig)
+            decls.pone(nombre, Decl(s, nil))
+            state.pone(nombre, "Unchecked")
+        }
+
+        i = 0
+        while i < stmts.tam() {
+            if stmts.obtiene(i).tag == "Kind" { declareKind(stmts.obtiene(i)) }
+            i += 1
+        }
+        i = 0
+        while i < stmts.tam() {
+            if stmts.obtiene(i).tag == "Thing" { declareOrdered(stmts.obtiene(i).attrs) }
+            i += 1
+        }
+        i = 0
+        while i < stmts.tam() {
+            if stmts.obtiene(i).tag == "Thing" { ensureClass(stmts.obtiene(i).attrs) }
+            i += 1
+        }
+
+        fix script = nuevoCtx("Script", nil, nil)
+        i = 0
+        while i < stmts.tam() {
+            fix s = stmts.obtiene(i)
+            if s.tag != "Fn" && s.tag != "Thing" && s.tag != "Kind" { stmt(script, s) }
+            i += 1
+        }
+        i = 0
+        while i < stmts.tam() {
+            fix s = stmts.obtiene(i)
+            if s.tag == "Fn" {
+                if (state.obtiene(attr(s, 0)) ?: "") == "Unchecked" { checkFn(attr(s, 0)) }
+            } else if s.tag == "Thing" {
+                fix metodos = kid(s, 4).kids
+                mut m = 0
+                while m < metodos.tam() {
+                    fix clave = "${s.attrs}.${attr(metodos.obtiene(m), 0)}"
+                    if (state.obtiene(clave) ?: "") == "Unchecked" { checkFn(clave) }
+                    m += 1
+                }
+            }
+            i += 1
+        }
+        i = 0
+        while i < stmts.tam() {
+            if stmts.obtiene(i).tag == "Thing" { validateClass(stmts.obtiene(i)) }
+            i += 1
+        }
+    }
+
+    /// Firma de una función o método: parámetros y tipo de retorno (`nil` si hay que inferirlo).
+    fn signature(decl: Nodo) -> Sig {
+        fix guardado = scopeParams
+        mut tparams = Lista<TParam>()
+        fix tps = kid(decl, 0)
+        // Un método ve los parámetros de su clase; una función, solo los suyos.
+        if !tps.kids.vacia() {
+            fix base = scopeParams
+            mut i = 0
+            while i < tps.kids.tam() {
+                fix d = tps.kids.obtiene(i)
+                if base.alguno({ b -> b.nombre == d.attrs }) {
+                    fail err("`${d.attrs}` ya es un parámetro de tipo de la clase", rg(d))
+                }
+                i += 1
+            }
+            fix propios = enterParams(tps)
+            scopeParams = unen(base, propios)
+            tparams = propios
+        }
+        fix params = kid(decl, 1).kids.map { p -> resolve(kid(p, 0)) }
+        mut ret: Tipo? = nil
+        if !esNada(kid(decl, 2)) {
+            ret = resolve(kid(decl, 2))
+        } else if attr(decl, 1) == "false" {
+            ret = T_UNIT
+        }
+        scopeParams = guardado
+        return Sig(tparams, params, ret)
+    }
+
+    /// Pone `decls` a la vista como parámetros de tipo (con sus cotas ya resueltas) y los devuelve.
+    /// El llamador guarda y restaura `scopeParams`.
+    fn enterParams(decls: Nodo) -> Lista<TParam> {
+        scopeParams = sinCotas(decls)
+        fix salida = Lista<TParam>()
+        mut i = 0
+        while i < decls.kids.tam() {
+            fix d = decls.kids.obtiene(i)
+            fix cotaNodo = kid(d, 0)
+            mut cota: Tipo? = nil
+            if !esNada(cotaNodo) {
+                fix ty = resolve(cotaNodo)
+                if ty.k != "Obj" {
+                    fail err("la cota de `${d.attrs}` debe ser una clase o una interfaz, pero es ${muestra(ty)}", rg(cotaNodo))
+                }
+                cota = ty
+            }
+            salida.agrega(TParam(d.attrs, cota))
+            i += 1
+        }
+        scopeParams = salida
+        return salida
+    }
+
+    fn paramBound(nombre: Str) -> Tipo? {
+        mut i = 0
+        while i < scopeParams.tam() {
+            if scopeParams.obtiene(i).nombre == nombre { return scopeParams.obtiene(i).cota }
+            i += 1
+        }
+        return nil
+    }
+
+    /// Los parámetros de tipo de `clase` como tipos (`T`, `U`): los argumentos de su propio `this`.
+    fn identityArgs(clase: Str) -> Lista<Tipo> = claseDe(clase).tparams.map { p -> tparam(p.nombre) }
+
+    /// Registra las firmas de los métodos de una interfaz como `"Interfaz.metodo"`.
+    fn declareKind(decl: Nodo) {
+        fix guardado = scopeParams
+        fix tps = enterParams(kid(decl, 0))
+        fix info = kindDe(decl.attrs)
+        info.tparams = tps
+        fix nombres = Lista<Str>()
+        fix metodos = kid(decl, 1).kids
+        mut i = 0
+        while i < metodos.tam() {
+            fix m = metodos.obtiene(i)
+            if nombres.contiene(m.attrs) {
+                fail err("el método `${m.attrs}` está repetido en `${decl.attrs}`", nombreR(m))
+            }
+            fix params = kid(m, 0).kids.map { p -> resolve(kid(p, 0)) }
+            fix ret = if esNada(kid(m, 1)) { T_UNIT } else { resolve(kid(m, 1)) }
+            funcs.pone("${decl.attrs}.${m.attrs}", Sig(Lista<TParam>(), params, ret))
+            nombres.agrega(m.attrs)
+            i += 1
+        }
+        info.metodos = nombres
+        scopeParams = guardado
+    }
+
+    /// Declara una clase después de su padre (los campos heredados van primero).
+    fn declareOrdered(nombre: Str) {
+        fix st = declared.obtiene(nombre)
+        if st == nil { return }
+        if st == "Done" { return }
+        if st == "InProgress" {
+            fail err("la herencia de `${nombre}` es circular", nombreR(thingDe(nombre)))
+        }
+        declared.pone(nombre, "InProgress")
+        fix decl = thingDe(nombre)
+        fix sups = kid(decl, 2).kids
+        mut i = 0
+        while i < sups.tam() {
+            if !esNada(kid(sups.obtiene(i), 1)) {
+                declareOrdered(sups.obtiene(i).attrs)
+                break
+            }
+            i += 1
+        }
+        declareClass(decl)
+        declared.pone(nombre, "Done")
+    }
+
+    /// Todos los campos de `clase<args>`: primero los heredados, con los tipos ya sustituidos.
+    fn allFields(clase: Str, args: Lista<Tipo>) -> Lista<FieldInfo> {
+        fix info = claseDe(clase)
+        fix mapa = tmap(info.tparams, args)
+        fix campos = Lista<FieldInfo>()
+        fix padre = info.padre
+        if padre != nil {
+            allFields(padre.nombre, substLista(padre.args, mapa)).paraCada { f -> campos.agrega(f) }
+        }
+        info.campos.paraCada { f -> campos.agrega(FieldInfo(f.nombre, subst(f.ty, mapa), f.mutable)) }
+        return campos
+    }
+
+    /// El método `nombre` visible en `ty`: el de la propia clase, el heredado más cercano o, si `ty` es una
+    /// interfaz o un parámetro de tipo con cota, el de ella. Devuelve la clave `"Clase.metodo"` de quien lo
+    /// declara y cómo se sustituyen los parámetros de tipo de esa clase.
+    fn findMethod(ty: Tipo, nombre: Str) -> Hallado? {
+        if ty.k == "Param" {
+            fix cota = paramBound(ty.nombre)
+            if cota == nil { return nil }
+            return findMethod(cota, nombre)
+        }
+        if ty.k != "Obj" { return nil }
+        fix clase = ty.nombre
+        fix kindI = kinds.obtiene(clase)
+        if kindI != nil {
+            fix clave = "${clase}.${nombre}"
+            if funcs.contiene(clave) { return Hallado(clave, tmap(kindI.tparams, ty.args)) }
+            return nil
+        }
+        mut actual = clase
+        mut actualArgs = ty.args
+        while true {
+            fix info = classes.obtiene(actual)
+            if info == nil { return nil }
+            fix mapa = tmap(info.tparams, actualArgs)
+            fix clave = "${actual}.${nombre}"
+            if funcs.contiene(clave) { return Hallado(clave, mapa) }
+            fix padre = info.padre
+            if padre == nil { return nil }
+            actualArgs = substLista(padre.args, mapa)
+            actual = padre.nombre
+        }
+        return nil
+    }
+
+    /// `ty` visto como `destino` (un ancestro o una interfaz que cumple), con sus argumentos de tipo.
+    fn asSuper(ty: Tipo, destino: Str) -> Tipo? {
+        if ty.k != "Obj" { return nil }
+        if ty.nombre == destino { return ty }
+        fix info = classes.obtiene(ty.nombre)
+        if info == nil { return nil }
+        fix mapa = tmap(info.tparams, ty.args)
+        mut i = 0
+        while i < info.kinds.tam() {
+            fix k = info.kinds.obtiene(i)
+            if k.nombre == destino { return obj(k.nombre, substLista(k.args, mapa)) }
+            i += 1
+        }
+        fix padre = info.padre
+        if padre == nil { return nil }
+        return asSuper(obj(padre.nombre, substLista(padre.args, mapa)), destino)
+    }
+
+    /// ¿`sub` es `sup` o hereda de él o lo implementa? (por nombre, sin mirar argumentos de tipo)
+    fn isSub(sub: Str, sup: Str) -> Bool {
+        mut actual: Str? = sub
+        while true {
+            fix clase = actual
+            if clase == nil { return false }
+            if clase == sup { return true }
+            fix info = classes.obtiene(clase)
+            if info == nil { return false }
+            if info.kinds.alguno({ k -> k.nombre == sup }) { return true }
+            fix padre = info.padre
+            if padre == nil {
+                actual = nil
+            } else {
+                actual = padre.nombre
+            }
+        }
+        return false
+    }
+
+    fn assignable(esperado: Tipo, hallado: Tipo) -> Bool {
+        if igual(esperado, hallado) { return true }
+        if esperado.k == "Nullable" {
+            if hallado.k == "Nil" { return true }
+            if hallado.k == "Nullable" { return assignable(esperado.args.obtiene(0), hallado.args.obtiene(0)) }
+            return assignable(esperado.args.obtiene(0), hallado)
+        }
+        if esperado.k == "Obj" && hallado.k == "Obj" {
+            fix s = asSuper(hallado, esperado.nombre)
+            return s != nil && igual(s, esperado)
+        }
+        // Las funciones aceptan lo que se les pase de más general y devuelven lo que prometen; una que
+        // devuelve Unit no admite una que devuelve otra cosa.
+        if esperado.k == "Fn" && hallado.k == "Fn" {
+            fix ep = paramsDe(esperado)
+            fix fp = paramsDe(hallado)
+            if ep.tam() != fp.tam() { return false }
+            mut i = 0
+            while i < ep.tam() {
+                if !assignable(fp.obtiene(i), ep.obtiene(i)) { return false }
+                i += 1
+            }
+            fix er = retDe(esperado)
+            fix fr = retDe(hallado)
+            if er.k == "Unit" { return fr.k == "Unit" }
+            return assignable(er, fr)
+        }
+        // Un parámetro de tipo con cota vale como su cota.
+        if hallado.k == "Param" {
+            fix cota = paramBound(hallado.nombre)
+            return cota != nil && assignable(esperado, cota)
+        }
+        return false
+    }
+
+    fn expect(esperado: Tipo, hallado: Tipo, r: Rango) {
+        if assignable(esperado, hallado) { return }
+        if hallado.k == "Nil" {
+            fail err("`nil` solo cabe en un tipo opcional (`T?`), pero se esperaba ${muestra(esperado)}", r)
+        }
+        mut pista = ""
+        if esperado.k == "Float" && hallado.k == "Int" {
+            pista = "; no hay conversión implícita de Int a Float (escribe `1.0` en vez de `1`)"
+        } else if hallado.k == "Nullable" && assignable(esperado, hallado.args.obtiene(0)) {
+            pista = "; el valor puede ser nil: comprueba `if x != nil` o usa `x ?: otro`"
+        }
+        fail err("se esperaba ${muestra(esperado)}, pero es ${muestra(hallado)}${pista}", r)
+    }
+
+    /// Texto de una firma para los mensajes: `(Int, Str) -> Bool`.
+    fn sigText(sig: Sig) -> Str = "(${muestraLista(sig.params)}) -> ${muestra(sig.ret ?: T_UNIT)}"
+
+    fn instancia(sig: Sig, mapa: Mapa<Str, Tipo>) -> Sig {
+        fix r = sig.ret
+        if r == nil { return Sig(Lista<TParam>(), substLista(sig.params, mapa), nil) }
+        return Sig(Lista<TParam>(), substLista(sig.params, mapa), subst(r, mapa))
+    }
+
+    /// Tras verificar los cuerpos: los métodos que sobrescriben conservan la firma y la clase implementa todo
+    /// lo que prometen sus interfaces.
+    fn validateClass(decl: Nodo) {
+        fix info = claseDe(decl.attrs)
+        fix padre = info.padre
+        if padre != nil {
+            fix padreTy = obj(padre.nombre, padre.args)
+            fix metodos = kid(decl, 4).kids
+            mut i = 0
+            while i < metodos.tam() {
+                fix m = metodos.obtiene(i)
+                i += 1
+                fix h = findMethod(padreTy, attr(m, 0))
+                if h == nil { continue }
+                fix propia = sigDe("${decl.attrs}.${attr(m, 0)}")
+                fix base = instancia(sigDe(h.clave), h.mapa)
+                if !igualLista(propia.params, base.params) || !igualOpt(propia.ret, base.ret) {
+                    fail err("el método `${attr(m, 0)}` sobrescribe el de `${h.clave.parte(".").obtiene(0)}`, pero su firma ${sigText(propia)} no coincide con ${sigText(base)}", nombreR(m))
+                }
+            }
+        }
+        fix esteTy = obj(decl.attrs, identityArgs(decl.attrs))
+        mut k = 0
+        while k < info.kinds.tam() {
+            fix ref = info.kinds.obtiene(k)
+            k += 1
+            fix kindInfo = kindDe(ref.nombre)
+            fix kindMap = tmap(kindInfo.tparams, ref.args)
+            mut j = 0
+            while j < kindInfo.metodos.tam() {
+                fix nombre = kindInfo.metodos.obtiene(j)
+                j += 1
+                fix querida = instancia(sigDe("${ref.nombre}.${nombre}"), kindMap)
+                fix h = findMethod(esteTy, nombre)
+                if h == nil {
+                    fail err("la clase `${decl.attrs}` no implementa el método `${nombre}` de la interfaz `${ref.nombre}`", nombreR(decl))
+                }
+                fix hallada = instancia(sigDe(h.clave), h.mapa)
+                if !igualLista(hallada.params, querida.params) || !igualOpt(hallada.ret, querida.ret) {
+                    fail err("el método `${nombre}` de `${decl.attrs}` tiene la firma ${sigText(hallada)}, pero la interfaz `${ref.nombre}` pide ${sigText(querida)}", nombreR(decl))
+                }
+            }
+        }
+    }
+
+    /// Registra los campos, el constructor y las firmas de los métodos de una clase. Los campos del cuerpo sin
+    /// anotación llevan `Unit` provisional hasta `ensureClass`.
+    fn declareClass(decl: Nodo) {
+        fix guardado = scopeParams
+        fix tps = enterParams(kid(decl, 0))
+        fix info = claseDe(decl.attrs)
+        info.tparams = tps
+        mut padre: Ref? = nil
+        fix kindsL = Lista<Ref>()
+        fix sups = kid(decl, 2).kids
+        mut i = 0
+        while i < sups.tam() {
+            fix sup = sups.obtiene(i)
+            i += 1
+            fix esClase = classes.contiene(sup.attrs)
+            fix esKind = kinds.contiene(sup.attrs)
+            if !esClase && !esKind {
+                fail err("el tipo `${sup.attrs}` no existe", nombreR(sup))
+            }
+            fix querido = if esClase { claseDe(sup.attrs).tparams.tam() } else { kindDe(sup.attrs).tparams.tam() }
+            fix targs = kid(sup, 0).kids
+            if targs.tam() != querido {
+                fail err("`${sup.attrs}` necesita ${querido} argumento(s) de tipo, pero recibió ${targs.tam()}", rg(sup))
+            }
+            fix tipos = targs.map { t -> resolve(t) }
+            fix conArgs = !esNada(kid(sup, 1))
+            if conArgs && esClase {
+                if padre != nil { fail err("una clase solo puede heredar de una clase", rg(sup)) }
+                padre = Ref(sup.attrs, tipos)
+            } else if conArgs {
+                fail err("`${sup.attrs}` es una interfaz: se implementa sin paréntesis", rg(sup))
+            } else if !esClase {
+                if kindsL.alguno({ k -> k.nombre == sup.attrs }) {
+                    fail err("la interfaz `${sup.attrs}` está repetida", rg(sup))
+                }
+                kindsL.agrega(Ref(sup.attrs, tipos))
+            } else {
+                fail err("`${sup.attrs}` es una clase: para heredarla escribe `${sup.attrs}(argumentos)`", rg(sup))
+            }
+        }
+        fix padreFinal = padre
+        mut heredados = Lista<FieldInfo>()
+        if padreFinal != nil { heredados = allFields(padreFinal.nombre, padreFinal.args) }
+        fix campos = Lista<FieldInfo>()
+        fix ctor = Lista<Tipo>()
+        fix params = kid(decl, 1).kids
+        i = 0
+        while i < params.tam() {
+            fix p = params.obtiene(i)
+            i += 1
+            fix ty = resolve(kid(p, 0))
+            if ty.k == "Unit" {
+                fail err("un parámetro no puede ser de tipo Unit", rg(kid(p, 0)))
+            }
+            ctor.agrega(ty)
+            fix mutab = attr(p, 1)
+            if mutab != "-" {
+                if heredados.alguno({ f -> f.nombre == attr(p, 0) }) {
+                    fail err("el campo `${attr(p, 0)}` ya existe en la clase padre", nombreR(p))
+                }
+                campos.agrega(FieldInfo(attr(p, 0), ty, mutab == "mut"))
+            }
+        }
+        fix fieldsN = kid(decl, 3).kids
+        i = 0
+        while i < fieldsN.tam() {
+            fix f = fieldsN.obtiene(i)
+            i += 1
+            fix nombre = attr(f, 0)
+            if campos.alguno({ c -> c.nombre == nombre }) || heredados.alguno({ c -> c.nombre == nombre }) {
+                fail err("el campo `${nombre}` está repetido", nombreR(f))
+            }
+            fix ty = if esNada(kid(f, 0)) { T_UNIT } else { resolve(kid(f, 0)) }
+            campos.agrega(FieldInfo(nombre, ty, attr(f, 1) == "mut"))
+        }
+        fix metodos = kid(decl, 4).kids
+        i = 0
+        while i < metodos.tam() {
+            fix m = metodos.obtiene(i)
+            i += 1
+            fix mnombre = attr(m, 0)
+            fix clave = "${decl.attrs}.${mnombre}"
+            if campos.alguno({ c -> c.nombre == mnombre }) || heredados.alguno({ c -> c.nombre == mnombre }) {
+                fail err("`${mnombre}` ya es un campo de `${decl.attrs}`; un método no puede llamarse igual", nombreR(m))
+            }
+            if funcs.contiene(clave) {
+                fail err("el método `${mnombre}` ya está definido en `${decl.attrs}`", nombreR(m))
+            }
+            fix sig = signature(m)
+            funcs.pone(clave, sig)
+            decls.pone(clave, Decl(m, decl.attrs))
+            state.pone(clave, "Unchecked")
+        }
+        info.campos = campos
+        info.ctor = ctor
+        info.padre = padreFinal
+        info.kinds = kindsL
+        scopeParams = guardado
+    }
+
+    /// Infiere los tipos de los campos del cuerpo la primera vez que hacen falta (como el tipo de retorno de
+    /// una función `= expr`). Una clase de una entrada anterior ya está completa.
+    fn ensureClass(nombre: Str) {
+        fix st = classState.obtiene(nombre)
+        if st == nil { return }
+        if st == "Done" { return }
+        if st == "InProgress" {
+            fail err("los campos de `${nombre}` se usan antes de conocer su tipo; anota el tipo del campo", nombreR(thingDe(nombre)))
+        }
+        classState.pone(nombre, "InProgress")
+        fix padre = claseDe(nombre).padre
+        if padre != nil { ensureClass(padre.nombre) }
+        classInitializers(thingDe(nombre))
+        classState.pone(nombre, "Done")
+    }
+
+    /// Verifica los valores iniciales de los campos del cuerpo. Ven los parámetros del constructor y los
+    /// campos anteriores, pero no `this`.
+    fn classInitializers(decl: Nodo) {
+        fix guardado = scopeParams
+        scopeParams = claseDe(decl.attrs).tparams
+        fix ambito = Mapa<Str, VarE>()
+        fix params = kid(decl, 1).kids
+        fix ctorTipos = claseDe(decl.attrs).ctor
+        mut i = 0
+        while i < params.tam() && i < ctorTipos.tam() {
+            ambito.pone(attr(params.obtiene(i), 0), VarE(ctorTipos.obtiene(i), false, nil))
+            i += 1
+        }
+        fix ctx = nuevoCtx("Script", nil, nil)
+        ctx.scopes.agrega(ambito)
+        // Argumentos para el constructor de la clase padre: ven los parámetros de esta.
+        fix sups = kid(decl, 2).kids
+        i = 0
+        while i < sups.tam() {
+            fix sup = sups.obtiene(i)
+            i += 1
+            if esNada(kid(sup, 1)) { continue }
+            fix args = kid(sup, 1).kids
+            fix padre = claseDe(decl.attrs).padre
+            if padre == nil { fail Fallo("mn: falta el padre de `${decl.attrs}`") }
+            fix padreInfo = claseDe(sup.attrs)
+            fix mapa = tmap(padreInfo.tparams, padre.args)
+            fix queridos = substLista(padreInfo.ctor, mapa)
+            if queridos.tam() != args.tam() {
+                fail err("la clase `${sup.attrs}` espera ${queridos.tam()} argumento(s), pero recibió ${args.tam()}", rg(sup))
+            }
+            mut a = 0
+            while a < args.tam() {
+                exprAs(ctx, args.obtiene(a), queridos.obtiene(a))
+                a += 1
+            }
+            break
+        }
+        mut primero = 0
+        params.paraCada { p -> if attr(p, 1) != "-" { primero += 1 } }
+        fix campos = kid(decl, 3).kids
+        i = 0
+        while i < campos.tam() {
+            fix f = campos.obtiene(i)
+            fix tyNodo = kid(f, 0)
+            mut ty = T_UNIT
+            if !esNada(tyNodo) {
+                fix esperado = resolve(tyNodo)
+                exprAs(ctx, kid(f, 1), esperado)
+                ty = esperado
+            } else {
+                fix hallado = expr(ctx, kid(f, 1))
+                noNil(hallado, rg(kid(f, 1)))
+                ty = hallado
+            }
+            if ty.k == "Unit" {
+                fail err("el campo `${attr(f, 0)}` no puede guardar un valor de tipo Unit", rg(kid(f, 1)))
+            }
+            claseDe(decl.attrs).campos.obtiene(primero + i).ty = ty
+            declare(ctx, attr(f, 0), ty, false, nombreR(f))
+            i += 1
+        }
+        scopeParams = guardado
+    }
+
+    fn checkFn(clave: Str) {
+        fix d = decls.obtiene(clave)
+        if d == nil { fail Fallo("mn: falta la declaración de `${clave}`") }
+        fix clase = d.clase
+        if clase != nil { ensureClass(clase) }
+        state.pone(clave, "InProgress")
+        fix sig = sigDe(clave)
+        // Los métodos ven los parámetros de tipo de su clase; las funciones, los suyos.
+        fix aqui = if clase != nil { unen(claseDe(clase).tparams, sig.tparams) } else { sig.tparams }
+        fix guardado = scopeParams
+        scopeParams = aqui
+        fix ambito = Mapa<Str, VarE>()
+        fix params = kid(d.nodo, 1).kids
+        mut i = 0
+        while i < params.tam() {
+            ambito.pone(params.obtiene(i).attrs, VarE(sig.params.obtiene(i), false, nil))
+            i += 1
+        }
+        fix retSig = sig.ret
+        fix ctx = if retSig != nil { nuevoCtx("Declared", retSig, clase) } else { nuevoCtx("Infer", nil, clase) }
+        ctx.scopes.agrega(ambito)
+        fix cuerpo = kid(d.nodo, 3)
+        block(ctx, cuerpo)
+        if ctx.retK == "Infer" {
+            sig.ret = ctx.retTy ?: T_UNIT
+        } else if ctx.retK == "Declared" {
+            fix declarado = ctx.retTy
+            if declarado != nil && declarado.k != "Unit" && !blockReturns(cuerpo) {
+                fail err("la función `${attr(d.nodo, 0)}` puede terminar sin devolver un valor de tipo ${muestra(declarado)}", nombreR(d.nodo))
+            }
+        }
+        state.pone(clave, "Done")
+        scopeParams = guardado
+    }
+
+    fn block(ctx: Ctx, bloque: Nodo) {
+        ctx.scopes.agrega(Mapa<Str, VarE>())
+        attempt {
+            mut i = 0
+            while i < bloque.kids.tam() {
+                stmt(ctx, bloque.kids.obtiene(i))
+                i += 1
+            }
+        } rescue e: ErrorTipo {
+            ctx.scopes.quita()
+            fail e
+        }
+        ctx.scopes.quita()
+    }
+
+    /// Busca una variable: ámbitos locales, campos de `this` y globales, en ese orden.
+    fn lookup(ctx: Ctx, nombre: Str) -> Vista? {
+        mut i = ctx.scopes.tam() - 1
+        while i >= 0 {
+            fix v = ctx.scopes.obtiene(i).obtiene(nombre)
+            if v != nil {
+                // Dentro de una lambda, una variable `mut` de fuera vuelve a su tipo declarado: la lambda puede
+                // ejecutarse cuando ya no vale lo que se probó al crearla.
+                fix capturada = !ctx.marks.vacia() && i < ctx.marks.obtiene(ctx.marks.tam() - 1)
+                fix declarado = v.declarado
+                if capturada && v.mutable && declarado != nil { return Vista(declarado, true) }
+                return Vista(v.ty, v.mutable)
+            }
+            i -= 1
+        }
+        fix esto = ctx.esto
+        if esto != nil {
+            fix campos = allFields(esto, identityArgs(esto))
+            mut j = 0
+            while j < campos.tam() {
+                if campos.obtiene(j).nombre == nombre { return Vista(campos.obtiene(j).ty, campos.obtiene(j).mutable) }
+                j += 1
+            }
+        }
+        fix estrechada = ctx.scriptNarrow.obtiene(nombre)
+        if estrechada != nil { return Vista(estrechada, false) }
+        fix g = globals.obtiene(nombre)
+        if g == nil { return nil }
+        return Vista(g.ty, g.mutable)
+    }
+
+    /// Como `lookup` pero solo para estrechar: tipo, mutabilidad, tipo declarado si ya estaba estrechada y si
+    /// es un local (los campos no se estrechan).
+    fn narrowable(ctx: Ctx, nombre: Str) -> Estrechable? {
+        mut i = ctx.scopes.tam() - 1
+        while i >= 0 {
+            fix v = ctx.scopes.obtiene(i).obtiene(nombre)
+            if v != nil { return Estrechable(v.ty, v.mutable, v.declarado, true) }
+            i -= 1
+        }
+        fix esto = ctx.esto
+        if esto != nil {
+            if allFields(esto, identityArgs(esto)).alguno({ f -> f.nombre == nombre }) { return nil }
+        }
+        if ctx.scriptNarrow.contiene(nombre) { return nil }
+        // Una global `mut` que ninguna función ni lambda asigna solo cambia por el código que se ve, así que en
+        // el nivel superior se estrecha igual que una local. Dentro de una función no: en el REPL, una lambda
+        // definida después podría llegarle como argumento y asignarla.
+        fix seguro = ctx.retK == "Script" && ctx.esto == nil && !fnAssigned.contiene(nombre)
+        fix g = globals.obtiene(nombre)
+        if g == nil { return nil }
+        return Estrechable(g.ty, g.mutable, g.declarado, seguro)
+    }
+
+    /// Entradas de ámbito que dejan `nombres` sin `nil`. Un `mut` solo se estrecha si no se asigna dentro de un
+    /// bucle anidado en `cuerpo` (en línea recta una asignación basta con volver a ensancharlo).
+    fn narrowing(ctx: Ctx, nombres: Lista<Str>, cuerpo: Nodo?) -> Lista<EntradaE> {
+        fix salida = Lista<EntradaE>()
+        mut i = 0
+        while i < nombres.tam() {
+            fix nombre = nombres.obtiene(i)
+            i += 1
+            fix n = narrowable(ctx, nombre)
+            if n == nil { continue }
+            if n.ty.k != "Nullable" { continue }
+            if n.mutable {
+                if !n.local { continue }
+                if cuerpo != nil && assignedInLoop(cuerpo, nombre) { continue }
+            }
+            salida.agrega(EntradaE(nombre, VarE(n.ty.args.obtiene(0), n.mutable, n.declarado ?: n.ty)))
+        }
+        return salida
+    }
+
+    /// Estrecha en el resto del ámbito actual (`if x == nil { return }`).
+    fn narrowHere(ctx: Ctx, nombres: Lista<Str>) {
+        fix entradas = narrowing(ctx, nombres, nil)
+        mut i = 0
+        while i < entradas.tam() {
+            fix e = entradas.obtiene(i)
+            i += 1
+            // Fuera de todo bloque no hay dónde deshacerlo si luego se asigna: solo las `fix`.
+            if ctx.scopes.vacia() && e.v.mutable { continue }
+            if ctx.scopes.vacia() {
+                ctx.scriptNarrow.pone(e.nombre, e.v.ty)
+            } else {
+                ctx.scopes.obtiene(ctx.scopes.tam() - 1).pone(e.nombre, e.v)
+            }
+        }
+    }
+
+    /// Verifica un bloque con `nombres` estrechadas dentro de él.
+    fn blockNarrowed(ctx: Ctx, bloque: Nodo, nombres: Lista<Str>) {
+        fix entradas = narrowing(ctx, nombres, bloque)
+        // Un ámbito para los estrechamientos y otro para el bloque: así el bloque puede volver a declarar el mismo nombre.
+        fix ambito = Mapa<Str, VarE>()
+        entradas.paraCada { e -> ambito.pone(e.nombre, e.v) }
+        ctx.scopes.agrega(ambito)
+        ctx.scopes.agrega(Mapa<Str, VarE>())
+        attempt {
+            mut i = 0
+            while i < bloque.kids.tam() {
+                stmt(ctx, bloque.kids.obtiene(i))
+                i += 1
+            }
+        } rescue e: ErrorTipo {
+            ctx.scopes.quita()
+            ctx.scopes.quita()
+            fail e
+        }
+        ctx.scopes.quita()
+        ctx.scopes.quita()
+    }
+
+    /// Tras asignar un valor posiblemente nulo, la variable vuelve a su tipo declarado.
+    fn widen(ctx: Ctx, nombre: Str) {
+        mut i = ctx.scopes.tam() - 1
+        while i >= 0 {
+            fix v = ctx.scopes.obtiene(i).obtiene(nombre)
+            if v != nil {
+                fix d = v.declarado
+                if d != nil { v.ty = d }
+                return
+            }
+            i -= 1
+        }
+    }
+
+    fn ensureClassOf(ty: Tipo) {
+        if ty.k == "Obj" {
+            ensureClass(ty.nombre)
+        } else if ty.k == "Param" {
+            fix cota = paramBound(ty.nombre)
+            if cota != nil && cota.k == "Obj" { ensureClass(cota.nombre) }
+        }
+    }
+
+    /// Campo `nombre` de un valor de tipo `ty`: su tipo y mutabilidad.
+    fn fieldOf(ty: Tipo, nombre: Str, nombreRango: Rango, destinoRango: Rango) -> FieldInfo {
+        // Un parámetro de tipo con cota de clase muestra los campos de su cota.
+        mut base = ty
+        if ty.k == "Param" {
+            fix cota = paramBound(ty.nombre)
+            if cota != nil { base = cota }
+        }
+        if base.k != "Obj" { fail err(notObject(base, "campos"), destinoRango) }
+        if kinds.contiene(base.nombre) {
+            fail err("`${base.nombre}` es una interfaz y no tiene campos", destinoRango)
+        }
+        fix campos = allFields(base.nombre, base.args)
+        mut i = 0
+        while i < campos.tam() {
+            if campos.obtiene(i).nombre == nombre { return campos.obtiene(i) }
+            i += 1
+        }
+        fail err("la clase `${base.nombre}` no tiene el campo `${nombre}`", nombreRango)
+    }
+
+    fn declare(ctx: Ctx, nombre: Str, ty: Tipo, mutable: Bool, r: Rango) {
+        fix ambito = if ctx.scopes.vacia() { globals } else { ctx.scopes.obtiene(ctx.scopes.tam() - 1) }
+        if ambito.contiene(nombre) {
+            fail err("`${nombre}` ya está declarada en este ámbito", r)
+        }
+        ambito.pone(nombre, VarE(ty, mutable, nil))
+    }
+
+    /// Tipo de `e` exigiendo `esperado`. Un arreglo vacío `[]` toma el tipo esperado.
+    fn exprAs(ctx: Ctx, e: Nodo, esperado: Tipo) {
+        // Una lambda toma los tipos de sus parámetros y de su resultado del tipo esperado.
+        if e.tag == "Lambda" {
+            fix objetivo = if esperado.k == "Nullable" { esperado.args.obtiene(0) } else { esperado }
+            if objetivo.k == "Fn" {
+                fix conocidos = Lista<Tipo?>()
+                paramsDe(objetivo).paraCada { p -> conocidos.agrega(p) }
+                fix hallado = lambda(ctx, e, EsperadoL(conocidos, retDe(objetivo)))
+                expect(esperado, hallado, rg(e))
+                return
+            }
+        }
+        if e.tag == "Array" && esperado.k == "Array" {
+            if e.kids.vacia() { return }
+            // Un arreglo de objetos acepta elementos de subclases: `[Perro(..), Gato(..)]` como `[Animal]`.
+            fix elem = esperado.args.obtiene(0)
+            if elem.k == "Obj" || elem.k == "Nullable" {
+                mut i = 0
+                while i < e.kids.tam() {
+                    exprAs(ctx, e.kids.obtiene(i), elem)
+                    i += 1
+                }
+                return
+            }
+        }
+        // `fix l: Lista<Int> = Lista()`: el tipo esperado completa los argumentos de tipo.
+        if e.tag == "Call" && !esBuiltin(e.attrs) {
+            fix hallado = call(ctx, e, esperado)
+            expect(esperado, hallado, rg(e))
+            return
+        }
+        fix hallado = expr(ctx, e)
+        expect(esperado, hallado, rg(e))
+    }
+
+    fn stmt(ctx: Ctx, s: Nodo) {
+        match s.tag {
+            "Show", "ExprStmt" -> { expr(ctx, kid(s, 0)) }
+            "Let" -> {
+                fix nombre = attr(s, 0)
+                fix mutab = attr(s, 1) == "mut"
+                fix tyNodo = kid(s, 0)
+                fix init = kid(s, 1)
+                // `fix fact: (Int) -> Int = { n -> ... fact(n - 1) }` en el nivel superior: la global ya existe
+                // dentro de la lambda (se llama cuando ya tiene valor).
+                if !esNada(tyNodo) && ctx.scopes.vacia() && init.tag == "Lambda" {
+                    fix esperado = resolve(tyNodo)
+                    if esperado.k == "Fn" {
+                        if globals.contiene(nombre) {
+                            fail err("`${nombre}` ya está declarada en este ámbito", nombreR(s))
+                        }
+                        globals.pone(nombre, VarE(esperado, mutab, nil))
+                        exprAs(ctx, init, esperado)
+                        return
+                    }
+                }
+                mut declarado = T_UNIT
+                if !esNada(tyNodo) {
+                    fix esperado = resolve(tyNodo)
+                    exprAs(ctx, init, esperado)
+                    declarado = esperado
+                } else {
+                    fix hallado = expr(ctx, init)
+                    noNil(hallado, rg(init))
+                    declarado = hallado
+                }
+                if declarado.k == "Unit" {
+                    fail err("`${nombre}` no puede guardar un valor de tipo Unit", rg(init))
+                }
+                declare(ctx, nombre, declarado, mutab, nombreR(s))
+            }
+            "Assign" -> {
+                fix nombre = attr(s, 0)
+                fix op = attr(s, 1)
+                fix valor = kid(s, 0)
+                fix lk = lookup(ctx, nombre)
+                if lk == nil { fail undefinedVariable(nombre, nombreR(s)) }
+                if !lk.mutable {
+                    fail err("no se puede asignar a `${nombre}` porque es inmutable; decláralo con `mut`", nombreR(s))
+                }
+                // Una variable estrechada acepta lo que admite su tipo declarado; si el valor puede ser nil, deja
+                // de estar estrechada.
+                mut declarado: Tipo? = nil
+                mut i = ctx.scopes.tam() - 1
+                while i >= 0 {
+                    fix e = ctx.scopes.obtiene(i).obtiene(nombre)
+                    if e != nil {
+                        declarado = e.declarado
+                        break
+                    }
+                    i -= 1
+                }
+                fix declarado2 = declarado
+                if declarado2 != nil && op == "=" {
+                    assigned(ctx, declarado2, op, valor, rg(s))
+                    mut puedeNil = true
+                    attempt {
+                        fix f = expr(ctx, valor)
+                        puedeNil = f.k == "Nullable" || f.k == "Nil"
+                    } rescue e: ErrorTipo {
+                        puedeNil = true
+                    }
+                    if puedeNil && valor.tag != "Array" { widen(ctx, nombre) }
+                } else {
+                    assigned(ctx, lk.ty, op, valor, rg(s))
+                }
+            }
+            "FieldAssign" -> {
+                fix destino = kid(s, 0)
+                fix nombre = attr(s, 0)
+                fix destinoTy = expr(ctx, destino)
+                ensureClassOf(destinoTy)
+                fix campo = fieldOf(destinoTy, nombre, nombreR(s), rg(destino))
+                if !campo.mutable {
+                    fail err("no se puede asignar al campo `${nombre}` porque es inmutable; decláralo con `mut`", nombreR(s))
+                }
+                assigned(ctx, campo.ty, attr(s, 1), kid(s, 1), rg(s))
+            }
+            "IndexAssign" -> {
+                fix destino = kid(s, 0)
+                if expr(ctx, destino).k == "Str" {
+                    fail err("las cadenas no se pueden modificar: crea una nueva con `+` o `reemplaza`", rg(destino))
+                }
+                fix elem = indexedType(ctx, destino, kid(s, 1))
+                assigned(ctx, elem, s.attrs, kid(s, 2), rg(s))
+            }
+            "If" -> {
+                fix cond = kid(s, 0)
+                fix entonces = kid(s, 1)
+                fix otro = kid(s, 2)
+                condition(ctx, cond)
+                fix h = facts(cond)
+                blockNarrowed(ctx, entonces, h.cierto)
+                if !esNada(otro) { blockNarrowed(ctx, otro, h.falso) }
+                // `if x == nil { return }`: después del `if`, `x` no es nil.
+                if exits(entonces) { narrowHere(ctx, h.falso) }
+                if !esNada(otro) && exits(otro) { narrowHere(ctx, h.cierto) }
+            }
+            "While" -> {
+                condition(ctx, kid(s, 0))
+                blockNarrowed(ctx, kid(s, 1), facts(kid(s, 0)).cierto)
+            }
+            "Fail" -> {
+                fix valor = kid(s, 0)
+                fix hallado = expr(ctx, valor)
+                if !(hallado.k == "Obj" && isSub(hallado.nombre, "Fallo")) {
+                    fail err("solo se pueden lanzar objetos de clases que hereden de `Fallo`, pero esto es ${muestra(hallado)}", rg(valor))
+                }
+            }
+            "Attempt" -> {
+                block(ctx, kid(s, 0))
+                mut r = 1
+                while r < s.kids.tam() {
+                    fix resc = s.kids.obtiene(r)
+                    r += 1
+                    fix tyNodo = kid(resc, 0)
+                    fix ty = resolve(tyNodo)
+                    if ty.k != "Obj" {
+                        fail err("`rescue` necesita una clase que herede de `Fallo`, pero esto es ${muestra(ty)}", rg(tyNodo))
+                    }
+                    if !isSub(ty.nombre, "Fallo") {
+                        fail err("solo se pueden rescatar clases que hereden de `Fallo`; `${ty.nombre}` no lo hace", rg(tyNodo))
+                    }
+                    fix ambito = Mapa<Str, VarE>()
+                    ambito.pone(resc.attrs, VarE(ty, false, nil))
+                    ctx.scopes.agrega(ambito)
+                    attempt {
+                        block(ctx, kid(resc, 1))
+                    } rescue e: ErrorTipo {
+                        ctx.scopes.quita()
+                        fail e
+                    }
+                    ctx.scopes.quita()
+                }
+            }
+            "Return" -> {
+                fix valor = kid(s, 0)
+                mut esperado: Tipo? = nil
+                if ctx.retK == "Declared" || ctx.retK == "Infer" { esperado = ctx.retTy }
+                fix esp = esperado
+                if !esNada(valor) && esp != nil {
+                    if esp.k == "Unit" && ctx.retK != "Infer" {
+                        fix hallado = expr(ctx, valor)
+                        fail err("la función no declara un tipo de retorno, pero devuelve ${muestra(hallado)}; añade `-> ${muestra(hallado)}`", rg(valor))
+                    }
+                    exprAs(ctx, valor, esp)
+                } else if !esNada(valor) {
+                    fix hallado = expr(ctx, valor)
+                    noNil(hallado, rg(valor))
+                    if ctx.retK == "Infer" { ctx.retTy = hallado }
+                } else if esp != nil {
+                    expect(esp, T_UNIT, rg(s))
+                } else if ctx.retK == "Infer" {
+                    ctx.retTy = T_UNIT
+                }
+            }
+            _ -> {}
+        }
+    }
+
+    /// Verifica el valor asignado a algo de tipo `ty` (`=` o `op=`).
+    fn assigned(ctx: Ctx, ty: Tipo, op: Str, valor: Nodo, r: Rango) {
+        if op == "=" {
+            exprAs(ctx, valor, ty)
+        } else {
+            fix hallado = expr(ctx, valor)
+            fix resultado = binaryType(op.trozo(0, op.largo() - 1), ty, hallado, r)
+            expect(ty, resultado, rg(valor))
+        }
+    }
+
+    /// Tipo del elemento de `destino[indice]`.
+    fn indexedType(ctx: Ctx, destino: Nodo, indice: Nodo) -> Tipo {
+        fix destinoTy = expr(ctx, destino)
+        fix indiceTy = expr(ctx, indice)
+        if indiceTy.k != "Int" {
+            fail err("el índice debe ser Int, pero es ${muestra(indiceTy)}", rg(indice))
+        }
+        if destinoTy.k == "Array" { return destinoTy.args.obtiene(0) }
+        // `s[i]` es la cadena de un carácter.
+        if destinoTy.k == "Str" { return T_STR }
+        fail err("solo se puede indexar un arreglo o una cadena, pero esto es ${muestra(destinoTy)}", rg(destino))
+    }
+
+    fn condition(ctx: Ctx, cond: Nodo) {
+        fix t = expr(ctx, cond)
+        if t.k != "Bool" {
+            fail err("la condición debe ser Bool, pero es ${muestra(t)}", rg(cond))
+        }
+    }
+
+    /// Resuelve un tipo escrito en el código.
+    fn resolve(ty: Nodo) -> Tipo {
+        fix nombre = ty.attrs
+        fix args = ty.kids
+        fix n = args.tam()
+        if n == 0 {
+            if nombre == "Int" { return T_INT }
+            if nombre == "Float" { return T_FLOAT }
+            if nombre == "Bool" { return T_BOOL }
+            if nombre == "Str" { return T_STR }
+            if nombre == "Unit" { return T_UNIT }
+        }
+        if nombre == "Array" && n == 1 {
+            fix elem = resolve(args.obtiene(0))
+            if elem.k == "Unit" {
+                fail err("un arreglo no puede contener valores de tipo Unit", rg(ty))
+            }
+            return arrayDe(elem)
+        }
+        if nombre == "Nullable" && n == 1 {
+            fix dentro = resolve(args.obtiene(0))
+            if dentro.k == "Unit" || dentro.k == "Nullable" {
+                fail err("`${muestra(dentro)}?` no tiene sentido: un tipo opcional no puede ser Unit ni otro opcional", rg(ty))
+            }
+            return nullable(dentro)
+        }
+        if nombre == "Fn" && n >= 1 {
+            fix ps = Lista<Tipo>()
+            mut i = 0
+            while i < n - 1 {
+                fix t = resolve(args.obtiene(i))
+                if t.k == "Unit" {
+                    fail err("un parámetro de una función no puede ser Unit", rg(args.obtiene(i)))
+                }
+                ps.agrega(t)
+                i += 1
+            }
+            return fnT(ps, resolve(args.obtiene(n - 1)))
+        }
+        if n == 0 && scopeParams.alguno({ p -> p.nombre == nombre }) { return tparam(nombre) }
+        mut aridad = 0
+        fix clase = classes.obtiene(nombre)
+        fix kindI = kinds.obtiene(nombre)
+        if clase != nil {
+            aridad = clase.tparams.tam()
+        } else if kindI != nil {
+            aridad = kindI.tparams.tam()
+        } else {
+            fail err("el tipo `${nombre}` no existe (hay Int, Float, Bool, Str, Unit, [T], las clases, las interfaces y los parámetros de tipo declarados)", rg(ty))
+        }
+        if n != aridad {
+            if aridad == 0 {
+                fail err("`${nombre}` no es genérica y no admite argumentos de tipo", rg(ty))
+            }
+            fail err("`${nombre}` necesita ${aridad} argumento(s) de tipo, por ejemplo `${nombre}<...>`", rg(ty))
+        }
+        fix resueltos = Lista<Tipo>()
+        mut j = 0
+        while j < n {
+            fix t = resolve(args.obtiene(j))
+            if t.k == "Unit" {
+                fail err("un argumento de tipo no puede ser Unit", rg(args.obtiene(j)))
+            }
+            resueltos.agrega(t)
+            j += 1
+        }
+        return obj(nombre, resueltos)
+    }
+
+    // ------------------------------------------------------------ expresiones
+
+    fn expr(ctx: Ctx, e: Nodo) -> Tipo {
+        match e.tag {
+            "Int" -> return T_INT
+            "Float" -> return T_FLOAT
+            "Bool" -> return T_BOOL
+            "Str" -> return T_STR
+            "Lambda" -> return lambda(ctx, e, nil)
+            "CallValue" -> {
+                fix callee = kid(e, 0)
+                fix args = kid(e, 1).kids
+                fix hallado = expr(ctx, callee)
+                if hallado.k == "Fn" { return callValue(ctx, "esta función", paramsDe(hallado), retDe(hallado), args, rg(e)) }
+                if hallado.k == "Nullable" && hallado.args.obtiene(0).k == "Fn" {
+                    fail err("esta función es opcional y puede ser nil: comprueba que no lo sea antes de llamarla", rg(callee))
+                }
+                fail err("solo se pueden llamar funciones, pero esto es ${muestra(hallado)}", rg(callee))
+            }
+            "Var" -> {
+                fix v = lookup(ctx, e.attrs)
+                if v == nil { return functionValue(e.attrs, rg(e)) }
+                return v.ty
+            }
+            "This" -> {
+                fix esto = ctx.esto
+                if esto == nil { fail err("`this` solo se puede usar dentro de un método", rg(e)) }
+                return obj(esto, identityArgs(esto))
+            }
+            "Field" -> {
+                fix destino = kid(e, 0)
+                fix destinoTy = expr(ctx, destino)
+                ensureClassOf(destinoTy)
+                return fieldOf(destinoTy, e.attrs, nombreR(e), rg(destino)).ty
+            }
+            "MethodCall" -> return methodCall(ctx, e)
+            "SuperCall" -> {
+                fix esto = ctx.esto
+                mut padre: Tipo? = nil
+                if esto != nil {
+                    fix info = claseDe(esto)
+                    fix p = info.padre
+                    if p != nil { padre = obj(p.nombre, p.args) }
+                }
+                fix padreTy = padre
+                if padreTy == nil {
+                    fail err("`super` solo se puede usar en un método de una clase que hereda de otra", rg(e))
+                }
+                fix h = findMethod(padreTy, e.attrs)
+                if h == nil {
+                    fail err("la clase padre `${muestra(padreTy)}` no tiene el método `${e.attrs}`", nombreR(e))
+                }
+                return callSig(ctx, h.clave, e.attrs, "el método", kid(e, 0).kids, Lista<Nodo>(), rg(e), h.mapa, nil)
+            }
+            "Is" -> {
+                typeTest(ctx, kid(e, 0), kid(e, 1), "is")
+                return T_BOOL
+            }
+            "Cast" -> return typeTest(ctx, kid(e, 0), kid(e, 1), "as")
+            "Interp" -> {
+                mut i = 0
+                while i < e.kids.tam() {
+                    fix parte = e.kids.obtiene(i)
+                    i += 1
+                    if parte.tag == "Text" { continue }
+                    if expr(ctx, parte).k == "Unit" {
+                        fail err("no se puede interpolar un valor de tipo Unit", rg(parte))
+                    }
+                }
+                return T_STR
+            }
+            "Array" -> {
+                if e.kids.vacia() {
+                    fail err("no se puede deducir el tipo de un arreglo vacío; anótalo, por ejemplo `fix a: [Int] = []`", rg(e))
+                }
+                fix primero = e.kids.obtiene(0)
+                fix elem = expr(ctx, primero)
+                noNil(elem, rg(primero))
+                if elem.k == "Unit" {
+                    fail err("un arreglo no puede contener valores de tipo Unit", rg(primero))
+                }
+                mut i = 1
+                while i < e.kids.tam() {
+                    exprAs(ctx, e.kids.obtiene(i), elem)
+                    i += 1
+                }
+                return arrayDe(elem)
+            }
+            "Index" -> return indexedType(ctx, kid(e, 0), kid(e, 1))
+            "Unary" -> {
+                fix ty = expr(ctx, kid(e, 0))
+                if e.attrs == "Neg" && esNumerico(ty) { return ty }
+                if e.attrs == "Not" && ty.k == "Bool" { return T_BOOL }
+                fail err("el operador `${if e.attrs == "Neg" { "-" } else { "!" }}` no admite ${muestra(ty)}", rg(e))
+            }
+            "Binary" -> {
+                fix op = e.attrs
+                fix lhs = kid(e, 0)
+                fix rhs = kid(e, 1)
+                fix a = expr(ctx, lhs)
+                // `x != nil && x.f`: el lado derecho ve lo que el izquierdo probó.
+                mut probado = Lista<Str>()
+                if op == "&&" {
+                    probado = facts(lhs).cierto
+                } else if op == "||" {
+                    probado = facts(lhs).falso
+                }
+                fix entradas = narrowing(ctx, probado, nil)
+                fix ambito = Mapa<Str, VarE>()
+                entradas.paraCada { x -> ambito.pone(x.nombre, x.v) }
+                ctx.scopes.agrega(ambito)
+                mut b = T_UNIT
+                attempt {
+                    b = expr(ctx, rhs)
+                } rescue er: ErrorTipo {
+                    ctx.scopes.quita()
+                    fail er
+                }
+                ctx.scopes.quita()
+                if op == "==" || op == "!=" { return equalityType(a, b, rg(e)) }
+                return binaryType(op, a, b, rg(e))
+            }
+            "Nil" -> return T_NIL
+            "Elvis" -> {
+                fix lhs = kid(e, 0)
+                fix rhs = kid(e, 1)
+                fix hallado = expr(ctx, lhs)
+                if hallado.k != "Nullable" {
+                    fail err("el operador `?:` necesita un valor opcional (`T?`), pero esto es ${muestra(hallado)}", rg(lhs))
+                }
+                fix dentro = hallado.args.obtiene(0)
+                fix otro = expr(ctx, rhs)
+                if assignable(dentro, otro) { return dentro }
+                if (otro.k == "Nullable" && assignable(dentro, otro.args.obtiene(0))) || otro.k == "Nil" {
+                    return nullable(dentro)
+                }
+                expect(dentro, otro, rg(rhs))
+                return dentro
+            }
+            "SafeField" -> {
+                fix destino = kid(e, 0)
+                fix destinoTy = expr(ctx, destino)
+                fix dentro = if destinoTy.k == "Nullable" { destinoTy.args.obtiene(0) } else { destinoTy }
+                ensureClassOf(dentro)
+                return opcional(fieldOf(dentro, e.attrs, nombreR(e), rg(destino)).ty)
+            }
+            "SafeCall" -> {
+                fix destino = kid(e, 0)
+                fix destinoTy = expr(ctx, destino)
+                fix dentro = if destinoTy.k == "Nullable" { destinoTy.args.obtiene(0) } else { destinoTy }
+                fix receptor = methodReceiver(dentro, rg(destino))
+                fix h = findMethod(receptor, e.attrs)
+                if h == nil {
+                    fail err("`${muestra(receptor)}` no tiene el método `${e.attrs}`", nombreR(e))
+                }
+                fix ret = callSig(ctx, h.clave, e.attrs, "el método", kid(e, 1).kids, Lista<Nodo>(), rg(e), h.mapa, nil)
+                return if ret.k == "Unit" { ret } else { opcional(ret) }
+            }
+            "Call" -> {
+                if esBuiltin(e.attrs) { return builtin(ctx, e.attrs, kid(e, 1).kids, rg(e)) }
+                return call(ctx, e, nil)
+            }
+            _ -> fail err("mn: expresión desconocida: ${e.tag}", rg(e))
+        }
+    }
+
+    fn methodCall(ctx: Ctx, e: Nodo) -> Tipo {
+        fix destino = kid(e, 0)
+        fix nombre = e.attrs
+        fix targs = kid(e, 1).kids
+        fix args = kid(e, 2).kids
+        // `Int.parse(s)` / `Float.parse(s)`: funciones del preludio.
+        if destino.tag == "Var" && (destino.attrs == "Int" || destino.attrs == "Float") && !isVariable(ctx, destino.attrs) {
+            fix clave = "_${destino.attrs.minus()}_${nombre}"
+            return stdCall(ctx, clave, nombre, nombreR(e), destino.attrs, nil, args, targs, rg(e))
+        }
+        fix destinoTy = expr(ctx, destino)
+        // Métodos de Str: funciones del preludio con la cadena como primer argumento.
+        if destinoTy.k == "Str" {
+            return stdCall(ctx, "_str_${nombre}", nombre, nombreR(e), "Str", destino, args, targs, rg(e))
+        }
+        fix receptor = methodReceiver(destinoTy, rg(destino))
+        fix h = findMethod(receptor, nombre)
+        if h == nil {
+            // `obj.alClic(x)`: llamada a un campo de tipo función.
+            ensureClassOf(receptor)
+            mut campoFn: FieldInfo? = nil
+            attempt {
+                campoFn = fieldOf(receptor, nombre, nombreR(e), rg(destino))
+            } rescue er: ErrorTipo {
+                campoFn = nil
+            }
+            fix campo = campoFn
+            if campo != nil && campo.ty.k == "Fn" {
+                return callValue(ctx, nombre, paramsDe(campo.ty), retDe(campo.ty), args, rg(e))
+            }
+            fix que = if receptor.k == "Obj" && kinds.contiene(receptor.nombre) { "la interfaz" } else { "la clase" }
+            fail err("${que} `${muestra(receptor)}` no tiene el método `${nombre}`", nombreR(e))
+        }
+        return callSig(ctx, h.clave, nombre, "el método", args, targs, rg(e), h.mapa, nil)
+    }
+
+    fn builtin(ctx: Ctx, nombre: Str, args: Lista<Nodo>, r: Rango) -> Tipo {
+        fix nativa = NATIVAS.obtiene(nombre)
+        if nativa != nil {
+            if args.tam() != nativa.params.tam() {
+                fail err("la función `${nombre}` espera ${nativa.params.tam()} argumento(s), pero recibió ${args.tam()}", r)
+            }
+            mut i = 0
+            while i < args.tam() {
+                exprAs(ctx, args.obtiene(i), tipoNativo(nativa.params.obtiene(i)))
+                i += 1
+            }
+            return tipoNativo(nativa.ret)
+        }
+        fix querido = if nombre == "push" { 2 } else { 1 }
+        if args.tam() != querido {
+            fail err("la función `${nombre}` espera ${querido} argumento(s), pero recibió ${args.tam()}", r)
+        }
+        fix primero = expr(ctx, args.obtiene(0))
+        if nombre == "len" {
+            if primero.k == "Str" || primero.k == "Array" { return T_INT }
+            fail err("`len` admite Str o un arreglo, pero recibió ${muestra(primero)}", rg(args.obtiene(0)))
+        }
+        if nombre == "hash" {
+            if primero.k == "Unit" || primero.k == "Nil" {
+                fail err("`hash` necesita un valor, pero recibió ${muestra(primero)}", rg(args.obtiene(0)))
+            }
+            return T_INT
+        }
+        if nombre == "pop" {
+            if primero.k == "Array" { return primero.args.obtiene(0) }
+            fail err("`pop` necesita un arreglo, pero recibió ${muestra(primero)}", rg(args.obtiene(0)))
+        }
+        // push(arreglo, valor)
+        if primero.k != "Array" {
+            fail err("`push` necesita un arreglo, pero recibió ${muestra(primero)}", rg(args.obtiene(0)))
+        }
+        exprAs(ctx, args.obtiene(1), primero.args.obtiene(0))
+        return T_UNIT
+    }
+
+    /// `e is T` / `e as T`: ambos lados deben ser objetos y estar emparentados.
+    fn typeTest(ctx: Ctx, e: Nodo, ty: Nodo, op: Str) -> Tipo {
+        fix hallado = expr(ctx, e)
+        if hallado.k != "Obj" {
+            fail err("`${op}` compara un objeto, pero ${muestra(hallado)} no lo es", rg(e))
+        }
+        fix desde = hallado.nombre
+        mut hacia = ""
+        mut resultado = T_BOOL
+        // Los argumentos de tipo no existen en ejecución: `is` mira solo la clase.
+        if op == "is" {
+            if !classes.contiene(ty.attrs) && !kinds.contiene(ty.attrs) {
+                fix otro = resolve(ty)
+                fail err("`is` compara con una clase o interfaz, pero ${muestra(otro)} no lo es", rg(ty))
+            }
+            if !ty.kids.vacia() {
+                fail err("los argumentos de tipo se borran en ejecución: escribe `is ${ty.attrs}`", rg(ty))
+            }
+            hacia = ty.attrs
+        } else {
+            fix destino = resolve(ty)
+            if destino.k != "Obj" {
+                fail err("`as` convierte a una clase o interfaz, pero ${muestra(destino)} no lo es", rg(ty))
+            }
+            if !destino.args.vacia() {
+                fail err("no se puede convertir a un tipo genérico: los argumentos de tipo se borran en ejecución", rg(ty))
+            }
+            hacia = destino.nombre
+            resultado = destino
+        }
+        // Dos clases sin relación nunca coinciden; con una interfaz de por medio sí puede.
+        if classes.contiene(desde) && classes.contiene(hacia) && !isSub(desde, hacia) && !isSub(hacia, desde) {
+            fail err("un `${desde}` nunca puede ser un `${hacia}`: no están emparentadas", rg(ty))
+        }
+        return resultado
+    }
+
+    fn isVariable(ctx: Ctx, nombre: Str) -> Bool {
+        mut i = 0
+        while i < ctx.scopes.tam() {
+            if ctx.scopes.obtiene(i).contiene(nombre) { return true }
+            i += 1
+        }
+        return globals.contiene(nombre)
+    }
+
+    /// Llamada a un método de un tipo básico (`"a,b".parte(",")`, `Int.parse(s)`) que el preludio implementa
+    /// como la función `clave`; `receptor` va de primer argumento.
+    fn stdCall(ctx: Ctx, clave: Str, nombre: Str, nombreRango: Rango, dueno: Str, receptor: Nodo?, args: Lista<Nodo>, targs: Lista<Nodo>, r: Rango) -> Tipo {
+        fix sig = funcs.obtiene(clave)
+        if sig == nil { fail err("${dueno} no tiene el método `${nombre}`", nombreRango) }
+        fix salto = if receptor != nil { 1 } else { 0 }
+        if sig.params.tam() != args.tam() + salto {
+            fail err("el método `${nombre}` de ${dueno} espera ${sig.params.tam() - salto} argumento(s), pero recibió ${args.tam()}", r)
+        }
+        fix todos = Lista<Nodo>()
+        if receptor != nil { todos.agrega(receptor) }
+        args.paraCada { a -> todos.agrega(a) }
+        return callSig(ctx, clave, nombre, "el método", todos, targs, r, Mapa<Str, Tipo>(), nil)
+    }
+
+    /// El tipo donde buscar métodos al llamar sobre `ty`: el propio objeto o, para un parámetro de tipo, su cota.
+    fn methodReceiver(ty: Tipo, r: Rango) -> Tipo {
+        if ty.k == "Obj" { return ty }
+        if ty.k == "Param" {
+            fix cota = paramBound(ty.nombre)
+            if cota == nil {
+                fail err("`${ty.nombre}` no tiene métodos: añade una cota al parámetro de tipo, por ejemplo `<${ty.nombre}: Interfaz>`", r)
+            }
+            return cota
+        }
+        fail err(notObject(ty, "métodos"), r)
+    }
+
+    /// Tipo de `a == b` / `a != b`: dos valores del mismo tipo (o numéricos, o emparentados) se pueden comparar;
+    /// `nil` solo con un opcional. Los objetos y arreglos se comparan por referencia.
+    fn equalityType(a: Tipo, b: Tipo, r: Rango) -> Tipo {
+        fix invalido = { pista: Str -> err("la operación `==` no admite ${muestra(a)} y ${muestra(b)}${pista}", r) }
+        if (a.k == "Nil" && (b.k == "Nullable" || b.k == "Nil")) || (a.k == "Nullable" && b.k == "Nil") { return T_BOOL }
+        if a.k == "Nil" || b.k == "Nil" {
+            fail invalido("; ese valor nunca es nil, así que no hace falta compararlo")
+        }
+        if a.k == "Unit" || b.k == "Unit" { fail invalido("") }
+        if (esNumerico(a) && esNumerico(b)) || assignable(a, b) || assignable(b, a) { return T_BOOL }
+        fail invalido("")
+    }
+
+    /// Llamada `nombre(args)`: constructor de una clase, método de `this` o función. `esperado` es el tipo que
+    /// pide el contexto (completa los argumentos de tipo de `Lista()`).
+    fn call(ctx: Ctx, e: Nodo, esperado: Tipo?) -> Tipo {
+        fix nombre = e.attrs
+        fix targs = kid(e, 0).kids
+        fix args = kid(e, 1).kids
+        fix r = rg(e)
+        // `f(x)` con `f` una variable, parámetro o campo de tipo función.
+        if !classes.contiene(nombre) && !kinds.contiene(nombre) {
+            fix lk = lookup(ctx, nombre)
+            if lk != nil {
+                if lk.ty.k == "Fn" { return callValue(ctx, nombre, paramsDe(lk.ty), retDe(lk.ty), args, r) }
+                if lk.ty.k == "Nullable" && lk.ty.args.obtiene(0).k == "Fn" {
+                    fail err("`${nombre}` es una función opcional y puede ser nil: comprueba `if ${nombre} != nil` antes de llamarla", r)
+                }
+            }
+        }
+        fix info = classes.obtiene(nombre)
+        if info != nil {
+            fix tparams = info.tparams
+            fix params = info.ctor
+            if params.tam() != args.tam() {
+                fail err("la clase `${nombre}` espera ${params.tam()} argumento(s), pero recibió ${args.tam()}", r)
+            }
+            fix plantilla = obj(nombre, tparams.map { p -> tparam(p.nombre) })
+            fix mapa = infer(ctx, Inf("la clase", nombre, tparams, params, args, targs, plantilla, esperado, r), Mapa<Str, Tipo>())
+            mut i = 0
+            while i < args.tam() {
+                exprAs(ctx, args.obtiene(i), subst(params.obtiene(i), mapa))
+                i += 1
+            }
+            return subst(plantilla, mapa)
+        }
+        if kinds.contiene(nombre) {
+            fail err("`${nombre}` es una interfaz y no se puede instanciar", r)
+        }
+        fix esto = ctx.esto
+        if esto != nil {
+            fix esteTy = obj(esto, identityArgs(esto))
+            fix h = findMethod(esteTy, nombre)
+            if h != nil {
+                return callSig(ctx, h.clave, nombre, "el método", args, Lista<Nodo>(), r, h.mapa, nil)
+            }
+        }
+        if !funcs.contiene(nombre) {
+            fix lk = lookup(ctx, nombre)
+            if lk != nil {
+                fail err("`${nombre}` no es una función: es una variable de tipo ${muestra(lk.ty)}", r)
+            }
+        }
+        return callSig(ctx, nombre, nombre, "la función", args, targs, r, Mapa<Str, Tipo>(), nil)
+    }
+
+    /// Llamada a un valor de tipo función: comprueba los argumentos contra sus parámetros.
+    fn callValue(ctx: Ctx, mostrado: Str, params: Lista<Tipo>, ret: Tipo, args: Lista<Nodo>, r: Rango) -> Tipo {
+        if params.tam() != args.tam() {
+            fail err("`${mostrado}` espera ${params.tam()} argumento(s), pero recibió ${args.tam()}", r)
+        }
+        mut i = 0
+        while i < args.tam() {
+            exprAs(ctx, args.obtiene(i), params.obtiene(i))
+            i += 1
+        }
+        return ret
+    }
+
+    /// Una función con nombre usada como valor (`aplica(doble, 3)`): su tipo de función.
+    fn functionValue(nombre: Str, r: Rango) -> Tipo {
+        if esBuiltin(nombre) {
+            fail err("`${nombre}` es una función integrada y no se puede usar como valor; envuélvela en una lambda", r)
+        }
+        fix sig = funcs.obtiene(nombre)
+        if sig == nil { fail undefinedVariable(nombre, r) }
+        if !sig.tparams.vacia() {
+            fail err("`${nombre}` es genérica y no se puede usar como valor; envuélvela en una lambda con tipos concretos", r)
+        }
+        if sig.ret == nil {
+            if (state.obtiene(nombre) ?: "") == "InProgress" {
+                fail err("`${nombre}` se usa antes de conocer su tipo; añade `-> Tipo` a su declaración", r)
+            }
+            if decls.contiene(nombre) { checkFn(nombre) }
+        }
+        return fnT(sig.params, sigDe(nombre).ret ?: T_UNIT)
+    }
+
+    /// Una clave que distingue lambdas, tipos esperados y variables a la vista (para no verificar dos veces lo mismo).
+    fn claveLambda(ctx: Ctx, e: Nodo, esp: EsperadoL?) -> Str {
+        fix visibles = Lista<Str>()
+        ctx.scopes.paraCada { ambito ->
+            ambito.claves().paraCada { n ->
+                fix v = ambito.obtiene(n)
+                if v != nil { visibles.agrega("${n}:${claveTipo(v.ty)}|${v.mutable}|${claveOpt(v.declarado)}") }
+            }
+        }
+        visibles.ordena({ a, b -> a < b })
+        fix estrechadas = Lista<Str>()
+        ctx.scriptNarrow.claves().paraCada { n -> estrechadas.agrega("${n}=${claveTipo(ctx.scriptNarrow.obtiene(n) ?: T_UNIT)}") }
+        estrechadas.ordena({ a, b -> a < b })
+        mut espTxt = "-"
+        if esp != nil {
+            espTxt = une(esp.params.map { p -> claveOpt(p) }, ",") + "->" + claveOpt(esp.ret)
+        }
+        return "${e.d}-${e.h}|${espTxt}|${ctx.esto ?: "-"}|${une(visibles, ";")}|${une(estrechadas, ";")}"
+    }
+
+    /// Verifica una lambda. `esp` trae, si el contexto lo sabe, el tipo de cada parámetro y el del resultado; sin
+    /// ellos los parámetros deben llevar anotación y el resultado se infiere.
+    fn lambda(ctx: Ctx, e: Nodo, esp: EsperadoL?) -> Tipo {
+        // Misma lambda, mismos tipos esperados y mismas variables a la vista: mismo resultado.
+        fix clave = claveLambda(ctx, e, esp)
+        fix guardada = lambdaCache.obtiene(clave)
+        if guardada != nil { return guardada }
+        fix hallado = lambdaUncached(ctx, e, esp)
+        lambdaCache.pone(clave, hallado)
+        return hallado
+    }
+
+    fn lambdaUncached(ctx: Ctx, e: Nodo, esp: EsperadoL?) -> Tipo {
+        fix params = kid(e, 0).kids
+        fix cuerpo = kid(e, 1)
+        if esp != nil && esp.params.tam() != params.tam() {
+            fail err("esta lambda tiene ${params.tam()} parámetro(s), pero aquí se espera una función de ${esp.params.tam()}", rg(e))
+        }
+        fix tipos = Lista<Tipo>()
+        fix ambito = Mapa<Str, VarE>()
+        mut i = 0
+        while i < params.tam() {
+            fix p = params.obtiene(i)
+            fix nr = nombreR(p)
+            mut dado: Tipo? = nil
+            if !esNada(kid(p, 0)) { dado = resolve(kid(p, 0)) }
+            mut querido: Tipo? = nil
+            if esp != nil { querido = esp.params.obtiene(i) }
+            fix d = dado
+            fix q = querido
+            mut ty = T_UNIT
+            if d != nil && q != nil {
+                if !assignable(d, q) {
+                    fail err("el parámetro `${p.attrs}` es ${muestra(d)}, pero aquí se espera ${muestra(q)}", nr)
+                }
+                ty = d
+            } else if d != nil {
+                ty = d
+            } else if q != nil {
+                ty = q
+            } else {
+                fail err("no se puede deducir el tipo del parámetro `${p.attrs}`; escríbelo, por ejemplo `${p.attrs}: Int`", nr)
+            }
+            if ty.k == "Unit" {
+                fail err("el parámetro `${p.attrs}` no puede ser de tipo Unit", nr)
+            }
+            ambito.pone(p.attrs, VarE(ty, false, nil))
+            tipos.agrega(ty)
+            i += 1
+        }
+        // Las variables `mut` estrechadas que la lambda asigna dejan de estarlo: puede ejecutarse después y cambiarlas.
+        fix estrechadas = Lista<Str>()
+        ctx.scopes.paraCada { sc ->
+            sc.claves().paraCada { n ->
+                fix v = sc.obtiene(n)
+                if v != nil && v.mutable && v.declarado != nil { estrechadas.agrega(n) }
+            }
+        }
+        estrechadas.paraCada { n -> if blockAssignsDeep(cuerpo, n) { widen(ctx, n) } }
+        mut retEsperado0: Tipo? = nil
+        if esp != nil { retEsperado0 = esp.ret }
+        fix retEsperado = retEsperado0
+        fix retK0 = ctx.retK
+        fix retTy0 = ctx.retTy
+        ctx.retK = if retEsperado != nil { "Declared" } else { "Infer" }
+        ctx.retTy = retEsperado
+        ctx.marks.agrega(ctx.scopes.tam())
+        ctx.scopes.agrega(ambito)
+        attempt {
+            lambdaBody(ctx, cuerpo, retEsperado)
+        } rescue er: ErrorTipo {
+            ctx.scopes.quita()
+            ctx.marks.quita()
+            ctx.retK = retK0
+            ctx.retTy = retTy0
+            fail er
+        }
+        ctx.scopes.quita()
+        ctx.marks.quita()
+        fix usadoK = ctx.retK
+        fix usadoTy = ctx.retTy
+        ctx.retK = retK0
+        ctx.retTy = retTy0
+        mut ret = T_UNIT
+        if retEsperado != nil {
+            ret = retEsperado
+        } else if usadoK == "Infer" {
+            ret = usadoTy ?: T_UNIT
+        }
+        return fnT(tipos, ret)
+    }
+
+    /// Las sentencias de una lambda; si la última es una expresión, es su valor.
+    fn lambdaBody(ctx: Ctx, cuerpo: Nodo, ret: Tipo?) {
+        fix n = cuerpo.kids.tam()
+        fix hayCola = n > 0 && cuerpo.kids.obtiene(n - 1).tag == "ExprStmt"
+        fix limite = if hayCola { n - 1 } else { n }
+        mut i = 0
+        while i < limite {
+            stmt(ctx, cuerpo.kids.obtiene(i))
+            i += 1
+        }
+        if hayCola {
+            fix cola = kid(cuerpo.kids.obtiene(n - 1), 0)
+            if ret != nil && ret.k == "Unit" {
+                expr(ctx, cola)
+            } else if ret != nil {
+                exprAs(ctx, cola, ret)
+            } else {
+                fix hallado = expr(ctx, cola)
+                noNil(hallado, rg(cola))
+                mut previo0: Tipo? = nil
+                if ctx.retK == "Infer" { previo0 = ctx.retTy }
+                fix previo = previo0
+                if previo != nil {
+                    expect(previo, hallado, rg(cola))
+                } else if ctx.retK == "Infer" {
+                    ctx.retTy = hallado
+                }
+            }
+        } else if ret != nil {
+            if ret.k != "Unit" && !blockReturns(cuerpo) {
+                fail err("la lambda debe devolver un valor de tipo ${muestra(ret)}", rg(cuerpo))
+            }
+        }
+    }
+
+    fn mentionsUnresolved(ty: Tipo, nombres: Lista<Str>, mapa: Mapa<Str, Tipo>) -> Bool {
+        if ty.k == "Param" { return nombres.contiene(ty.nombre) && !mapa.contiene(ty.nombre) }
+        if ty.k == "Array" || ty.k == "Nullable" || ty.k == "Fn" || ty.k == "Obj" {
+            mut i = 0
+            while i < ty.args.tam() {
+                if mentionsUnresolved(ty.args.obtiene(i), nombres, mapa) { return true }
+                i += 1
+            }
+        }
+        return false
+    }
+
+    /// Completa los argumentos de tipo de una llamada: los explícitos (`f<Int>(x)`), los que salen de los
+    /// argumentos y, si aún faltan, los que pide el contexto. Comprueba las cotas.
+    fn infer(ctx: Ctx, c: Inf, mapa: Mapa<Str, Tipo>) -> Mapa<Str, Tipo> {
+        if c.tparams.vacia() {
+            if !c.explicitos.vacia() {
+                fail err("${c.que} `${c.mostrado}` no es genérica y no admite argumentos de tipo", c.r)
+            }
+            return mapa
+        }
+        fix nombres = c.tparams.map { p -> p.nombre }
+        if !c.explicitos.vacia() {
+            if c.explicitos.tam() != c.tparams.tam() {
+                fail err("${c.que} `${c.mostrado}` necesita ${c.tparams.tam()} argumento(s) de tipo, pero recibió ${c.explicitos.tam()}", c.r)
+            }
+            mut i = 0
+            while i < c.tparams.tam() {
+                fix ty = resolve(c.explicitos.obtiene(i))
+                if ty.k == "Unit" {
+                    fail err("un argumento de tipo no puede ser Unit", rg(c.explicitos.obtiene(i)))
+                }
+                mapa.pone(c.tparams.obtiene(i).nombre, ty)
+                i += 1
+            }
+        } else {
+            mut i = 0
+            while i < c.args.tam() && i < c.params.tam() {
+                fix arg = c.args.obtiene(i)
+                fix param = c.params.obtiene(i)
+                i += 1
+                if !mentionsUnresolved(param, nombres, mapa) { continue }
+                // `nil` y `[]` no dicen de qué tipo son; una lambda se mira después, con lo ya deducido.
+                if arg.tag == "Nil" || arg.tag == "Lambda" || (arg.tag == "Array" && arg.kids.vacia()) { continue }
+                fix hallado = expr(ctx, arg)
+                unify(param, hallado, nombres, mapa)
+            }
+            i = 0
+            while i < c.args.tam() && i < c.params.tam() {
+                fix arg = c.args.obtiene(i)
+                fix param = c.params.obtiene(i)
+                i += 1
+                if arg.tag != "Lambda" { continue }
+                fix objetivo = if param.k == "Nullable" { param.args.obtiene(0) } else { param }
+                if objetivo.k != "Fn" { continue }
+                if !mentionsUnresolved(objetivo, nombres, mapa) { continue }
+                fix conocidos = Lista<Tipo?>()
+                paramsDe(objetivo).paraCada { p ->
+                    if mentionsUnresolved(p, nombres, mapa) {
+                        conocidos.agrega(nil)
+                    } else {
+                        conocidos.agrega(subst(p, mapa))
+                    }
+                }
+                fix pr = retDe(objetivo)
+                mut ret: Tipo? = nil
+                if !mentionsUnresolved(pr, nombres, mapa) { ret = subst(pr, mapa) }
+                fix hallado = lambda(ctx, arg, EsperadoL(conocidos, ret))
+                unify(objetivo, hallado, nombres, mapa)
+            }
+            fix plantilla = c.plantilla
+            fix esperado = c.esperado
+            if plantilla != nil && esperado != nil {
+                // La clase vista como el tipo esperado (puede ser un ancestro o una interfaz).
+                if esperado.k == "Obj" {
+                    fix visto = asSuper(plantilla, esperado.nombre)
+                    if visto != nil { unify(visto, esperado, nombres, mapa) }
+                }
+            }
+        }
+        mut i = 0
+        while i < c.tparams.tam() {
+            fix p = c.tparams.obtiene(i)
+            i += 1
+            if !mapa.contiene(p.nombre) {
+                fail err("no se puede deducir el tipo `${p.nombre}` de ${c.que} `${c.mostrado}`; escríbelo, por ejemplo `${c.mostrado}<Int>(...)`", c.r)
+            }
+        }
+        i = 0
+        while i < c.tparams.tam() {
+            fix p = c.tparams.obtiene(i)
+            i += 1
+            fix cota = p.cota
+            if cota != nil {
+                fix cotaSub = subst(cota, mapa)
+                fix actual = mapa.obtiene(p.nombre) ?: T_UNIT
+                if !assignable(cotaSub, actual) {
+                    fail err("el tipo ${muestra(actual)} no cumple la cota `${p.nombre}: ${muestra(cotaSub)}` de ${c.que} `${c.mostrado}`", c.r)
+                }
+            }
+        }
+        return mapa
+    }
+
+    /// Anota en `mapa` qué toma cada parámetro de tipo de `param` para que case con `hallado`.
+    fn unify(param: Tipo, hallado: Tipo, nombres: Lista<Str>, mapa: Mapa<Str, Tipo>) {
+        if param.k == "Param" && nombres.contiene(param.nombre) {
+            if !mapa.contiene(param.nombre) && hallado.k != "Nil" && hallado.k != "Unit" {
+                mapa.pone(param.nombre, hallado)
+            }
+            return
+        }
+        if param.k == "Array" && hallado.k == "Array" {
+            unify(param.args.obtiene(0), hallado.args.obtiene(0), nombres, mapa)
+        } else if param.k == "Fn" && hallado.k == "Fn" {
+            fix pp = paramsDe(param)
+            fix fp = paramsDe(hallado)
+            mut i = 0
+            while i < pp.tam() && i < fp.tam() {
+                unify(pp.obtiene(i), fp.obtiene(i), nombres, mapa)
+                i += 1
+            }
+            unify(retDe(param), retDe(hallado), nombres, mapa)
+        } else if param.k == "Nullable" && hallado.k == "Nullable" {
+            unify(param.args.obtiene(0), hallado.args.obtiene(0), nombres, mapa)
+        } else if param.k == "Nullable" && hallado.k != "Nil" {
+            unify(param.args.obtiene(0), hallado, nombres, mapa)
+        } else if param.k == "Obj" && hallado.k == "Obj" {
+            fix visto = asSuper(hallado, param.nombre)
+            if visto != nil {
+                mut i = 0
+                while i < param.args.tam() && i < visto.args.tam() {
+                    unify(param.args.obtiene(i), visto.args.obtiene(i), nombres, mapa)
+                    i += 1
+                }
+            }
+        }
+    }
+
+    /// Llamada a la función o método de clave `clave`; `mostrado` y `que` son para los mensajes. `mapa` ya trae
+    /// los parámetros de tipo de la clase del receptor; los de la función se infieren aquí.
+    fn callSig(ctx: Ctx, clave: Str, mostrado: Str, que: Str, args: Lista<Nodo>, targs: Lista<Nodo>, r: Rango, mapa: Mapa<Str, Tipo>, esperado: Tipo?) -> Tipo {
+        fix sig = funcs.obtiene(clave)
+        if sig == nil { fail err("la función `${mostrado}` no está definida", r) }
+        if sig.params.tam() != args.tam() {
+            fail err("${que} `${mostrado}` espera ${sig.params.tam()} argumento(s), pero recibió ${args.tam()}", r)
+        }
+        fix mapa2 = infer(ctx, Inf(que, mostrado, sig.tparams, sig.params, args, targs, nil, esperado, r), mapa)
+        mut i = 0
+        while i < args.tam() {
+            exprAs(ctx, args.obtiene(i), subst(sig.params.obtiene(i), mapa2))
+            i += 1
+        }
+        // Si el tipo de retorno aún no se infirió, se verifica ahora el cuerpo de esa función.
+        if sigDe(clave).ret == nil {
+            if (state.obtiene(clave) ?: "") == "InProgress" {
+                fail err("`${mostrado}` se llama a sí misma antes de conocer su tipo; añade `-> Tipo` a su declaración", r)
+            }
+            if decls.contiene(clave) { checkFn(clave) }
+        }
+        return subst(sigDe(clave).ret ?: T_UNIT, mapa2)
+    }
+}
+
+// ---------------------------------------------------------------- main
+
+fn main() {
+    fix a = argumentos()
+    if a.tam() != 1 {
+        show("uso: and23 mn/checker.jb archivo.jb")
+        return
+    }
+    attempt {
+        fix c = Checker()
+        fix preludio = analiza("thing Fallo(fix msg: Str)\n" + leeArchivo("crates/and23-syntax/prelude.jb"))
+        attempt {
+            c.check(preludio)
+        } rescue e: ErrorTipo {
+            show("PRELUDIO: ${e.msg} @${e.donde.a}-${e.donde.b}")
+            return
+        }
+        c.sellaPreludio()
+        fix prog = analiza(leeArchivo(a.obtiene(0)))
+        c.check(prog)
+        show("ok")
+    } rescue e: ErrorLexico {
+        show("Error ${e.msg} @${e.desde}-${e.hasta}")
+    } rescue e: ErrorParse {
+        show("Error ${e.msg} @${e.donde.a}-${e.donde.b}")
+    } rescue e: ErrorTipo {
+        show("Error ${e.msg} @${e.donde.a}-${e.donde.b}")
+    }
+}

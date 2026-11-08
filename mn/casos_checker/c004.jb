@@ -1,0 +1,2 @@
+fn g() -> Bool { if true { return true } else { return false } }
+show(g())

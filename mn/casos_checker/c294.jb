@@ -1,0 +1,4 @@
+fn a(x: Animal) -> Perro = Perro()
+thing Animal()
+thing Perro() : Animal()
+fix f: (Perro) -> Animal = a

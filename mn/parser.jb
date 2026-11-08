@@ -15,19 +15,19 @@
 use "lexer.jb"
 
 /// Un rango de caracteres `[a, b)` del texto fuente.
-thing Rango(fix a: Int, fix b: Int) {
+open thing Rango(fix a: Int, fix b: Int) {
     /// El menor rango que cubre a los dos.
     fn to(o: Rango) -> Rango = Rango(minimo(a, o.a), maximo(b, o.b))
 }
 
-fn rango(t: Token) -> Rango = Rango(t.desde, t.hasta)
+open fn rango(t: Token) -> Rango = Rango(t.desde, t.hasta)
 
-thing ErrorParse(m: Str, fix donde: Rango) : Fallo(m)
+open thing ErrorParse(m: Str, fix donde: Rango) : Fallo(m)
 
 /// Un nombre (posiblemente cualificado) y dónde está.
 thing Nom(fix nombre: Str, fix r: Rango)
 
-thing Nodo(fix tag: Str, fix attrs: Str, fix kids: Lista<Nodo>) {
+open thing Nodo(fix tag: Str, fix attrs: Str, fix kids: Lista<Nodo>) {
     /// Posición del nodo y de su nombre; -1 si no la tiene.
     mut d = -1
     mut h = -1
@@ -48,10 +48,10 @@ thing Nodo(fix tag: Str, fix attrs: Str, fix kids: Lista<Nodo>) {
 }
 
 /// La posición de un nodo.
-fn rg(n: Nodo) -> Rango = Rango(n.d, n.h)
+open fn rg(n: Nodo) -> Rango = Rango(n.d, n.h)
 
 /// La posición de una sentencia: una expresión suelta ocupa lo que su expresión.
-fn spanDe(n: Nodo) -> Rango = if n.tag == "ExprStmt" { rg(n.kids.obtiene(0)) } else { rg(n) }
+open fn spanDe(n: Nodo) -> Rango = if n.tag == "ExprStmt" { rg(n.kids.obtiene(0)) } else { rg(n) }
 
 fn hoja(tag: Str, attrs: Str) -> Nodo = Nodo(tag, attrs, Lista<Nodo>())
 
@@ -1405,6 +1405,12 @@ fn enumerados(toks: Lista<Token>) -> Mapa<Str, Lista<Str>> {
         i += 1
     }
     return m
+}
+
+/// El árbol de un programa completo. Falla con `ErrorLexico` o `ErrorParse`.
+open fn analiza(texto: Str) -> Nodo {
+    fix toks = lexea(texto)
+    return Parser(toks, enumerados(toks), Contador(), 0, 0).programa()
 }
 
 fn main() {

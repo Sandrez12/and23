@@ -1,0 +1,2 @@
+fn absoluto(x: Int) = x
+show(absoluto(2))

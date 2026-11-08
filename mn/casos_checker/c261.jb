@@ -1,0 +1,1 @@
+fn hash(x: Int) = x

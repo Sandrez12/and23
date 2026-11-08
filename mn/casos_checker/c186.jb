@@ -1,0 +1,8 @@
+fn f(p: P?) -> Int {
+ mut q = p
+ if q != nil {
+ while true { show(q.n)
+ q = nil }
+ }
+ return 0
+}

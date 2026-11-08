@@ -1,0 +1,2 @@
+thing A() { fn f() -> Int = 1 }
+thing B() : A() { fn f() -> Str = "" }

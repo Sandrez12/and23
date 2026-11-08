@@ -1,0 +1,4 @@
+mut n = 0
+fix f = { -> n += 1 }
+f()
+show(n)

@@ -1,0 +1,5 @@
+fix a = [1, 2, 3]
+show(a[0] + len(a))
+mut b: [Str] = []
+push(b, "x")
+b[0] = "y"

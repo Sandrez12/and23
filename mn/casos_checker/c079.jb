@@ -1,0 +1,2 @@
+fix n = 1
+show(n.x)

@@ -1,0 +1,7 @@
+thing A() {
+ fn f() = 1
+}
+thing B() : A() {
+ fn f() = super.f() + 1
+}
+show(B().f())

@@ -1,0 +1,2 @@
+fn f() { }
+show(hash(f()))

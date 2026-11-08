@@ -1,0 +1,4 @@
+fn f() -> Int {
+ attempt { return 1 }
+ rescue e: Fallo { return 2 }
+}

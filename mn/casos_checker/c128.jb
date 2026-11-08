@@ -1,0 +1,2 @@
+kind K { fn f(a: Int) }
+thing A() : K { fn f(a: Str) { } }

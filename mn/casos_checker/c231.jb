@@ -1,0 +1,2 @@
+fix l = Lista<Int>()
+l.agrega("a")

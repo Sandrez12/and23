@@ -16,6 +16,7 @@ Uso:
   and23 fmt [--check] <archivos.jb...>   da formato a los archivos (con --check solo avisa de los que cambiarían)
   and23 --tokens <archivo.jb>   vuelca los tokens (para comparar con el lexer escrito en And23, mn/lexer.jb)
   and23 --ast <archivo.jb>      vuelca el árbol sintáctico (para comparar con el parser escrito en And23, mn/parser.jb)
+  and23 --check <archivo.jb>    verifica los tipos (para comparar con el verificador escrito en And23, mn/checker.jb)
   and23 --prueba <archivo.jb>   ejecuta los bloques `prueba` del archivo y resume el resultado
   and23 --tree <archivo.jb>     usa el intérprete de árbol (referencia de M1a; sin cadenas)
   and23 --gc-stress ...         recolecta basura en cada punto seguro (prueba del GC)
@@ -65,6 +66,7 @@ fn dispatch(args: &[String]) -> u8 {
         [cmd, rest @ ..] if cmd == "fmt" => run_fmt(rest),
         [flag, path] if flag == "--tokens" => dump_tokens(path),
         [flag, path] if flag == "--ast" => dump_ast(path),
+        [flag, path] if flag == "--check" => check_file(path),
         [flag, path] if flag == "--disasm" => disasm_file(path),
         [flag, path] if flag == "--tree" => run_file_tree(path),
         [flag, path] if flag == "--prueba" => run_tests(path, stress),
@@ -215,6 +217,42 @@ fn dump_ast(path: &str) -> u8 {
                 at(d.span.end)
             );
         }
+    }
+    0
+}
+
+/// `and23 --check archivo`: verifica los tipos del archivo (sin cargar `use`) después del preludio y escribe
+/// `ok` o `Error mensaje @desde-hasta`.
+fn check_file(path: &str) -> u8 {
+    let src = match std::fs::read_to_string(path) {
+        Ok(src) => src,
+        Err(e) => {
+            eprintln!("error: no se pudo leer `{path}`: {e}");
+            return 1;
+        }
+    };
+    let src = src.strip_prefix('\u{feff}').unwrap_or(&src).to_string();
+    let mut checker = Checker::new();
+    let prelude = and23_syntax::parse(and23_syntax::PRELUDE).expect("preludio válido");
+    checker.check(&prelude).expect("preludio válido");
+    checker.seal_prelude();
+    let at = |b: usize| src[..b.min(src.len())].chars().count();
+    match and23_syntax::parse(&src) {
+        Err(d) => println!(
+            "Error {} @{}-{}",
+            d.message,
+            at(d.span.start),
+            at(d.span.end)
+        ),
+        Ok(program) => match checker.check(&program) {
+            Ok(_) => println!("ok"),
+            Err(d) => println!(
+                "Error {} @{}-{}",
+                d.message,
+                at(d.span.start),
+                at(d.span.end)
+            ),
+        },
     }
     0
 }

@@ -1,0 +1,2 @@
+attempt { show(zz) }
+rescue e: Fallo { }

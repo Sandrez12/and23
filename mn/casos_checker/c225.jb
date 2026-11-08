@@ -1,0 +1,3 @@
+show(hash(1) + 1)
+fix xs = [1]
+show(pop(xs) + 1)

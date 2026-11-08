@@ -1,0 +1,4 @@
+fn id<T>(x: T) -> T = x
+show(id(1) + 1)
+show(id("a") + "b")
+show(id<Int>(2))

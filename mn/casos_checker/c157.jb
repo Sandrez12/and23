@@ -1,0 +1,10 @@
+thing N(fix v: Int, mut s: N?)
+fn f(c: N?) -> Int {
+ mut x = c
+ mut t = 0
+ while x != nil {
+ t += x.v
+ x = x.s
+ }
+ return t
+}

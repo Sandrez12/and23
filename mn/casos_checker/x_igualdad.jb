@@ -1,0 +1,6 @@
+thing A()
+thing B() : A()
+fix a = A()
+fix b = B()
+show(a == b)
+show(a != nil)

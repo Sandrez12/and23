@@ -1,0 +1,7 @@
+fn f(p: P?) -> Int {
+ if p != nil {
+ fix p: P? = nil
+ return p.n
+ }
+ return 0
+}

@@ -1,0 +1,2 @@
+fix p: Lista<Int>? = nil
+show(p?.tam())

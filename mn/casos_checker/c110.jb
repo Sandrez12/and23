@@ -1,0 +1,4 @@
+thing A()
+thing B() : A()
+fix xs: [A] = [A(), B()]
+show(xs[1] is B)

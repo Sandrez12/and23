@@ -1,0 +1,4 @@
+kind O<T> { fn antes(o: T) -> Bool }
+thing N() : O<Int> { fn antes(o: Int) -> Bool = true }
+fn m<T: O<T>>(a: T) { }
+m(N())

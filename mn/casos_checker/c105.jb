@@ -1,0 +1,2 @@
+fn f() = Uno().a
+thing Uno() { fix a = f() }

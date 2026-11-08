@@ -1,0 +1,2 @@
+fn id<T>(x: T) -> T = x
+show(id(1, 2))

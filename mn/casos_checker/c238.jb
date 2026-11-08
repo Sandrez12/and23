@@ -1,0 +1,2 @@
+fn id(x: Int) -> Int = x
+show(id<Int>(1))

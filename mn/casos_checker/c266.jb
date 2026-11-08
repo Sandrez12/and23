@@ -1,0 +1,2 @@
+{}
+thing Caja<T>(fix v: T)

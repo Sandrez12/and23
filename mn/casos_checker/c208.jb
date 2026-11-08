@@ -1,0 +1,3 @@
+thing E(fix c: Int) : Fallo("x")
+attempt { }
+rescue e: E { show(e.c + 1) }

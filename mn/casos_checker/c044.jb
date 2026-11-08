@@ -1,0 +1,3 @@
+show("a" < "b")
+show("a" == "a")
+show(len("ñandú"))
