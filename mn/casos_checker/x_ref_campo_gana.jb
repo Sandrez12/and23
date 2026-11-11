@@ -1,0 +1,12 @@
+// Si hay un campo y un método con el mismo nombre... el campo manda; un campo de función no es un método.
+thing B(fix accion: (Int) -> Int) {
+    fn doble(n: Int) -> Int = n * 2
+}
+
+fn main() {
+    fix b = B({ n -> n + 100 })
+    fix g = b.accion
+    show(g(1))
+    fix d = b.doble
+    show(d(4))
+}

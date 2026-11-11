@@ -1,0 +1,8 @@
+thing A(fix x: Int) {
+    fn mapea<U>(f: (Int) -> U) -> U = f(x)
+}
+
+fn main() {
+    fix a = A(1)
+    fix m = a.mapea
+}

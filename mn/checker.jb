@@ -645,6 +645,7 @@ open thing Checker() {
     mut resLlamadasValor = Mapa<Str, Bool>()
     mut resDescartes = Mapa<Str, Bool>()
     mut resRedirige = Mapa<Str, Str>()
+    mut resRefs = Mapa<Str, Int>()
 
     /// Marca las funciones definidas hasta ahora (el preludio) como redefinibles por el programa.
     fn sellaPreludio() {
@@ -680,6 +681,7 @@ open thing Checker() {
         resLlamadasValor = Mapa<Str, Bool>()
         resDescartes = Mapa<Str, Bool>()
         resRedirige = Mapa<Str, Str>()
+        resRefs = Mapa<Str, Int>()
         programa(prog)
     }
 
@@ -694,6 +696,7 @@ open thing Checker() {
         resLlamadasValor.claves().paraCada { k -> regs.agrega(reg(k, 3, "llamadaValor", "")) }
         resDescartes.claves().paraCada { k -> regs.agrega(reg(k, 4, "descarta", "")) }
         resRedirige.claves().paraCada { k -> regs.agrega(reg(k, 5, "redirige", resRedirige.obtiene(k) ?: "")) }
+        resRefs.claves().paraCada { k -> regs.agrega(reg(k, 6, "referencia", "${resRefs.obtiene(k) ?: 0}")) }
         fix salida = Lista<Str>()
         ordenaRegs(regs).paraCada { r -> salida.agrega(r.texto) }
         return salida
@@ -2024,9 +2027,24 @@ open thing Checker() {
                 fix destino = kid(e, 0)
                 fix destinoTy = expr(ctx, destino)
                 ensureClassOf(destinoTy)
-                fix campo = fieldOf(destinoTy, e.attrs, nombreR(e), rg(destino))
-                resCampos.pone(claveR(rg(e)), campo.indice)
-                return campo.ty
+                mut campoHallado: FieldInfo? = nil
+                mut errorCampo: ErrorTipo? = nil
+                attempt {
+                    campoHallado = fieldOf(destinoTy, e.attrs, nombreR(e), rg(destino))
+                } rescue er: ErrorTipo {
+                    errorCampo = er
+                }
+                fix campo = campoHallado
+                if campo != nil {
+                    resCampos.pone(claveR(rg(e)), campo.indice)
+                    return campo.ty
+                }
+                // `obj.metodo` sin llamarlo: el método como valor (un campo con ese nombre tendría prioridad).
+                fix referencia = boundMethod(destinoTy, e.attrs, rg(e))
+                if referencia != nil { return referencia }
+                fix errorFinal = errorCampo
+                if errorFinal != nil { fail errorFinal }
+                fail err("mn: campo sin resolver", rg(e))
             }
             "MethodCall" -> return methodCall(ctx, e)
             "SuperCall" -> {
@@ -2427,9 +2445,39 @@ open thing Checker() {
     }
 
     /// Una función con nombre usada como valor (`aplica(doble, 3)`): su tipo de función.
+    /// `obj.metodo` usado como valor: el tipo de función del método (con los argumentos de tipo de `obj`). El compilador lo convierte en
+    /// una lambda que captura `obj` y llama al método. nil si `obj` no tiene un método con ese nombre.
+    fn boundMethod(destinoTy: Tipo, nombre: Str, r: Rango) -> Tipo? {
+        fix h = findMethod(destinoTy, nombre)
+        if h == nil { return nil }
+        fix sig = funcs.obtiene(h.clave)
+        if sig == nil { return nil }
+        if !sig.tparams.vacia() {
+            fail err("`${nombre}` es un método genérico y no se puede usar como valor; envuélvelo en una lambda con tipos concretos", r)
+        }
+        if sig.ret == nil {
+            if (state.obtiene(h.clave) ?: "") == "InProgress" {
+                fail err("`${nombre}` se usa antes de conocer su tipo; añade `-> Tipo` a su declaración", r)
+            }
+            if decls.contiene(h.clave) { checkFn(h.clave) }
+        }
+        fix ps = substLista(sig.params, h.mapa)
+        resVirtuales.pone(claveR(r), nombre)
+        resRefs.pone(claveR(r), ps.tam())
+        return fnT(ps, subst(sigDe(h.clave).ret ?: T_UNIT, h.mapa))
+    }
+
     fn functionValue(nombre: Str, r: Rango) -> Tipo {
         if esBuiltin(nombre) {
             fail err("`${nombre}` es una función integrada y no se puede usar como valor; envuélvela en una lambda", r)
+        }
+        // `Persona` a secas: el constructor como función (`(Str, Int) -> Persona`).
+        fix info = classes.obtiene(nombre)
+        if info != nil {
+            if !info.tparams.vacia() {
+                fail err("`${nombre}` es genérica y no se puede usar como valor; envuélvela en una lambda con tipos concretos", r)
+            }
+            return fnT(info.ctor, obj(nombre, Lista<Tipo>()))
         }
         fix sig = funcs.obtiene(nombre)
         if sig == nil { fail undefinedVariable(nombre, r) }

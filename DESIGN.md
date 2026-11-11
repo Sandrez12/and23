@@ -408,7 +408,13 @@ fix m = Mapa<Str, Int>()                                                // expl�
   dan `T?`), con el estrechamiento de `if x != nil` en cada una; el compilador emite la condición y, en cada rama, el valor y `Return`, sin
   juntarlas. Un `if` sin `else`, o con una rama que acaba en `show`/asignación, sigue siendo una sentencia (la lambda devuelve Unit o hace falta
   `return`). Compatible salvo que un `if`/`else` final con ramas de tipos distintos en una lambda sin tipo ya no se acepta.
-- **Límites conocidos de M8:** no hay `it` implícito ni sintaxis `::nombre`; los métodos y constructores no se pasan como
+- **Constructores y métodos como valores (paso 2.7 de 1.0).** `Persona` a secas es una función `(Str, Int) -> Persona` (solo clases no genéricas), y
+  `obj.metodo` sin paréntesis es una lambda que captura `obj` y llama al método con despacho virtual (`fix suma = cuenta.suma`, `lista.paraCada(otra.agrega)`).
+  Un campo con ese nombre tiene prioridad (un campo de tipo función se lee, no se llama); los métodos genéricos no se pueden usar así. El
+  verificador da el tipo de función (con los argumentos de tipo del receptor aplicados) y anota en `Resolutions.refs` cuántos parámetros tiene el
+  método (`referencia @a-b N` en `--resuelve`; el nombre va en `virtuals`); el compilador genera `Clase.<ref>` para el constructor y
+  `metodo.<bound>` para el método (local 0 = la lambda, `GetCapture(0)` = el objeto, `CallMethod`, `Return`) y emite `Closure` capturando el receptor.
+- **Límites conocidos de M8:** no hay `it` implícito ni sintaxis `::nombre`; los métodos genéricos y los constructores de clases genéricas no se pasan como
   valores (envuélvelos en una lambda); no hay lambdas genéricas ni cotas en las interfaces. (`ordena` era una inserción O(n²); desde el paso 2.4 de 1.0 es una mezcla estable O(n log n).)
 
 - **`ordena` (paso 2.4 de 1.0).** `Lista.ordena(antes)` es una mezcla ascendente (tandas de 1, 2, 4... elementos) que alterna entre dos arreglos
@@ -783,7 +789,7 @@ las palabras reservadas, `len`, `push`, `pop` y `hash` son funciones integradas,
 | `ordena` en O(n²) | **Antes de 1.0** | 2.4, hecho |
 | Sin `!!` ni `?:` con `return`/`fail` a la derecha | **Antes de 1.0** | 2.5, hecho |
 | Sin `use` en el REPL | **Antes de 1.0** | 2.6, hecho |
-| Métodos y constructores no se pasan como valores | **Antes de 1.0** | 2.7 |
+| Métodos y constructores no se pasan como valores | **Antes de 1.0** | 2.7, hecho |
 | Intérprete de árbol (`--tree`) | **Retirado** (ver 1.4) | 2.8, hecho |
 | Una sola clase padre; interfaces sin herencia ni métodos por defecto | Documentar como límite | |
 | Sin cotas múltiples, varianza ni comodines en genéricos | Documentar como límite | |

@@ -1,0 +1,69 @@
+// Constructores y métodos usados como valores.
+thing Persona(fix nombre: Str, fix edad: Int)
+
+thing Cuenta(mut saldo: Int) {
+    fn suma(n: Int) { saldo += n }
+    fn total() -> Int = saldo
+    fn con(extra: Int, otro: Int) -> Int = saldo + extra + otro
+}
+
+thing Caja<T>(mut cosas: Lista<T>) {
+    fn mete(x: T) { cosas.agrega(x) }
+}
+
+kind Figura {
+    fn area() -> Int
+}
+
+thing Cuadrado(fix lado: Int) : Figura {
+    fn area() -> Int = lado * lado
+}
+
+fn aplica(f: (Str, Int) -> Persona, n: Str, e: Int) -> Persona = f(n, e)
+
+fn repite(f: (Int) -> Unit, veces: Int) {
+    mut i = 0
+    while i < veces {
+        f(i)
+        i += 1
+    }
+}
+
+fn main() {
+    // constructor como valor
+    fix hacer = Persona
+    show(hacer("Ana", 30).nombre)
+    show(aplica(Persona, "Beto", 25).edad)
+    fix cuadrados = listaDe([2, 3, 4])
+    fix figuras = Lista<Cuadrado>()
+    cuadrados.paraCada { n -> figuras.agrega(Cuadrado(n)) }
+    show(figuras.tam())
+    fix mk: (Int) -> Cuadrado = Cuadrado
+    show(mk(5).area())
+
+    // método de un objeto como valor
+    fix c = Cuenta(10)
+    fix suma = c.suma
+    suma(5)
+    repite(suma, 3)
+    show(c.total())
+    fix total = c.total
+    show(total())
+    fix con = c.con
+    show(con(1, 2))
+
+    // método de una interfaz y de una clase genérica
+    fix f: Figura = Cuadrado(6)
+    fix area = f.area
+    show(area())
+    fix caja = Caja<Str>(Lista<Str>())
+    fix mete = caja.mete
+    mete("a")
+    mete("b")
+    show(caja.cosas)
+
+    // pasar el método a una función que espera una lambda
+    fix destino = Lista<Int>()
+    cuadrados.paraCada(destino.agrega)
+    show(destino)
+}

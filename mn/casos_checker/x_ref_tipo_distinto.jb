@@ -1,0 +1,8 @@
+thing A(fix x: Int) {
+    fn f(n: Int) -> Int = x + n
+}
+
+fn main() {
+    fix a = A(1)
+    fix g: (Str) -> Int = a.f
+}

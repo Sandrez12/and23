@@ -338,6 +338,9 @@ fn print_resolutions(res: &and23_types::Resolutions, at: impl Fn(usize) -> usize
     for (span, (key, receiver)) in &res.redirects {
         push(*span, 5, "redirige", format!("{key} {receiver}"));
     }
+    for (span, arity) in &res.refs {
+        push(*span, 6, "referencia", arity.to_string());
+    }
     lines.sort();
     for (_, _, _, text) in lines {
         println!("{text}");

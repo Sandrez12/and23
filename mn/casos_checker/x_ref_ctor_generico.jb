@@ -1,0 +1,5 @@
+thing Caja<T>(fix valor: T)
+
+fn main() {
+    fix h = Caja
+}

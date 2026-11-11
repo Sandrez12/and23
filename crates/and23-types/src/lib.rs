@@ -140,6 +140,9 @@ pub struct Resolutions {
     /// Posición de una llamada `s.metodo(..)` sobre una cadena o `Int.parse(..)`/`Float.parse(..)` ->
     /// función del preludio que la implementa y si el receptor va como primer argumento.
     pub redirects: HashMap<Span, (String, bool)>,
+    /// Posición de un `obj.metodo` usado como valor (sin llamarlo) -> cuántos parámetros tiene el método. `virtuals` trae su nombre
+    /// bajo la misma posición.
+    pub refs: HashMap<Span, usize>,
 }
 
 /// Verificador con estado: recuerda las funciones y globales de las entradas anteriores (REPL).
@@ -1873,9 +1876,17 @@ impl<'p> Pass<'p> {
             } => {
                 let target_ty = self.expr(ctx, target)?;
                 self.ensure_class_of(&target_ty)?;
-                let (i, ty, _) = self.field_of(&target_ty, name, *name_span, target.span())?;
-                self.res.fields.insert(*span, i);
-                Ok(ty)
+                match self.field_of(&target_ty, name, *name_span, target.span()) {
+                    Ok((i, ty, _)) => {
+                        self.res.fields.insert(*span, i);
+                        Ok(ty)
+                    }
+                    // `obj.metodo` sin llamarlo: el método como valor (un campo con ese nombre tendría prioridad).
+                    Err(error) => match self.bound_method(&target_ty, name, *span)? {
+                        Some(ty) => Ok(ty),
+                        None => Err(error),
+                    },
+                }
             }
             Expr::MethodCall {
                 target,
@@ -2541,6 +2552,19 @@ impl<'p> Pass<'p> {
                 format!("`{name}` es una función integrada y no se puede usar como valor; envuélvela en una lambda"),
             ));
         }
+        // `Persona` a secas: el constructor como función (`(Str, Int) -> Persona`).
+        if let Some(info) = self.classes.get(name) {
+            if !info.tparams.is_empty() {
+                return Err(Diagnostic::new(
+                    span,
+                    format!("`{name}` es genérica y no se puede usar como valor; envuélvela en una lambda con tipos concretos"),
+                ));
+            }
+            return Ok(Type::Fn(
+                info.ctor.clone(),
+                Box::new(Type::Obj(name.to_string(), Vec::new())),
+            ));
+        }
         let Some(sig) = self.funcs.get(name).cloned() else {
             return Err(undefined_variable(name, span));
         };
@@ -2567,6 +2591,48 @@ impl<'p> Pass<'p> {
         }
         let ret = self.funcs[name].ret.clone().unwrap_or(Type::Unit);
         Ok(Type::Fn(sig.params, Box::new(ret)))
+    }
+
+    /// `obj.metodo` usado como valor: el tipo de función del método (con los argumentos de tipo de `obj`). El compilador lo convierte en
+    /// una lambda que captura `obj` y llama al método. `None` si `obj` no tiene un método con ese nombre.
+    fn bound_method(
+        &mut self,
+        target_ty: &Type,
+        name: &str,
+        span: Span,
+    ) -> Result<Option<Type>, Diagnostic> {
+        let Some((key, map)) = self.find_method(target_ty, name) else {
+            return Ok(None);
+        };
+        let Some(sig) = self.funcs.get(&key).cloned() else {
+            return Ok(None);
+        };
+        if !sig.tparams.is_empty() {
+            return Err(Diagnostic::new(
+                span,
+                format!("`{name}` es un método genérico y no se puede usar como valor; envuélvelo en una lambda con tipos concretos"),
+            ));
+        }
+        if sig.ret.is_none() {
+            match self.state.get(&key) {
+                Some(State::InProgress) => {
+                    return Err(Diagnostic::new(
+                        span,
+                        format!("`{name}` se usa antes de conocer su tipo; añade `-> Tipo` a su declaración"),
+                    ));
+                }
+                _ => {
+                    if self.decls.contains_key(&key) {
+                        self.check_fn(&key)?;
+                    }
+                }
+            }
+        }
+        let params: Vec<Type> = sig.params.iter().map(|p| subst(p, &map)).collect();
+        let ret = self.funcs[&key].ret.clone().unwrap_or(Type::Unit);
+        self.res.virtuals.insert(span, name.to_string());
+        self.res.refs.insert(span, params.len());
+        Ok(Some(Type::Fn(params, Box::new(subst(&ret, &map)))))
     }
 
     /// Verifica una lambda. `expected` trae, si el contexto lo sabe, el tipo de cada parámetro y el

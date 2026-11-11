@@ -1987,3 +1987,27 @@ x + 1
         "{errores}"
     );
 }
+
+/// Paso 2.7: constructores (`Persona`) y métodos (`obj.metodo`) usados como valores.
+#[test]
+fn constructores_y_metodos_como_valores() {
+    let esperado = "Ana\n25\n3\n25\n18\n18\n21\n36\n[\"a\", \"b\"]\n[2, 3, 4]\n";
+    for stress in [false, true] {
+        let mut cmd = and23();
+        if stress {
+            cmd.arg("--gc-stress");
+        }
+        let out = cmd
+            .arg(raiz_del_repo().join("mn/casos_checker/x_ref_metodos_ctor.jb"))
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", stderr(&out));
+        assert_eq!(stdout(&out), esperado, "stress={stress}");
+    }
+    // Un campo de tipo función gana sobre un método del mismo nombre; el método sigue disponible con otro nombre.
+    let out = and23()
+        .arg(raiz_del_repo().join("mn/casos_checker/x_ref_campo_gana.jb"))
+        .output()
+        .unwrap();
+    assert_eq!(stdout(&out), "101\n8\n");
+}

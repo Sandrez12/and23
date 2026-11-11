@@ -1378,7 +1378,12 @@ impl<'a> FnCompiler<'a> {
 
     /// Una función con nombre usada como valor: una lambda sin capturas que la llama.
     fn function_ref(&mut self, name: &str, span: Span) -> Result<(), Diagnostic> {
-        let Some(&(index, arity)) = self.tables.funcs.get(name) else {
+        // `Persona` a secas es su constructor; si no, una función con nombre.
+        let (index, arity) = if let Some(entry) = self.tables.classes.get(name) {
+            (entry.ctor, self.functions[entry.ctor as usize].arity)
+        } else if let Some(&(index, arity)) = self.tables.funcs.get(name) {
+            (index, arity)
+        } else {
             return Err(Diagnostic::new(
                 span,
                 format!("la variable `{name}` no está definida"),
@@ -1418,7 +1423,10 @@ impl<'a> FnCompiler<'a> {
             }
             Expr::Var(name, span) => match self.place(name, *span) {
                 Ok((place, _)) => self.emit_load(place, *span),
-                Err(_) if self.tables.funcs.contains_key(name) => {
+                Err(_)
+                    if self.tables.funcs.contains_key(name)
+                        || self.tables.classes.contains_key(name) =>
+                {
                     self.function_ref(name, *span)?;
                 }
                 Err(err) => return Err(err),
@@ -1493,6 +1501,31 @@ impl<'a> FnCompiler<'a> {
                     *span,
                 );
                 self.patch(skip);
+            }
+            Expr::Field {
+                target, name, span, ..
+            } if self.res.refs.contains_key(span) => {
+                // `obj.metodo` sin llamarlo: una lambda que captura `obj` y llama al método (el local 0 es la lambda).
+                let arity = self.res.refs[span];
+                let method = self.virtual_id(*span)?;
+                let mut code = vec![Op::GetCapture(0)];
+                code.extend((0..arity).map(|i| Op::GetLocal(i as u32 + 1)));
+                code.push(Op::CallMethod {
+                    method,
+                    argc: arity as u32,
+                });
+                code.push(Op::Return);
+                let spans = vec![*span; code.len()];
+                self.functions.push(Function {
+                    name: format!("{name}.<bound>"),
+                    name_span: *span,
+                    arity: arity + 1,
+                    code,
+                    spans,
+                });
+                let func = (self.functions.len() - 1) as u32;
+                self.expr(target)?;
+                self.emit(Op::Closure { func, n: 1 }, *span);
             }
             Expr::Field { target, span, .. } => {
                 let field = self.field_index(*span)?;

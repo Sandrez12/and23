@@ -726,22 +726,55 @@ thing FnCompiler(fix c: Compilador, fix nombre: Str, fix nr: Rango) {
 
     /// Una función con nombre usada como valor: una lambda sin capturas que la llama.
     fn referencia(nombreF: Str, r: Rango) {
-        fix f = c.tFuncs.obtiene(nombreF)
-        if f == nil { fail ErrorCompila("la variable `${nombreF}` no está definida", r) }
+        // `Persona` a secas es su constructor; si no, una función con nombre.
+        mut indice = -1
+        mut aridad = 0
+        fix entrada = c.tClasses.obtiene(nombreF)
+        if entrada != nil {
+            indice = entrada.ctor
+            aridad = c.funciones.obtiene(entrada.ctor).aridad
+        } else {
+            fix f = c.tFuncs.obtiene(nombreF)
+            if f == nil { fail ErrorCompila("la variable `${nombreF}` no está definida", r) }
+            indice = f.indice
+            aridad = f.aridad
+        }
         fix cd = Lista<Instr>()
         fix sp = Lista<Rango>()
         mut i = 0
-        while i < f.aridad {
+        while i < aridad {
             cd.agrega(instr1("GetLocal", i + 1))
             sp.agrega(r)
             i += 1
         }
-        cd.agrega(instr1("Call", f.indice))
+        cd.agrega(instr1("Call", indice))
         sp.agrega(r)
         cd.agrega(instr0("Return"))
         sp.agrega(r)
-        c.funciones.agrega(Func("${nombreF}.<ref>", r, f.aridad + 1, cd, sp))
+        c.funciones.agrega(Func("${nombreF}.<ref>", r, aridad + 1, cd, sp))
         emit(instr2("Closure", c.funciones.tam() - 1, 0), r)
+    }
+
+    /// `obj.metodo` sin llamarlo: una lambda que captura `obj` y llama al método (el local 0 es la lambda).
+    fn referenciaMetodo(e: Nodo, r: Rango, aridad: Int) {
+        fix metodo = idVirtual(r)
+        fix cd = Lista<Instr>()
+        fix sp = Lista<Rango>()
+        cd.agrega(instr1("GetCapture", 0))
+        sp.agrega(r)
+        mut i = 0
+        while i < aridad {
+            cd.agrega(instr1("GetLocal", i + 1))
+            sp.agrega(r)
+            i += 1
+        }
+        cd.agrega(instr2("CallMethod", metodo, aridad))
+        sp.agrega(r)
+        cd.agrega(instr0("Return"))
+        sp.agrega(r)
+        c.funciones.agrega(Func("${e.attrs}.<bound>", r, aridad + 1, cd, sp))
+        expr(kid(e, 0))
+        emit(instr2("Closure", c.funciones.tam() - 1, 1), r)
     }
 
     // ------------------------------------------------------------ expresiones
@@ -777,7 +810,7 @@ thing FnCompiler(fix c: Compilador, fix nombre: Str, fix nr: Rango) {
                 fix er2 = error
                 if u != nil {
                     emiteCarga(u.lugar, r)
-                } else if c.tFuncs.contiene(e.attrs) {
+                } else if c.tFuncs.contiene(e.attrs) || c.tClasses.contiene(e.attrs) {
                     referencia(e.attrs, r)
                 } else if er2 != nil {
                     fail er2
@@ -832,6 +865,8 @@ thing FnCompiler(fix c: Compilador, fix nombre: Str, fix nr: Rango) {
                 emit(instr2("CallMethod", metodo, kid(e, 1).kids.tam()), r)
                 patch(salto)
             }
+        } else if t == "Field" && c.chk.resRefs.contiene(k) {
+            referenciaMetodo(e, r, c.chk.resRefs.obtiene(k) ?: 0)
         } else if t == "Field" {
             fix campo = indiceCampo(r)
             expr(kid(e, 0))

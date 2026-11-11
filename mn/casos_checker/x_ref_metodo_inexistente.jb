@@ -1,0 +1,8 @@
+thing A(fix x: Int) {
+    fn f() -> Int = x
+}
+
+fn main() {
+    fix a = A(1)
+    fix g = a.noExiste
+}
