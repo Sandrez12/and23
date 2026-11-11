@@ -21,7 +21,7 @@ show("Hola, mundo")
 ```
 
 `and23 programa.jb` ejecuta un archivo; `and23` a secas abre el REPL, donde cada línea se evalúa y se imprime su
-valor. Dos opciones útiles van antes del archivo: `--disasm` muestra el bytecode en vez de ejecutar y `--max-depth N`
+valor (también funciona `use "archivo"`, relativo a la carpeta actual). Dos opciones útiles van antes del archivo: `--disasm` muestra el bytecode en vez de ejecutar y `--max-depth N`
 cambia el límite de llamadas anidadas (100000 por defecto). Lo que sigue al archivo lo recibe el programa
 (sección 11).
 
@@ -133,6 +133,23 @@ fix otra: Persona? = Persona("Rex")
 if otra != nil { show(otra.nombre) } // dentro del if, ya no es opcional
 ```
 
+Para salir o fallar cuando falta un valor hay dos atajos: `x ?: return ...` (o `?: fail ...`) y `x!!`:
+
+```jb
+fn nombreEnMayusculas(p: Persona?) -> Str {
+    fix quien = p ?: return "nadie"     // si p es nil, sale de la función con "nadie"
+    return quien.nombre.mayus()
+}
+
+fn nombreSeguro(p: Persona?) -> Str = p!!.nombre   // si p es nil, lanza un Fallo
+
+thing Persona(fix nombre: Str)
+show(nombreEnMayusculas(Persona("ana")))   // ANA
+show(nombreEnMayusculas(nil))              // nadie
+```
+
+`?.` también vale con texto y decimales opcionales: `s?.largo()` y `x?.formato(2)` dan `nil` si el valor es `nil`.
+
 Las excepciones son objetos de una clase que hereda de `Fallo`:
 
 ```jb
@@ -190,6 +207,35 @@ fn contador() -> () -> Int {
 }
 fix c = contador()
 show("${c()} ${c()}")                          // 1 2
+```
+
+Una lambda puede devolver el valor de un `if`/`else`. Y si una lambda local se llama a sí misma, anota el tipo de su variable:
+
+```jb
+fix signo = { n: Int -> if n < 0 { "negativo" } else if n == 0 { "cero" } else { "positivo" } }
+show(signo(-4))                                // negativo
+
+fn main() {
+    fix fact: (Int) -> Int = { n -> if n <= 1 { 1 } else { n * fact(n - 1) } }
+    show(fact(5))                              // 120
+}
+```
+
+Un constructor (`Persona`) y un método atado a su objeto (`cuenta.suma`, sin paréntesis) también son valores:
+
+```jb
+thing Persona(fix nombre: Str)
+thing Registro() {
+    mut nombres = Lista<Str>()
+    fn agrega(n: Str) { nombres.agrega(n) }
+}
+
+fix registro = Registro()
+fix crea: (Str) -> Persona = Persona
+fix guarda = registro.agrega
+guarda(crea("Ana").nombre)
+guarda("Beto")
+show(registro.nombres)                         // ["Ana", "Beto"]
 ```
 
 ## 9. Varios archivos
@@ -387,6 +433,9 @@ show(tam(5) + " " + tam(500))
 
 ## 15. Dónde seguir
 
+- [`docs/lenguaje.md`](lenguaje.md): la referencia del lenguaje (tipos, reglas, cada construcción).
+- [`docs/biblioteca.md`](biblioteca.md): todas las funciones y clases que vienen incluidas.
+- [`docs/errores.md`](errores.md): qué significa cada mensaje de error y cómo arreglarlo, y la migración desde 0.x.
 - [`README.md`](../README.md): estado del proyecto y la lista de lo que funciona.
 - [`DESIGN.md`](../DESIGN.md): decisiones de diseño y límites conocidos de cada parte.
 - `examples/`: programas completos (`palabras.jb`, `notas.jb`, `tareas.jb`, `proyecto/`...).

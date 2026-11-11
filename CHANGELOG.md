@@ -44,6 +44,11 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). L
   de la etapa 4.
 - `listaDe(arreglo)` (una `Lista` desde un arreglo literal) y `Dupla<A, B>` (dos valores juntos) en la biblioteca base.
 
+### Documentación
+- **Referencia del lenguaje** (`docs/lenguaje.md`), **referencia de la biblioteca** (`docs/biblioteca.md`), **guía de errores y de migración** (`docs/errores.md`) y
+  tutorial al día. Un test comprueba que cada bloque de código de los documentos es válido (los `jb-error` se rechazan) y otro, que la referencia
+  de la biblioteca menciona todo lo público del preludio y de las nativas.
+
 ### Cambiado (lenguaje)
 - **Constructores y métodos como valores:** `Persona` a secas es la función que construye una `Persona`, y `obj.metodo` (sin paréntesis) es el método ya
   atado a `obj`: `fix suma = cuenta.suma`, `lista.paraCada(otra.agrega)`, `aplica(Persona, "Ana", 30)`. Los genéricos (clase o método) siguen pidiendo una lambda.

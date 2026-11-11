@@ -73,13 +73,13 @@ nuevo, `DESIGN.md` y `CHANGELOG.md`, y el punto fijo de la etapa 5 sigue pasando
 
 ## Fase 3 — Documentación
 
-- [ ] **3.1 Referencia del lenguaje.** (L) `docs/lenguaje.md`: gramática, tipos, reglas del verificador, errores, tareas.
+- [x] **3.1 Referencia del lenguaje.** (L) `docs/lenguaje.md`: gramática, tipos, reglas del verificador, errores, tareas.
   *Terminado cuando:* cada construcción de `examples/` está explicada y cada mensaje de error tiene su causa.
-- [ ] **3.2 Referencia de la biblioteca.** (M) `docs/biblioteca.md`: firma y ejemplo de cada función y clase del preludio y de las
+- [x] **3.2 Referencia de la biblioteca.** (M) `docs/biblioteca.md`: firma y ejemplo de cada función y clase del preludio y de las
   nativas. Un test comprueba que ninguna nativa de `natives.rs` queda sin documentar.
-- [ ] **3.3 Tutorial al día.** (M) Pasar `docs/tutorial.md` por todas las novedades (`enum`, `match`, `listaDe`, `Dupla`...) y que
+- [x] **3.3 Tutorial al día.** (M) Pasar `docs/tutorial.md` por todas las novedades (`enum`, `match`, `listaDe`, `Dupla`...) y que
   alguien ajeno lo siga desde cero.
-- [ ] **3.4 Guía de errores comunes y de migración desde 0.x.** (S)
+- [x] **3.4 Guía de errores comunes y de migración desde 0.x.** (S)
 
 ## Fase 4 — Programas reales (la prueba que más descubre)
 

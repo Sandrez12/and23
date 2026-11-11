@@ -8,7 +8,7 @@ Los archivos de código usan la extensión `.jb`. Los identificadores admiten Un
 
 **Auto-compilación (Mn):** `mn/lexer.jb`, `mn/parser.jb` y `mn/checker.jb` y `mn/compilador.jb` son el lexer, el parser, el verificador de tipos y el compilador de And23 escritos en And23; tests los comparan con los de Rust (`--tokens`, `--ast`, `--check`). Ver «Mn» en [`DESIGN.md`](DESIGN.md).
 
-**Primeros pasos:** [`docs/tutorial.md`](docs/tutorial.md) recorre el lenguaje con ejemplos que se ejecutan tal cual. Los cambios de cada versión están en [`CHANGELOG.md`](CHANGELOG.md).
+**Primeros pasos:** [`docs/tutorial.md`](docs/tutorial.md) recorre el lenguaje con ejemplos que se ejecutan tal cual. Referencias: [`docs/lenguaje.md`](docs/lenguaje.md) (el lenguaje), [`docs/biblioteca.md`](docs/biblioteca.md) (funciones y clases incluidas) y [`docs/errores.md`](docs/errores.md) (mensajes de error y migración). Los cambios de cada versión están en [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Cómo se ve
 

@@ -2089,3 +2089,59 @@ fn la_referencia_de_la_biblioteca_documenta_todo_lo_publico() {
         "docs/biblioteca.md no menciona: {faltan:?}"
     );
 }
+
+/// Los bloques de código de la documentación: cada bloque ```jb es un programa que verifica sin errores, y cada bloque ```jb-error
+/// es un programa que el verificador rechaza. Así los ejemplos de los documentos no se desactualizan.
+fn bloques_de_codigo(texto: &str) -> Vec<(String, String, usize)> {
+    let mut bloques = Vec::new();
+    let mut actual: Option<(String, String, usize)> = None;
+    for (n, linea) in texto.lines().enumerate() {
+        match (&mut actual, linea.trim_end()) {
+            (None, l) if l.starts_with("```jb") => {
+                actual = Some((l[3..].to_string(), String::new(), n + 1));
+            }
+            (Some(_), "```") => bloques.push(actual.take().unwrap()),
+            (Some((_, codigo, _)), l) => {
+                codigo.push_str(l);
+                codigo.push('\n');
+            }
+            _ => {}
+        }
+    }
+    bloques
+}
+
+fn verifica_texto(src: &str) -> Result<(), String> {
+    let mut checker = and23_types::Checker::new();
+    let prelude = and23_syntax::parse(and23_syntax::PRELUDE).map_err(|d| d.message)?;
+    checker.check(&prelude).map_err(|d| d.message)?;
+    checker.seal_prelude();
+    let program = and23_syntax::parse(src).map_err(|d| d.message)?;
+    checker.check(&program).map(|_| ()).map_err(|d| d.message)
+}
+
+#[test]
+fn los_bloques_de_codigo_de_la_documentacion_son_validos() {
+    let root = raiz_del_repo();
+    let mut errores = Vec::new();
+    let mut total = 0;
+    for doc in ["docs/tutorial.md", "docs/lenguaje.md", "docs/errores.md"] {
+        let Ok(texto) = std::fs::read_to_string(root.join(doc)) else {
+            continue;
+        };
+        for (tipo, codigo, linea) in bloques_de_codigo(&texto) {
+            total += 1;
+            let resultado = verifica_texto(&codigo);
+            let esperaba_error = tipo == "jb-error";
+            match (resultado, esperaba_error) {
+                (Err(e), false) => errores.push(format!("{doc}:{linea}: debía ser válido: {e}")),
+                (Ok(()), true) => {
+                    errores.push(format!("{doc}:{linea}: debía dar un error de tipos"))
+                }
+                _ => {}
+            }
+        }
+    }
+    assert!(errores.is_empty(), "{}", errores.join("\n"));
+    assert!(total > 10, "solo {total} bloques");
+}
