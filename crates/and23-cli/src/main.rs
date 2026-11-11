@@ -5,7 +5,7 @@ use std::io::{self, BufRead, IsTerminal, Write};
 use std::process::ExitCode;
 
 const USAGE: &str = "\
-And23 (M11)
+And23
 
 Uso:
   and23 <archivo.jb> [args...]   ejecuta un programa (y llama a main() si existe); args() los lee

@@ -5,6 +5,10 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). L
 
 ## Sin publicar
 
+## 1.0.0-rc.1 - 2026-11-11
+
+Candidata a la 1.0.0: sin cambios de lenguaje respecto a la 0.9.0, solo la ayuda de `and23 --help` y la documentación de rendimiento. Si no aparecen fallos, la 1.0.0 es esta misma versión.
+
 ## 0.9.0 - 2026-11-11
 
 Primera versión candidata: el lenguaje queda **congelado** (desde aquí solo correcciones y documentación hasta la 1.0). Resumen de lo nuevo desde la 0.3.0:

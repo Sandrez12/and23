@@ -2,7 +2,7 @@
   "name": "and23",
   "displayName": "And23",
   "description": "Resaltado de sintaxis y configuración del lenguaje And23 (.jb)",
-  "version": "0.9.0",
+  "version": "1.0.0-rc.1",
   "publisher": "and23",
   "license": "MIT",
   "repository": {

@@ -77,6 +77,11 @@ if [ "${1:-}" = "--escribe" ]; then
         echo "- Repeticiones: $REPS (mediana)"
         echo
         echo "$TABLA"
+        # Las notas escritas a mano sobre lo que se descubrió al medir.
+        if [ -f benchmarks/NOTAS.md ]; then
+            echo
+            cat benchmarks/NOTAS.md
+        fi
     } >docs/rendimiento.md
     echo "Escrito docs/rendimiento.md" >&2
 else

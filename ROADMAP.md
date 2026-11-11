@@ -101,7 +101,7 @@ nuevo, `DESIGN.md` y `CHANGELOG.md`, y el punto fijo de la etapa 5 sigue pasando
 ## Fase 6 — Candidata y lanzamiento
 
 - [x] **6.1 `0.9.0`.** Congelar funciones: desde aquí solo correcciones y documentación. (S)
-- [ ] **6.2 `1.0.0-rc.1`.** Un periodo de uso real (los proyectos de la Fase 4 y quien quiera probarlo) sin fallos graves
+- [x] **6.2 `1.0.0-rc.1`.** Un periodo de uso real (los proyectos de la Fase 4 y quien quiera probarlo) sin fallos graves
   abiertos. (M)
 - [ ] **6.3 `1.0.0`.** Etiqueta, release, CHANGELOG y texto de anuncio. (S)
 
