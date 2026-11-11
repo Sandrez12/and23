@@ -83,10 +83,10 @@ nuevo, `DESIGN.md` y `CHANGELOG.md`, y el punto fijo de la etapa 5 sigue pasando
 
 ## Fase 4 — Programas reales (la prueba que más descubre)
 
-- [ ] **4.1 Primer proyecto: una herramienta de línea de comandos** (por ejemplo, un buscador de texto o un conversor de datos),
+- [x] **4.1 Primer proyecto: una herramienta de línea de comandos** (por ejemplo, un buscador de texto o un conversor de datos),
   con pruebas propias (`prueba`). (L)
 - [ ] **4.2 Segundo proyecto distinto** (por ejemplo, un servidor de tareas con canales o un intérprete pequeño). (L)
-- [ ] **4.3 Registrar cada fricción** en `docs/fricciones.md` y convertir las que importen en pasos de la Fase 2.
+- [~] **4.3 Registrar cada fricción** en `docs/fricciones.md` y convertir las que importen en pasos de la Fase 2.
 
 ## Fase 5 — Distribución
 

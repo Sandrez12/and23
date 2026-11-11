@@ -1,0 +1,39 @@
+// Opciones de la línea de comandos del buscador.
+
+open thing ErrorUso(m: Str) : Fallo(m)
+
+open thing Opciones(
+    fix patron: Str,
+    fix rutas: Lista<Str>,
+    fix ignoraMayusculas: Bool,
+    fix soloCuenta: Bool,
+    fix numera: Bool
+)
+
+/// Convierte los argumentos (`patrón ruta... [-i] [-c] [-n]`) en opciones; lanza `ErrorUso` si están mal.
+open fn analiza(args: Lista<Str>) -> Opciones {
+    mut patron: Str? = nil
+    fix rutas = Lista<Str>()
+    mut ignora = false
+    mut cuenta = false
+    mut numera = false
+    args.paraCada { a ->
+        if a == "-i" || a == "--ignora-mayusculas" {
+            ignora = true
+        } else if a == "-c" || a == "--cuenta" {
+            cuenta = true
+        } else if a == "-n" || a == "--numera" {
+            numera = true
+        } else if a.empiezaCon("-") && a.largo() > 1 {
+            fail ErrorUso("opción desconocida: ${a}")
+        } else if patron == nil {
+            patron = a
+        } else {
+            rutas.agrega(a)
+        }
+    }
+    fix p = patron ?: fail ErrorUso("falta el patrón")
+    if p.vacia() { fail ErrorUso("el patrón no puede estar vacío") }
+    if rutas.vacia() { rutas.agrega(".") }
+    return Opciones(p, rutas, ignora, cuenta, numera)
+}

@@ -1,0 +1,66 @@
+// Pruebas del buscador:  and23 --prueba proyectos/buscador/buscador_prueba.jb
+
+use "opciones"
+use "busqueda"
+
+prueba "coincide distingue mayúsculas salvo que se pida lo contrario" {
+    afirma(coincide("Hola mundo", "mundo", false))
+    afirma(!coincide("Hola mundo", "MUNDO", false))
+    afirma(coincide("Hola mundo", "MUNDO", true))
+    afirma(!coincide("", "a", true))
+}
+
+prueba "analiza lee el patrón, las rutas y las opciones" {
+    fix o = analiza(listaDe(["fallo", "src", "-i", "tests", "-n"]))
+    afirmaIgual(o.patron, "fallo")
+    afirmaIgual(o.rutas.tam(), 2)
+    afirmaIgual(o.rutas.obtiene(1), "tests")
+    afirma(o.ignoraMayusculas)
+    afirma(o.numera)
+    afirma(!o.soloCuenta)
+}
+
+prueba "sin rutas busca en la carpeta actual" {
+    fix o = analiza(listaDe(["x"]))
+    afirmaIgual(o.rutas.tam(), 1)
+    afirmaIgual(o.rutas.obtiene(0), ".")
+}
+
+prueba "analiza rechaza los argumentos mal formados" {
+    mut mensajes = Lista<Str>()
+    attempt {
+        analiza(Lista<Str>())
+    } rescue e: ErrorUso {
+        mensajes.agrega(e.msg)
+    }
+    attempt {
+        analiza(listaDe(["x", "--rara"]))
+    } rescue e: ErrorUso {
+        mensajes.agrega(e.msg)
+    }
+    afirmaIgual(mensajes.obtiene(0), "falta el patrón")
+    afirmaIgual(mensajes.obtiene(1), "opción desconocida: --rara")
+}
+
+prueba "busca en archivos y carpetas, en orden y sin leer lo que no existe" {
+    fix base = unirRuta(entorno("TEMP") ?: entorno("TMPDIR") ?: "/tmp", "and23_buscador_prueba")
+    creaDir(unirRuta(base, "sub"))
+    escribeArchivo(unirRuta(base, "b.txt"), "uno\ndos fallo\ntres")
+    escribeArchivo(unirRuta(base, "a.txt"), "Fallo arriba\nnada")
+    escribeArchivo(unirRuta(base, "sub/c.txt"), "otra línea\nun fallo más\nfallo fallo")
+    fix todos = archivos(base)
+    afirmaIgual(todos.tam(), 3)
+    afirma(todos.obtiene(0).terminaCon("a.txt"))
+    afirma(todos.obtiene(1).terminaCon("b.txt"))
+    afirma(todos.obtiene(2).terminaCon("c.txt"))
+    fix aciertos = buscaEnArchivo(unirRuta(base, "sub/c.txt"), "fallo", false)
+    afirmaIgual(aciertos.tam(), 2)
+    afirmaIgual(aciertos.obtiene(0).numero, 2)
+    afirmaIgual(aciertos.obtiene(1).linea, "fallo fallo")
+    afirmaIgual(buscaEnArchivo(unirRuta(base, "a.txt"), "fallo", true).tam(), 1)
+    afirmaIgual(archivos(unirRuta(base, "no_existe")).tam(), 0)
+    afirmaIgual(buscaEnArchivo(unirRuta(base, "no_existe.txt"), "x", false).tam(), 0)
+    borraArchivo(unirRuta(base, "a.txt"))
+    borraArchivo(unirRuta(base, "b.txt"))
+    borraArchivo(unirRuta(base, "sub/c.txt"))
+}

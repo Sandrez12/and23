@@ -2145,3 +2145,83 @@ fn los_bloques_de_codigo_de_la_documentacion_son_validos() {
     assert!(errores.is_empty(), "{}", errores.join("\n"));
     assert!(total > 10, "solo {total} bloques");
 }
+
+/// `salir(n)` termina con ese código, sin poder capturarse, y `muestraError` escribe por la salida de errores.
+#[test]
+fn salir_y_muestra_error() {
+    let out = run_source(
+        "salir1",
+        "fn main() {\n    show(\"antes\")\n    muestraError(\"un error\")\n    attempt { salir(3) } rescue e: Fallo { show(\"no debe salir\") }\n    show(\"despues\")\n}\n",
+    );
+    assert_eq!(out.status.code(), Some(3));
+    assert_eq!(stdout(&out), "antes\n");
+    assert_eq!(stderr(&out), "un error\n");
+    // Una salida desde el nivel superior no llama a `main`; el código solo cuenta los 8 bits bajos.
+    let out = run_source(
+        "salir2",
+        "show(\"a\")\nsalir(256 + 7)\nshow(\"b\")\nfn main() { show(\"main\") }\n",
+    );
+    assert_eq!(out.status.code(), Some(7));
+    assert_eq!(stdout(&out), "a\n");
+    // `salir(0)` también termina con éxito sin ejecutar lo que sigue.
+    let out = run_source("salir3", "show(1)\nsalir(0)\nshow(2)\n");
+    assert!(out.status.success());
+    assert_eq!(stdout(&out), "1\n");
+}
+
+/// El buscador (`proyectos/buscador`) como herramienta de línea de comandos: busca, cuenta y usa los códigos de salida.
+#[test]
+fn el_buscador_de_proyectos_funciona_como_herramienta() {
+    let root = raiz_del_repo();
+    let ejecuta = |args: &[&str]| {
+        and23()
+            .current_dir(&root)
+            .arg("proyectos/buscador/buscador.jb")
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let con = ejecuta(&["Fallo", "examples/excepciones.jb", "-n"]);
+    assert_eq!(con.status.code(), Some(0), "{}", stderr(&con));
+    assert!(
+        stdout(&con).contains("examples/excepciones.jb:"),
+        "{}",
+        stdout(&con)
+    );
+    assert!(
+        stdout(&con).trim_end().ends_with("en 1 archivo(s)"),
+        "{}",
+        stdout(&con)
+    );
+    let sin = ejecuta(&[
+        "esto_no_aparece_en_ningun_lado_zzz",
+        "examples/excepciones.jb",
+    ]);
+    assert_eq!(sin.status.code(), Some(1));
+    assert!(stdout(&sin).contains("0 coincidencia(s)"));
+    let mal = ejecuta(&["x", "--rara"]);
+    assert_eq!(mal.status.code(), Some(2));
+    assert!(
+        stderr(&mal).contains("opción desconocida: --rara"),
+        "{}",
+        stderr(&mal)
+    );
+    assert_eq!(stdout(&mal), "");
+    // Sus pruebas.
+    let pruebas = and23()
+        .current_dir(&root)
+        .args(["--prueba", "proyectos/buscador/buscador_prueba.jb"])
+        .output()
+        .unwrap();
+    assert!(
+        pruebas.status.success(),
+        "{}{}",
+        stdout(&pruebas),
+        stderr(&pruebas)
+    );
+    assert!(
+        stdout(&pruebas).contains("5 prueba(s): 5 ok, 0 fallaron"),
+        "{}",
+        stdout(&pruebas)
+    );
+}

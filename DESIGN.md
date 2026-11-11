@@ -556,6 +556,10 @@ fix m = Mapa<Str, Int>()                                                // expl�
 - **Probar el GC.** `--gc-stress` recolecta en cada punto seguro. Los tests lo aplican a todo el corpus ejecutable y al lexer y parser de Mn;
   el verificador y el compilador de Mn no entran porque así tardan minutos (264 s el verificador sobre un archivo), ya que cada punto seguro
   recorre el heap entero con el preludio cargado.
+- **Salir y errores (programas reales).** `salir(n)` pone un código de salida en el estado de las nativas y la VM se detiene en cuanto vuelve de esa llamada
+  (la ejecución entera, todas las tareas; no es una excepción); el CLI sale con ese código (solo cuentan 8 bits) y no llama a `main` si el nivel superior
+  ya salió. `muestraError(texto)` acumula el texto y la VM, tras la llamada, vacía la salida normal y lo escribe por la salida de errores (así el orden
+  entre las dos se conserva en una terminal).
 - **Límites previstos.** Sin expulsión por tiempo (un bucle que no cede bloquea al resto); `leeLinea` bloquea toda la VM; (un `Fallo` de una tarea que nadie espera ya no se pierde: ver «Errores»); el REPL descarta las
   tareas pendientes al terminar cada entrada.
 

@@ -164,6 +164,8 @@ Los fallos lanzan `ErrorES`. Las rutas aceptan `/` y `\`.
 | `leeLinea()` | `Str?`: una línea de la entrada estándar sin el salto, o `nil` al terminar. Bloquea toda la VM mientras espera. |
 | `argumentos()` | `Lista<Str>`: lo que sigue al archivo en la línea de comandos (`and23 programa.jb uno dos`). |
 | `entorno(nombre)` | `Str?`: el valor de una variable de entorno, o `nil`. |
+| `salir(codigo)` | Termina el programa ahora con ese código de salida (0 es éxito; solo cuentan los 8 bits bajos). No se puede capturar con `attempt`, detiene también las demás tareas y lo ya escrito con `show` sale antes. Desde el nivel superior, `main` no llega a llamarse. |
+| `muestraError(texto)` | Escribe `texto` y un salto de línea en la salida de errores (la salida normal no cambia). |
 
 ## Tiempo y azar
 

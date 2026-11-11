@@ -110,6 +110,11 @@ impl<W: Write> Session<W> {
         )
     }
 
+    /// El código de salida que pidió el programa con `salir(n)`, si lo hizo (la ejecución ya se detuvo).
+    pub fn exit_code(&self) -> Option<u8> {
+        self.vm.exit_code()
+    }
+
     /// Llama a `main()` si el programa la definió.
     pub fn run_main(&mut self) -> Result<(), Diagnostic> {
         let Some(index) = self.compiler.main_index() else {

@@ -162,17 +162,31 @@ fn run_file(path: &str, options: Options) -> u8 {
     let mut session = options.session(io::stdout());
     let result = session
         .run(&loaded.program, false)
-        .and_then(|()| session.run_main())
+        .and_then(|()| {
+            // Si el nivel superior llamó a `salir(n)`, no se sigue con `main`.
+            if session.exit_code().is_some() {
+                Ok(())
+            } else {
+                session.run_main()
+            }
+        })
         .map_err(|d| sources.render(&d))
-        .and_then(|()| match session.lost_task_failures() {
-            Some(text) => Err(format!(
-                "error: {text}
-"
-            )),
-            None => Ok(()),
+        .and_then(|()| {
+            if session.exit_code().is_some() {
+                return Ok(());
+            }
+            match session.lost_task_failures() {
+                Some(text) => Err(format!("error: {text}\n")),
+                None => Ok(()),
+            }
         });
     // La salida normal debe quedar escrita antes del mensaje de error.
     let _ = session.out().flush();
+    if result.is_ok() {
+        if let Some(code) = session.exit_code() {
+            return code;
+        }
+    }
     finish(result)
 }
 
@@ -568,7 +582,13 @@ fn run_dump(prelude: &str, program: &str, options: Options) -> u8 {
         steps
             .into_iter()
             .flatten()
-            .try_for_each(|entry| vm.run(&loaded.module, entry))
+            .try_for_each(|entry| {
+                // Si un paso llamó a `salir(n)`, no se siguen ejecutando los demás.
+                if vm.exit_code().is_some() {
+                    return Ok(());
+                }
+                vm.run(&loaded.module, entry)
+            })
             .map_err(|d| {
                 // Las posiciones del volcado son en caracteres del fuente unido, no hay fuente que mostrar.
                 format!(
@@ -579,6 +599,9 @@ fn run_dump(prelude: &str, program: &str, options: Options) -> u8 {
             })
             .and_then(|()| {
                 // Como en `run_file`: una tarea que falló y nadie esperó es un error.
+                if vm.exit_code().is_some() {
+                    return Ok(());
+                }
                 let lost = loaded
                     .module
                     .functions
@@ -598,6 +621,11 @@ fn run_dump(prelude: &str, program: &str, options: Options) -> u8 {
             })
     };
     let _ = vm.out.flush();
+    if result.is_ok() {
+        if let Some(code) = vm.exit_code() {
+            return code;
+        }
+    }
     finish(result)
 }
 
@@ -664,6 +692,10 @@ fn repl(options: Options) -> u8 {
             eprint!("{rendered}");
         }
         let _ = session.out().flush();
+        // `salir(n)` en el REPL cierra el REPL con ese código.
+        if let Some(code) = session.exit_code() {
+            return code;
+        }
     }
     // Si la entrada terminó con un bloque sin cerrar, se muestra el error en vez de ignorarlo.
     if !pending.trim().is_empty() {

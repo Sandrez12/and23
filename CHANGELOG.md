@@ -44,6 +44,13 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). L
   de la etapa 4.
 - `listaDe(arreglo)` (una `Lista` desde un arreglo literal) y `Dupla<A, B>` (dos valores juntos) en la biblioteca base.
 
+### Añadido (programas reales)
+- **`salir(codigo)` y `muestraError(texto)`:** terminar el programa con un código de salida (no se captura con `attempt`, detiene todas las tareas) y escribir por la
+  salida de errores. Hacían falta para cualquier herramienta de línea de comandos.
+- **Expresiones en varias líneas:** los saltos de línea ya no separan sentencias dentro de `(...)` y `[...]` (parámetros y argumentos en varias líneas), tras un
+  operador al final de la línea (`a +`) ni antes de una línea que empieza con `.`, `?.`, `&&`, `||` o `?:` (cadenas de métodos).
+- `proyectos/buscador`: un `grep` sencillo de varios archivos con pruebas, el primer programa real (ver `docs/fricciones.md`).
+
 ### Documentación
 - **Referencia del lenguaje** (`docs/lenguaje.md`), **referencia de la biblioteca** (`docs/biblioteca.md`), **guía de errores y de migración** (`docs/errores.md`) y
   tutorial al día. Un test comprueba que cada bloque de código de los documentos es válido (los `jb-error` se rechazan) y otro, que la referencia

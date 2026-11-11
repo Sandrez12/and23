@@ -172,6 +172,36 @@ pub struct Token {
     pub span: Span,
 }
 
+/// ¿Un salto de línea después de este token no termina la sentencia? Son los operadores que esperan un segundo operando (no
+/// incluye `<` ni `>`, que también cierran una lista de tipos, ni `!` ni `?`, que pueden terminar una expresión o un tipo).
+fn continues_line(kind: &TokenKind) -> bool {
+    use TokenKind as T;
+    matches!(
+        kind,
+        T::Plus
+            | T::Minus
+            | T::Star
+            | T::Slash
+            | T::Percent
+            | T::EqEq
+            | T::NotEq
+            | T::LtEq
+            | T::GtEq
+            | T::AndAnd
+            | T::OrOr
+            | T::Assign
+            | T::PlusEq
+            | T::MinusEq
+            | T::StarEq
+            | T::SlashEq
+            | T::PercentEq
+            | T::Elvis
+            | T::QDot
+            | T::Dot
+            | T::Comma
+    )
+}
+
 fn keyword(name: &str) -> Option<TokenKind> {
     use TokenKind as T;
     Some(match name {
@@ -316,8 +346,11 @@ impl Lexer<'_> {
     /// que cierra la interpolación y la consume; si no, lee hasta el final del fuente.
     fn run(&self, i: &mut usize, interpolation: Option<Span>) -> Result<Vec<Token>, Diagnostic> {
         let chars = self.chars;
-        let mut tokens = Vec::new();
+        let mut tokens: Vec<Token> = Vec::new();
         let mut depth = 0usize;
+        // Los agrupadores abiertos, el más interno al final: `true` para `(` y `[` (dentro, un salto de línea no separa sentencias) y
+        // `false` para `{` (un bloque o una lambda, donde sí).
+        let mut groups: Vec<bool> = Vec::new();
         while *i < chars.len() {
             let (start, c) = chars[*i];
             let next = chars.get(*i + 1).map(|&(_, n)| n);
@@ -326,8 +359,13 @@ impl Lexer<'_> {
                 // BOM UTF-8 al inicio del archivo (lo agregan algunos editores de Windows).
                 '\u{feff}' if *i == 0 => *i += 1,
                 '\n' | ';' => {
-                    // Dentro de `${...}` no hay sentencias: los saltos de línea se ignoran.
-                    if interpolation.is_none() {
+                    // Dentro de `${...}` no hay sentencias: los saltos de línea se ignoran. Tampoco separan dentro de `(...)` o
+                    // `[...]` (parámetros y argumentos en varias líneas) ni tras un operador que espera su segundo operando
+                    // (`a +` al final de la línea): la expresión sigue en la línea siguiente. Un `;` siempre separa.
+                    let continues = c == '\n'
+                        && (groups.last() == Some(&true)
+                            || tokens.last().is_some_and(|t| continues_line(&t.kind)));
+                    if interpolation.is_none() && !continues {
                         tokens.push(Token {
                             kind: TokenKind::Newline,
                             span: Span::new(start, start + c.len_utf8()),
@@ -405,8 +443,29 @@ impl Lexer<'_> {
                 other => match operator(other, next) {
                     Some((kind, len)) => {
                         match kind {
-                            TokenKind::LBrace => depth += 1,
-                            TokenKind::RBrace => depth = depth.saturating_sub(1),
+                            TokenKind::LBrace => {
+                                depth += 1;
+                                groups.push(false);
+                            }
+                            TokenKind::RBrace => {
+                                depth = depth.saturating_sub(1);
+                                groups.pop();
+                            }
+                            TokenKind::LParen | TokenKind::LBracket => groups.push(true),
+                            TokenKind::RParen | TokenKind::RBracket => {
+                                groups.pop();
+                            }
+                            // Una línea que empieza con `.`, `?.`, `&&`, `||` o `?:` sigue la anterior (cadenas de
+                            // métodos y condiciones largas): ninguna sentencia empieza así.
+                            TokenKind::Dot
+                            | TokenKind::QDot
+                            | TokenKind::AndAnd
+                            | TokenKind::OrOr
+                            | TokenKind::Elvis => {
+                                while tokens.last().is_some_and(|t| t.kind == TokenKind::Newline) {
+                                    tokens.pop();
+                                }
+                            }
                             _ => {}
                         }
                         tokens.push(Token {

@@ -14,6 +14,10 @@ pub struct NativeState {
     pub args: Vec<String>,
     /// Estado del generador de números aleatorios (xorshift64*; nunca 0).
     pub rng: u64,
+    /// Código de salida que pidió `salir(n)`: la VM se detiene en cuanto lo ve.
+    pub exit: Option<u8>,
+    /// Lo que `muestraError` escribió y la VM aún no ha sacado por la salida de errores.
+    pub stderr: String,
 }
 
 impl NativeState {
@@ -25,6 +29,8 @@ impl NativeState {
             io_error: String::new(),
             args: Vec::new(),
             rng: seed(nanos),
+            exit: None,
+            stderr: String::new(),
         }
     }
 
@@ -387,6 +393,17 @@ pub fn call(
             } else {
                 format!("{x:?}")
             }
+        }
+        // _salir(codigo): pide terminar el programa (la VM lo atiende tras esta llamada)
+        41 => {
+            state.exit = Some((int(a(0)) & 0xFF) as u8);
+            return Ok(Value::Unit);
+        }
+        // _stderr(texto): se escribe por la salida de errores, después de vaciar la salida normal
+        42 => {
+            let s = text(heap, a(0)).to_string();
+            state.stderr.push_str(&s);
+            return Ok(Value::Unit);
         }
         _ => return Err(format!("función nativa desconocida: {id}")),
     };

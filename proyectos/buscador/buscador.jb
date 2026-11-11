@@ -1,0 +1,45 @@
+// buscador: busca un texto en los archivos de una carpeta.
+//
+//   and23 proyectos/buscador/buscador.jb PATRÓN [RUTA...] [-i] [-c] [-n]
+//
+//   -i  ignora mayúsculas    -c  solo cuenta por archivo    -n  numera las líneas
+//
+// Código de salida: 0 si hay coincidencias, 1 si no hay, 2 si los argumentos están mal.
+
+use "opciones"
+use "busqueda"
+
+fn ejecuta(o: Opciones) -> Int {
+    fix porArchivo = Mapa<Str, Int>()
+    mut total = 0
+    o.rutas.paraCada { ruta ->
+        archivos(ruta).paraCada { archivo ->
+            fix aciertos = buscaEnArchivo(archivo, o.patron, o.ignoraMayusculas)
+            if !aciertos.vacia() { porArchivo.pone(archivo, aciertos.tam()) }
+            total += aciertos.tam()
+            if !o.soloCuenta {
+                aciertos.paraCada { c ->
+                    if o.numera { show("${c.ruta}:${c.numero}: ${c.linea}") } else { show("${c.ruta}: ${c.linea}") }
+                }
+            }
+        }
+    }
+    if o.soloCuenta {
+        porArchivo.paraCada { archivo, n -> show("${archivo}: ${n}") }
+    }
+    show("${total} coincidencia(s) en ${porArchivo.tam()} archivo(s)")
+    return total
+}
+
+fn main() {
+    attempt {
+        fix opciones = analiza(argumentos())
+        fix total = ejecuta(opciones)
+        // Como grep: 0 si hubo coincidencias y 1 si no.
+        if total == 0 { salir(1) }
+    } rescue e: ErrorUso {
+        muestraError("error: ${e.msg}")
+        muestraError("uso: buscador PATRÓN [RUTA...] [-i] [-c] [-n]")
+        salir(2)
+    }
+}

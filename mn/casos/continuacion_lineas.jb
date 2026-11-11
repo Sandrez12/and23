@@ -1,0 +1,35 @@
+// Saltos de línea que no terminan la sentencia: dentro de ( y [, tras un operador y antes de .  ?.  &&  ||  ?:
+fn suma(
+    a: Int,
+    b: Int
+) -> Int = a +
+    b
+
+thing Punto(
+    fix x: Int,
+    fix y: Int
+)
+
+fix p = Punto(
+    1,
+    2
+)
+fix cuenta = [
+    1,
+    2,
+]
+fix r = listaDe(cuenta)
+    .map { n -> n * 2 }
+    .filter { n -> n > 2 }
+fix ok = p.x == 1
+    && p.y == 2
+    || false
+fix v: Int? = nil
+fix w = v
+    ?: 7
+mut total = 0
+total +=
+    5
+fix px = p
+    .x
+show(suma(1, 2))

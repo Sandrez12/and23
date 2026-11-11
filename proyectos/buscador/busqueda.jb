@@ -1,0 +1,43 @@
+// Recorre archivos y carpetas y busca el patrón en cada línea.
+
+open thing Coincidencia(fix ruta: Str, fix numero: Int, fix linea: Str)
+
+/// ¿La línea contiene el patrón? Con `ignora`, sin distinguir mayúsculas.
+open fn coincide(linea: Str, patron: Str, ignora: Bool) -> Bool {
+    if ignora { return linea.minus().contiene(patron.minus()) }
+    return linea.contiene(patron)
+}
+
+/// Todos los archivos de `ruta` (ella misma si es un archivo), en orden alfabético y entrando en las carpetas.
+open fn archivos(ruta: Str) -> Lista<Str> {
+    fix res = Lista<Str>()
+    if !existe(ruta) { return res }
+    if !esDir(ruta) {
+        res.agrega(ruta)
+        return res
+    }
+    fix nombres = listaDir(ruta)
+    nombres.ordena { a, b -> a < b }
+    nombres.paraCada { nombre ->
+        fix hijo = unirRuta(ruta, nombre)
+        archivos(hijo).paraCada { f -> res.agrega(f) }
+    }
+    return res
+}
+
+/// Las coincidencias de un archivo de texto. Un archivo que no se puede leer cuenta como vacío.
+open fn buscaEnArchivo(ruta: Str, patron: Str, ignora: Bool) -> Lista<Coincidencia> {
+    fix res = Lista<Coincidencia>()
+    attempt {
+        fix lineas = leeLineas(ruta)
+        mut i = 0
+        while i < lineas.tam() {
+            fix l = lineas.obtiene(i)
+            if coincide(l, patron, ignora) { res.agrega(Coincidencia(ruta, i + 1, l)) }
+            i += 1
+        }
+    } rescue e: ErrorES {
+        // archivos binarios o sin permiso: se saltan
+    }
+    return res
+}

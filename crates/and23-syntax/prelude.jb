@@ -370,6 +370,13 @@ fn _str_trozo(s: Str, desde: Int, hasta: Int) -> Str = _trozo(s, desde, hasta)
 /// Trozos de `s` separados por `sep`; con `sep` vacío, un trozo por carácter.
 fn _str_parte(s: Str, sep: Str) -> Lista<Str> = listaDe(_parte(s, sep))
 
+/// Termina el programa ahora mismo con ese código de salida (0 es éxito; solo cuentan los 8 bits bajos). No se puede capturar con
+/// `attempt` y detiene también las demás tareas. Lo que ya se escribió con `show` sale antes.
+fn salir(codigo: Int) { _salir(codigo) }
+
+/// Escribe `texto` y un salto de línea en la salida de errores (la salida normal queda como estaba).
+fn muestraError(texto: Str) { _stderr(texto + "\n") }
+
 /// `x.formato(2)`: el texto de `x` con ese número de decimales (0 a 100), por ejemplo `3.14159.formato(2)` es "3.14".
 fn _float_formato(x: Float, decimales: Int) -> Str = _formato(x, decimales)
 

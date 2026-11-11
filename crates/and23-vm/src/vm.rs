@@ -93,6 +93,11 @@ impl<W: Write> Vm<W> {
         self.heap.stats()
     }
 
+    /// El código de salida que pidió el programa con `salir(n)`, si lo hizo.
+    pub fn exit_code(&self) -> Option<u8> {
+        self.native.exit
+    }
+
     /// ¿La global `slot` ya tiene valor?
     pub fn is_defined(&self, slot: u32) -> bool {
         matches!(self.globals.get(slot as usize), Some(Some(_)))
@@ -561,6 +566,15 @@ impl<W: Write> Vm<W> {
                         match result {
                             Ok(v) => stack.push(v),
                             Err(message) => fail!("{message}"),
+                        }
+                        if !native.stderr.is_empty() {
+                            let _ = out.flush();
+                            eprint!("{}", native.stderr);
+                            native.stderr.clear();
+                        }
+                        // `salir(n)`: termina el programa entero (todas las tareas) ahora.
+                        if native.exit.is_some() {
+                            return Ok(());
                         }
                     }
                     Op::Hash => {
