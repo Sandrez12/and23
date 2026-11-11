@@ -5,6 +5,11 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). L
 
 ## Sin publicar
 
+## 1.0.0 - 2026-11-11
+
+**Primera versión estable.** Es la 1.0.0-rc.1 sin cambios (verificada con los binarios de su release: ejemplos, proyectos, pruebas y punto fijo de la autocompilación). Desde aquí rigen las reglas
+de compatibilidad de la serie 1.x (`DESIGN.md`, «Política de 1.0»): un programa válido en 1.0 sigue siendo válido y hace lo mismo en cualquier 1.y; lo documentado en `docs/` no se rompe hasta la 2.0.
+
 ## 1.0.0-rc.1 - 2026-11-11
 
 Candidata a la 1.0.0: sin cambios de lenguaje respecto a la 0.9.0, solo la ayuda de `and23 --help` y la documentación de rendimiento. Si no aparecen fallos, la 1.0.0 es esta misma versión.

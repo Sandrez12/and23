@@ -11,7 +11,7 @@ terminado que se puede comprobar y termina en un commit. Tamaños: **S** = menos
    en máquinas reales de los tres sistemas.
 3. Hay una referencia del lenguaje y de la biblioteca, y al menos un programa real (no un ejemplo) escrito con And23.
 
-Orden de las versiones: `0.4` (fases 0 a 2) → `0.9` (fase 3 y 4) → `1.0.0-rc.1` (solo correcciones) → `1.0.0`.
+Orden de las versiones: `0.9` → `1.0.0-rc.1` → `1.0.0` (todas publicadas el 2026-11-11).
 
 ---
 
@@ -103,7 +103,7 @@ nuevo, `DESIGN.md` y `CHANGELOG.md`, y el punto fijo de la etapa 5 sigue pasando
 - [x] **6.1 `0.9.0`.** Congelar funciones: desde aquí solo correcciones y documentación. (S)
 - [x] **6.2 `1.0.0-rc.1`.** Un periodo de uso real (los proyectos de la Fase 4 y quien quiera probarlo) sin fallos graves
   abiertos. (M)
-- [ ] **6.3 `1.0.0`.** Etiqueta, release, CHANGELOG y texto de anuncio. (S)
+- [x] **6.3 `1.0.0`.** Etiqueta, release, CHANGELOG y texto de anuncio. (S)
 
 ## Después de 1.0 (no bloquea)
 

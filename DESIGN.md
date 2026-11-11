@@ -775,7 +775,7 @@ Decididas en la Fase 1 de `ROADMAP.md`. Cambiarlas es posible, pero hay que escr
   Algo se marca como obsoleto en una versión menor (aviso en `CHANGELOG.md` y en la referencia) y no se quita hasta la siguiente mayor.
 - **Interno, sin promesa:** el formato del bytecode y de los volcados (`--dump`, `--carga`, `--tokens`, `--ast`, `--resuelve`, `--unido`,
   `--disasm`), el formato del texto de los errores, los crates como bibliotecas de Rust, y los nombres que empiezan por `_` del preludio.
-- **Versiones `0.x`:** hasta 1.0 nada de esto se promete.
+- **Versiones `0.x`:** hasta 1.0 nada de esto se promete. Desde la 1.0.0 (2026-11-11) sí.
 
 ### Palabras reservadas (1.2)
 
