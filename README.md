@@ -208,6 +208,21 @@ error: división entre cero
   |      ^^^^^^^^^^
 ```
 
+## Instalación
+
+Cada versión publica binarios para Linux (x86_64), macOS (Apple Silicon) y Windows (x86_64) en la página de *Releases*, junto con `SHA256SUMS.txt` y la
+extensión de VS Code (`and23-vscode-*.vsix`). Los instaladores descargan la última versión, comprueban su suma SHA-256 y copian `and23` a una carpeta:
+
+```
+# Linux y macOS (a ~/.local/bin; AND23_VERSION=v1.0.0 y AND23_DESTINO=carpeta son opcionales)
+curl -fsSL https://raw.githubusercontent.com/Sandrez12/and23/main/scripts/instalar.sh | sh
+
+# Windows (PowerShell; a %LOCALAPPDATA%\And23in)
+irm https://raw.githubusercontent.com/Sandrez12/and23/main/scripts/instalar.ps1 | iex
+```
+
+La extensión se instala con `code --install-extension and23-vscode-*.vsix`. También puedes compilar desde el código fuente (abajo).
+
 ## Compilar y ejecutar
 
 Requiere [Rust](https://rustup.rs) estable.

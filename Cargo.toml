@@ -6,6 +6,12 @@ members = ["crates/*"]
 version = "0.3.0"
 edition = "2021"
 license = "MIT"
+repository = "https://github.com/Sandrez12/and23"
+homepage = "https://github.com/Sandrez12/and23"
+authors = ["Andres Felipe Joya Buitrago"]
+readme = "README.md"
+keywords = ["lenguaje", "compilador", "vm", "bytecode"]
+categories = ["compilers"]
 
 # Las pruebas ejecutan millones de instrucciones de la VM: sin optimizar tardarían demasiado.
 [profile.dev]

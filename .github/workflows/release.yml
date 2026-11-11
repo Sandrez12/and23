@@ -39,6 +39,14 @@ jobs:
           test "$("$bin" examples/aritmetica.jb | head -1)" = "7"
           "$bin" --check examples/clases.jb
           "$bin" mn/checker.jb examples/clases.jb
+          # Los programas reales (varios archivos, `use`, pruebas) y el punto fijo de la autocompilación.
+          "$bin" --prueba proyectos/buscador/buscador_prueba.jb
+          "$bin" --prueba proyectos/calculadora/calc_prueba.jb
+          test "$("$bin" proyectos/calculadora/calc.jb "2 + 3 * 4")" = "14.0000"
+          "$bin" mn/compilador.jb --preludio > preludio.txt
+          "$bin" mn/compilador.jb mn/compilador.jb > compilador.txt
+          "$bin" --carga preludio.txt compilador.txt mn/compilador.jb > compilador2.txt
+          cmp compilador.txt compilador2.txt
       - name: Empaquetar (Unix)
         if: runner.os != 'Windows'
         shell: bash
@@ -64,15 +72,47 @@ jobs:
           name: ${{ matrix.target }}
           path: ${{ env.ASSET }}
 
-  release:
-    needs: build
+  vsix:
+    name: extensión de VS Code
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Empaquetar la extensión
+        working-directory: editors/vscode
+        run: |
+          cp ../../LICENSE LICENSE
+          npx --yes @vscode/vsce@4.1.0 package --no-dependencies -o ../../and23-vscode-${{ github.ref_name }}.vsix
+      - name: Publicar en el Marketplace (si hay token)
+        working-directory: editors/vscode
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          if [ -n "$VSCE_PAT" ]; then
+            npx --yes @vscode/vsce@4.1.0 publish --no-dependencies --packagePath ../../and23-vscode-${{ github.ref_name }}.vsix
+          else
+            echo "No hay secreto VSCE_PAT: la extensión no se publica en el Marketplace (queda como archivo .vsix de la release)."
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix
+          path: and23-vscode-${{ github.ref_name }}.vsix
+
+  release:
+    needs: [build, vsix]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+      - name: Sumas de verificación
+        working-directory: dist
+        run: sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
       - name: Crear la release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" dist/* --repo "${{ github.repository }}" --title "And23 ${{ github.ref_name }}" --generate-notes
+        run: gh release create "${{ github.ref_name }}" dist/* scripts/instalar.sh scripts/instalar.ps1 --repo "${{ github.repository }}" --title "And23 ${{ github.ref_name }}" --generate-notes

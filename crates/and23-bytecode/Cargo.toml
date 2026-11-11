@@ -3,6 +3,13 @@ name = "and23-bytecode"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = false
 description = "Conjunto de instrucciones, compilador a bytecode y desensamblador de And23"
 
 [dependencies]

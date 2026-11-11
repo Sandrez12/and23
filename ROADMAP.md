@@ -86,14 +86,17 @@ nuevo, `DESIGN.md` y `CHANGELOG.md`, y el punto fijo de la etapa 5 sigue pasando
 - [x] **4.1 Primer proyecto: una herramienta de línea de comandos** (por ejemplo, un buscador de texto o un conversor de datos),
   con pruebas propias (`prueba`). (L)
 - [x] **4.2 Segundo proyecto distinto** (por ejemplo, un servidor de tareas con canales o un intérprete pequeño). (L)
-- [~] **4.3 Registrar cada fricción** en `docs/fricciones.md` y convertir las que importen en pasos de la Fase 2.
+- [x] **4.3 Registrar cada fricción** en `docs/fricciones.md` y convertir las que importen en pasos de la Fase 2.
 
 ## Fase 5 — Distribución
 
-- [ ] **5.1 Probar los binarios de Linux y macOS de la release en máquinas reales** (o en una VM/contenedor). (M)
-- [ ] **5.2 Sumas de verificación** (SHA-256) junto a cada binario, y script de instalación. (S)
-- [ ] **5.3 Revisión de metadatos:** `LICENSE`, README, descripciones y versión de cada crate. (S)
-- [ ] **5.4 Publicar la extensión de VS Code** en el marketplace. (M)
+- [x] **5.1 Probar los binarios de Linux y macOS de la release en máquinas reales** (o en una VM/contenedor). (M)
+  *Hecho con los ejecutores de GitHub Actions (Linux, macOS y Windows):* el CI corre toda la suite en los tres en cada subida, y la release prueba el binario de cada
+  sistema (`--version`, ejemplos, los verificadores, los proyectos y el punto fijo) antes de empaquetarlo. No se probó en máquinas físicas propias.
+- [x] **5.2 Sumas de verificación** (SHA-256) junto a cada binario, y script de instalación. (S)
+- [x] **5.3 Revisión de metadatos:** `LICENSE`, README, descripciones y versión de cada crate. (S)
+- [~] **5.4 Publicar la extensión de VS Code** en el marketplace. (M)
+  *Parcial:* la release empaqueta el `.vsix` y lo publica en el Marketplace si el repositorio tiene el secreto `VSCE_PAT` (una cuenta de editor y un token que solo el dueño puede crear).
 
 ## Fase 6 — Candidata y lanzamiento
 

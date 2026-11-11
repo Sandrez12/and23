@@ -44,6 +44,12 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). L
   de la etapa 4.
 - `listaDe(arreglo)` (una `Lista` desde un arreglo literal) y `Dupla<A, B>` (dos valores juntos) en la biblioteca base.
 
+### Distribución
+- **Release más completa:** `SHA256SUMS.txt` junto a cada binario, la extensión de VS Code empaquetada (`.vsix`; se publica en el Marketplace si el repositorio tiene el secreto
+  `VSCE_PAT`), los instaladores `scripts/instalar.sh` y `scripts/instalar.ps1` (verifican la suma SHA-256), y más pruebas de humo del binario de cada sistema (los programas
+  de `proyectos/` y el punto fijo de la autocompilación).
+- Metadatos de los crates (repositorio, autor, palabras clave) y `publish = false`.
+
 ### Añadido (programas reales)
 - **`fail` como rama de un `if` o un `match` usado como valor**, y **el tipo esperado guía cada rama** (`fn f() -> Nodo = match x { 1 -> Numero(..)  _ -> Variable(..) }` ya no
   fija el tipo con la primera rama).
