@@ -1403,8 +1403,19 @@ impl<'a> FnCompiler<'a> {
                 self.expr(lhs)?;
                 let done = self.emit(Op::JumpIfNotNil(0), *span);
                 self.emit(Op::Pop, *span);
-                self.expr(rhs)?;
+                // `x ?: return` / `x ?: fail ...`: la sentencia no vuelve, así que lo que sigue solo ve el valor no nil.
+                if let Expr::Exit { stmt, .. } = &**rhs {
+                    self.stmt(stmt)?;
+                } else {
+                    self.expr(rhs)?;
+                }
                 self.patch(done);
+            }
+            Expr::Exit { span, .. } => {
+                return Err(Diagnostic::new(
+                    *span,
+                    "error interno: `return`/`fail` fuera de `?:`",
+                ));
             }
             Expr::SafeField { target, span, .. } => {
                 let field = self.field_index(*span)?;

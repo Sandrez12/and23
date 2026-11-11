@@ -767,8 +767,15 @@ thing FnCompiler(fix c: Compilador, fix nombre: Str, fix nr: Rango) {
             expr(kid(e, 0))
             fix hecho = emit(instr1("JumpIfNotNil", 0), r)
             emit(instr0("Pop"), r)
-            expr(kid(e, 1))
+            // `x ?: return` / `x ?: fail ...`: la sentencia no vuelve, así que lo que sigue solo ve el valor no nil.
+            if kid(e, 1).tag == "Exit" {
+                stmt(kid(kid(e, 1), 0))
+            } else {
+                expr(kid(e, 1))
+            }
             patch(hecho)
+        } else if t == "Exit" {
+            fail ErrorCompila("error interno: `return`/`fail` fuera de `?:`", r)
         } else if t == "SafeField" {
             fix campo = indiceCampo(r)
             expr(kid(e, 0))

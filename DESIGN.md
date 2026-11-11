@@ -306,7 +306,14 @@ if p != nil { show(p.nombre) }
   si ninguna función, método ni lambda del programa la asigna (ver "Estrechamiento de globales `mut`"); si no, otro código podría cambiarla
   entre la comprobación y el uso. Un `mut` local se estrecha, pero una asignación que pueda dar `nil` lo vuelve a ensanchar, y si se asigna
   dentro de un bucle anidado en el bloque no se estrecha (el bucle repetiría un uso anterior a la asignación).
-- **Límites:** sin `!!` (desreferencia forzada), sin asignación segura (`a?.x = 1`), sin `?:` con `fail`/`return` a la derecha.
+- **`?: return`, `?: fail` y `!!` (paso 2.5 de 1.0).** `x ?: return`, `x ?: return v` y `x ?: fail Fallo("...")` son válidos: si `x` es nil se ejecuta la
+  sentencia y no se sigue; si no, el valor es el de `x` (sin `?`). Es un nodo `Exit` (la sentencia `return`/`fail`) que solo aparece a la derecha de
+  `?:`: el verificador comprueba esa sentencia como cualquier otra (tipo del `return`, que `fail` sea un `Fallo`) y el tipo es el de `x` sin `?`; el
+  compilador emite `JumpIfNotNil`, `Pop` y la sentencia. `x!!` es azúcar del parser: `x ?: fail Fallo("el valor es nil, pero se esperaba uno (!!)")`,
+  así que el `Fallo` se puede capturar con `attempt`; se reconoce porque es postfijo y los dos `!` van pegados (`!!x` sigue siendo la negación
+  doble). Un `x!!` sobre algo que no es opcional da el error «el operador `!!` necesita un valor opcional». `break` y `continue` no se admiten a la
+  derecha de `?:` (con valores a medias en la pila de una expresión, saltar a un bucle dejaría basura): se usa un `if`.
+- **Límites:** sin asignación segura (`a?.x = 1`).
 
 ### Genéricos (M7)
 
@@ -763,7 +770,7 @@ las palabras reservadas, `len`, `push`, `pop` y `hash` son funciones integradas,
 | `Mapa` sin orden de inserción | **Antes de 1.0** | 2.2, hecho |
 | Sin formato de decimales | **Antes de 1.0** | 2.3, hecho |
 | `ordena` en O(n²) | **Antes de 1.0** | 2.4, hecho |
-| Sin `!!` ni `?:` con `return`/`fail` a la derecha | **Antes de 1.0** | 2.5 |
+| Sin `!!` ni `?:` con `return`/`fail` a la derecha | **Antes de 1.0** | 2.5, hecho |
 | Sin `use` en el REPL | **Antes de 1.0** | 2.6 |
 | Métodos y constructores no se pasan como valores | **Antes de 1.0** | 2.7 |
 | Intérprete de árbol (`--tree`) | **Retirado** (ver 1.4) | 2.8, hecho |

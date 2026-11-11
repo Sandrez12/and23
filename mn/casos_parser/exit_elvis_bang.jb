@@ -1,0 +1,29 @@
+fn buscar(m: Mapa<Str, Int>, k: Str) -> Int {
+    fix v = m.obtiene(k) ?: return -1
+    return v * 10
+}
+
+fn exige(m: Mapa<Str, Int>, k: Str) -> Int {
+    fix v = m.obtiene(k) ?: fail Fallo("falta ${k}")
+    return v
+}
+
+fn doble(x: Int?) -> Int = (x ?: 0) * 2
+
+fn main() {
+    fix m = Mapa<Str, Int>()
+    m.pone("a", 4)
+    show(buscar(m, "a"))
+    show(buscar(m, "b"))
+    show(exige(m, "a"))
+    attempt { show(exige(m, "z")) } rescue e: Fallo { show("error: ${e.msg}") }
+    fix n: Int? = 7
+    show(n!! + 1)
+    fix v: Int? = nil
+    attempt { show(v!!) } rescue e: Fallo { show(e.msg) }
+    fix nombre: Str? = "ana"
+    show(nombre!!.mayus())
+    show(doble(3))
+    fix hacer: () -> Int = { -> m.obtiene("a") ?: return 0 }
+    show(hacer())
+}

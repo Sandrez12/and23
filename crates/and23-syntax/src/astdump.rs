@@ -249,6 +249,7 @@ fn expr_node(e: &Expr) -> N {
             ..
         } => n("SafeCall", vec![name.clone()], vec![expr(target), args(a)]),
         Expr::Elvis { lhs, rhs, .. } => n("Elvis", vec![], vec![expr(lhs), expr(rhs)]),
+        Expr::Exit { stmt: s, .. } => n("Exit", vec![], vec![stmt(s)]),
         Expr::SuperCall { name, args: a, .. } => n("SuperCall", vec![name.clone()], vec![args(a)]),
         Expr::Is { expr: e, ty: t, .. } => n("Is", vec![], vec![expr(e), ty(t)]),
         Expr::Cast { expr: e, ty: t, .. } => n("Cast", vec![], vec![expr(e), ty(t)]),

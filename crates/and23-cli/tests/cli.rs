@@ -1874,3 +1874,33 @@ fn acceso_seguro_sobre_str_y_float_opcionales() {
         assert_eq!(stdout(&out), esperado, "stress={stress}");
     }
 }
+
+/// Paso 2.5: `x ?: return`, `x ?: fail ...` y `x!!`.
+#[test]
+fn elvis_con_return_o_fail_y_bang_bang() {
+    let esperado =
+        "40\n-1\n4\nerror: falta z\n8\nel valor es nil, pero se esperaba uno (!!)\nANA\n6\n4\n";
+    for stress in [false, true] {
+        let mut cmd = and23();
+        if stress {
+            cmd.arg("--gc-stress");
+        }
+        let out = cmd
+            .arg(raiz_del_repo().join("mn/casos_checker/x_exit_elvis_bang.jb"))
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", stderr(&out));
+        assert_eq!(stdout(&out), esperado, "stress={stress}");
+    }
+    // Un `!!` sobre nil sin capturar termina el programa con el mensaje.
+    let out = run_source(
+        "bang_nil",
+        "fn main() {\n    fix v: Int? = nil\n    show(v!!)\n}\n",
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("el valor es nil, pero se esperaba uno (!!)"),
+        "{}",
+        stderr(&out)
+    );
+}

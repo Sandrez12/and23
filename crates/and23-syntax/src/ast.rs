@@ -110,6 +110,12 @@ pub enum Expr {
         rhs: Box<Expr>,
         span: Span,
     },
+    /// `return` o `fail` como lado derecho de `?:` (`x ?: return`, `x ?: fail Fallo("falta")`): si `x` es nil, ejecuta la
+    /// sentencia y no sigue. `x!!` es `x ?: fail Fallo(BANG_MESSAGE)`. Solo aparece ahí.
+    Exit {
+        stmt: Box<Stmt>,
+        span: Span,
+    },
     /// `super.metodo(args)`: el método de la clase padre, sin despacho virtual.
     SuperCall {
         name: String,
@@ -195,6 +201,7 @@ impl Expr {
             | Expr::SafeField { span, .. }
             | Expr::SafeCall { span, .. }
             | Expr::Elvis { span, .. }
+            | Expr::Exit { span, .. }
             | Expr::Is { span, .. }
             | Expr::Cast { span, .. }
             | Expr::Lambda { span, .. }
@@ -443,3 +450,6 @@ pub struct Program {
     /// Las pruebas del archivo, en orden (solo las ejecuta `and23 --prueba`).
     pub tests: Vec<TestDecl>,
 }
+
+/// El mensaje del `Fallo` que lanza `x!!` cuando `x` es nil (el parser lo escribe y el verificador lo reconoce para nombrar `!!` en sus errores).
+pub const BANG_MESSAGE: &str = "el valor es nil, pero se esperaba uno (!!)";

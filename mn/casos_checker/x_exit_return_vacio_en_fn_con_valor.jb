@@ -1,0 +1,4 @@
+fn f(x: Int?) -> Int {
+    fix v = x ?: return
+    return v
+}

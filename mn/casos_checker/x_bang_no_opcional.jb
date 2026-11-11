@@ -1,0 +1,4 @@
+fn main() {
+    fix n = 5
+    show(n!!)
+}

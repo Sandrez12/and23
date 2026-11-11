@@ -762,11 +762,7 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
             "Match" -> return matchStmt()
             "Enum" -> fail aqui("los enumerados solo se pueden declarar al nivel superior del archivo")
             "Attempt" -> return attemptStmt()
-            "Fail" -> {
-                fix inicio = rango(bump())
-                fix valor = expr(0)
-                return uno("Fail", "", valor).en(inicio.to(rg(valor)))
-            }
+            "Fail" -> return failStmt()
             "Rescue" -> fail aqui("`rescue` solo puede ir después de un bloque `attempt { ... }`")
             "Thing" -> fail aqui("las clases solo se pueden declarar al nivel superior del archivo")
             "Kind" -> fail aqui("las interfaces solo se pueden declarar al nivel superior del archivo")
@@ -1100,6 +1096,12 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
         return dos("While", "", cond, cuerpo).en(inicio.to(rg(cuerpo)))
     }
 
+    fn failStmt() -> Nodo {
+        fix inicio = rango(bump())
+        fix valor = expr(0)
+        return uno("Fail", "", valor).en(inicio.to(rg(valor)))
+    }
+
     fn returnStmt() -> Nodo {
         fix palabra = rango(bump())
         if fnDepth == 0 { fail ErrorParse("`return` solo se puede usar dentro de una función", palabra) }
@@ -1194,7 +1196,16 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
         // Postfijos `a[i]`, `a.campo` y `a.metodo(args)`, los más fuertes de todos.
         while true {
             fix t = tipo()
-            if t == "LBracket" {
+            if t == "Bang" && peekAt(1).tipo == "Bang" && peek().hasta == peekAt(1).desde {
+                // `x!!`: el valor de `x`, o un `Fallo` si es nil. Es `x ?: fail Fallo("...")`.
+                fix primero = rango(bump())
+                fix segundo = rango(bump())
+                fix bang = primero.to(segundo)
+                fix msg = hoja("Str", comillas("el valor es nil, pero se esperaba uno (!!)")).en(bang)
+                fix llamadaF = dos("Call", "Fallo", vacio("TArgs"), uno("Args", "", msg)).en(bang)
+                fix falla = uno("Fail", "", llamadaF).en(bang)
+                lhs = dos("Elvis", "", lhs, uno("Exit", "", falla).en(bang)).en(rg(lhs).to(bang))
+            } else if t == "LBracket" {
                 bump()
                 fix indice = exprAnidada()
                 fix cierreI = rango(expect("RBracket", "`]`"))
@@ -1257,6 +1268,12 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
             if t == "Elvis" {
                 if 0 < minBp { break }
                 bump()
+                // `x ?: return` y `x ?: fail Fallo("...")`: el lado derecho es una sentencia que no sigue.
+                if tipo() == "Return" || tipo() == "Fail" {
+                    fix salida = if tipo() == "Return" { returnStmt() } else { failStmt() }
+                    lhs = dos("Elvis", "", lhs, uno("Exit", "", salida).en(rg(salida))).en(rg(lhs).to(rg(salida)))
+                    continue
+                }
                 fix derecha = expr(1)
                 lhs = dos("Elvis", "", lhs, derecha).en(rg(lhs).to(rg(derecha)))
                 continue

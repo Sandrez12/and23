@@ -45,6 +45,8 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). L
 - `listaDe(arreglo)` (una `Lista` desde un arreglo literal) y `Dupla<A, B>` (dos valores juntos) en la biblioteca base.
 
 ### Cambiado (lenguaje)
+- **`x ?: return`, `x ?: fail ...` y `x!!`:** salir de la función o lanzar un `Fallo` cuando un opcional es nil, sin un `if` aparte
+  (`fix v = mapa.obtiene(k) ?: return -1`; `fix v = mapa.obtiene(k) ?: fail Fallo("falta")`; `n!!` da el valor o lanza un `Fallo`).
 - **`?.` sobre `Str?` y `Float?`:** `s?.largo()`, `x?.formato(2)` y cualquier método de texto o de `Float` valen con `?.` (nil si el valor es nil; el
   resultado es opcional). Antes `?.` solo servía con objetos.
 - **`x.formato(decimales)`:** un `Float` como texto con ese número de decimales (0 a 100): `3.14159.formato(2)` es `"3.14"`. Redondea el valor

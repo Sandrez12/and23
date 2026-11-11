@@ -394,11 +394,23 @@ fn stmtAssignsWith(s: Nodo, nombre: Str, directo: Bool) -> Bool {
     }
 }
 
+/// ¿El lado derecho de este `?:` es el que escribe el parser para `x!!`?
+fn esBang(rhs: Nodo) -> Bool {
+    if rhs.tag != "Exit" { return false }
+    fix falla = kid(rhs, 0)
+    if falla.tag != "Fail" { return false }
+    fix llamada = kid(falla, 0)
+    if llamada.tag != "Call" { return false }
+    fix args = kid(llamada, 1).kids
+    return args.tam() == 1 && args.obtiene(0).tag == "Str" && args.obtiene(0).attrs == "\"el valor es nil, pero se esperaba uno (!!)\""
+}
+
 fn exprAssigns(e: Nodo, nombre: Str) -> Bool {
     match e.tag {
         "Lambda" -> return blockAssignsDeep(kid(e, 1), nombre)
         "Interp", "Array" -> return algunaExpr(e.kids, nombre)
         "Index", "Binary", "Elvis" -> return exprAssigns(kid(e, 0), nombre) || exprAssigns(kid(e, 1), nombre)
+        "Exit" -> return stmtAssignsWith(kid(e, 0), nombre, true)
         "Unary", "Is", "Cast", "Field", "SafeField" -> return exprAssigns(kid(e, 0), nombre)
         "CallValue" -> return exprAssigns(kid(e, 0), nombre) || algunaExpr(kid(e, 1).kids, nombre)
         "Call" -> return algunaExpr(kid(e, 1).kids, nombre)
@@ -2095,14 +2107,20 @@ open thing Checker() {
                 return binaryType(op, a, b, rg(e))
             }
             "Nil" -> return T_NIL
+            "Exit" -> fail err("`return` y `fail` solo se pueden usar como lado derecho de `?:`", rg(e))
             "Elvis" -> {
                 fix lhs = kid(e, 0)
                 fix rhs = kid(e, 1)
                 fix hallado = expr(ctx, lhs)
                 if hallado.k != "Nullable" {
-                    fail err("el operador `?:` necesita un valor opcional (`T?`), pero esto es ${muestra(hallado)}", rg(lhs))
+                    fail err("el operador `${if esBang(rhs) { "!!" } else { "?:" }}` necesita un valor opcional (`T?`), pero esto es ${muestra(hallado)}", rg(lhs))
                 }
                 fix dentro = hallado.args.obtiene(0)
+                // `x ?: return` / `x ?: fail ...`: si `x` es nil se ejecuta la sentencia; si no, el valor es el de `x`.
+                if rhs.tag == "Exit" {
+                    stmt(ctx, kid(rhs, 0))
+                    return dentro
+                }
                 fix otro = expr(ctx, rhs)
                 if assignable(dentro, otro) { return dentro }
                 if (otro.k == "Nullable" && assignable(dentro, otro.args.obtiene(0))) || otro.k == "Nil" {

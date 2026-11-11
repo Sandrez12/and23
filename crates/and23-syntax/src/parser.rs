@@ -986,12 +986,7 @@ impl Parser {
                 "los enumerados solo se pueden declarar al nivel superior del archivo".into(),
             )),
             TokenKind::Attempt => self.attempt_stmt(),
-            TokenKind::Fail => {
-                let start = self.bump().span;
-                let value = self.expr(0)?;
-                let span = start.to(value.span());
-                Ok(Stmt::Fail(value, span))
-            }
+            TokenKind::Fail => self.fail_stmt(),
             TokenKind::Rescue => Err(self.error_here(
                 "`rescue` solo puede ir después de un bloque `attempt { ... }`".into(),
             )),
@@ -1513,6 +1508,13 @@ impl Parser {
         Ok(Stmt::While { cond, body, span })
     }
 
+    fn fail_stmt(&mut self) -> Result<Stmt, Diagnostic> {
+        let start = self.bump().span;
+        let value = self.expr(0)?;
+        let span = start.to(value.span());
+        Ok(Stmt::Fail(value, span))
+    }
+
     fn return_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         let keyword = self.bump();
         if self.fn_depth == 0 {
@@ -1721,6 +1723,33 @@ impl Parser {
         // Postfijos `a[i]`, `a.campo` y `a.metodo(args)`, los más fuertes de todos.
         loop {
             match self.peek().kind {
+                // `x!!`: el valor de `x`, o un `Fallo` si es nil. Es `x ?: fail Fallo("...")`.
+                TokenKind::Bang
+                    if self.peek_at(1).kind == TokenKind::Bang
+                        && self.peek().span.end == self.peek_at(1).span.start =>
+                {
+                    let first = self.bump().span;
+                    let second = self.bump().span;
+                    let bang = first.to(second);
+                    let fail = Stmt::Fail(
+                        Expr::Call {
+                            name: "Fallo".into(),
+                            type_args: Vec::new(),
+                            args: vec![Expr::Str(crate::ast::BANG_MESSAGE.into(), bang)],
+                            span: bang,
+                        },
+                        bang,
+                    );
+                    let span = lhs.span().to(bang);
+                    lhs = Expr::Elvis {
+                        lhs: Box::new(lhs),
+                        rhs: Box::new(Expr::Exit {
+                            stmt: Box::new(fail),
+                            span: bang,
+                        }),
+                        span,
+                    };
+                }
                 TokenKind::LBracket => {
                     self.bump();
                     let index = self.nested(|p| p.expr(0))?;
@@ -1842,6 +1871,25 @@ impl Parser {
                     break;
                 }
                 self.bump();
+                // `x ?: return` y `x ?: fail Fallo("...")`: el lado derecho es una sentencia que no sigue.
+                if matches!(self.peek().kind, TokenKind::Return | TokenKind::Fail) {
+                    let stmt = if self.peek().kind == TokenKind::Return {
+                        self.return_stmt()?
+                    } else {
+                        self.fail_stmt()?
+                    };
+                    let stmt_span = stmt.span();
+                    let span = lhs.span().to(stmt_span);
+                    lhs = Expr::Elvis {
+                        lhs: Box::new(lhs),
+                        rhs: Box::new(Expr::Exit {
+                            stmt: Box::new(stmt),
+                            span: stmt_span,
+                        }),
+                        span,
+                    };
+                    continue;
+                }
                 let rhs = self.expr(1)?;
                 let span = lhs.span().to(rhs.span());
                 lhs = Expr::Elvis {
@@ -2035,6 +2083,7 @@ mod tests {
                 format!("(?. {} {name} {})", sexp(target), args.join(" ")).replace(" )", ")")
             }
             Expr::Elvis { lhs, rhs, .. } => format!("(?: {} {})", sexp(lhs), sexp(rhs)),
+            Expr::Exit { .. } => "(exit)".to_string(),
             Expr::SuperCall { name, args, .. } => {
                 let args: Vec<String> = args.iter().map(sexp).collect();
                 format!("(super {name} {})", args.join(" ")).replace(" )", ")")

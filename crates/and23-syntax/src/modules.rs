@@ -846,6 +846,7 @@ impl Renamer {
                 self.expr(lhs);
                 self.expr(rhs);
             }
+            Expr::Exit { stmt, .. } => self.stmt(stmt),
             Expr::Call {
                 name,
                 type_args,

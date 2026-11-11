@@ -2056,14 +2056,24 @@ impl<'p> Pass<'p> {
                 binary_type(*op, &a, &b, *span)
             }
             Expr::Nil(_) => Ok(Type::Nil),
+            Expr::Exit { span, .. } => Err(Diagnostic::new(
+                *span,
+                "`return` y `fail` solo se pueden usar como lado derecho de `?:`",
+            )),
             Expr::Elvis { lhs, rhs, span } => {
                 let found = self.expr(ctx, lhs)?;
                 let Type::Nullable(inner) = found else {
+                    let operator = if is_bang(rhs) { "!!" } else { "?:" };
                     return Err(Diagnostic::new(
                         lhs.span(),
-                        format!("el operador `?:` necesita un valor opcional (`T?`), pero esto es {found}"),
+                        format!("el operador `{operator}` necesita un valor opcional (`T?`), pero esto es {found}"),
                     ));
                 };
+                // `x ?: return` / `x ?: fail ...`: si `x` es nil se ejecuta la sentencia; si no, el valor es el de `x`.
+                if let Expr::Exit { stmt, .. } = &**rhs {
+                    self.stmt(ctx, stmt)?;
+                    return Ok(*inner);
+                }
                 let other = self.expr(ctx, rhs)?;
                 if self.assignable(&inner, &other) {
                     Ok(*inner)
@@ -3258,6 +3268,7 @@ fn expr_assigns(expr: &Expr, name: &str) -> bool {
         | Expr::Field { target: expr, .. }
         | Expr::SafeField { target: expr, .. } => e(expr),
         Expr::Binary { lhs, rhs, .. } | Expr::Elvis { lhs, rhs, .. } => e(lhs) || e(rhs),
+        Expr::Exit { stmt, .. } => stmt_assigns_with(stmt, name, true),
         Expr::CallValue { callee, args, .. } => e(callee) || args.iter().any(e),
         Expr::Call { args, .. } | Expr::SuperCall { args, .. } => args.iter().any(e),
         Expr::MethodCall { target, args, .. } | Expr::SafeCall { target, args, .. } => {
@@ -3265,6 +3276,13 @@ fn expr_assigns(expr: &Expr, name: &str) -> bool {
         }
         _ => false,
     }
+}
+
+/// ¿El lado derecho de este `?:` es el que escribe el parser para `x!!`?
+fn is_bang(rhs: &Expr) -> bool {
+    matches!(rhs, Expr::Exit { stmt, .. }
+        if matches!(&**stmt, Stmt::Fail(Expr::Call { args, .. }, _)
+            if matches!(args.as_slice(), [Expr::Str(text, _)] if text == and23_syntax::ast::BANG_MESSAGE)))
 }
 
 fn undefined_variable(name: &str, span: Span) -> Diagnostic {

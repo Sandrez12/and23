@@ -1,0 +1,12 @@
+thing Nodo(fix sig: Nodo?, fix valor: Int)
+
+fn main() {
+    fix c = Nodo(Nodo(nil, 2), 1)
+    show(c.sig!!.valor)
+    show(c.sig!!.sig?.valor)
+    fix lista = Lista<Int?>()
+    lista.agrega(5)
+    show(lista.obtiene(0)!! + 1)
+    show(!(c.sig!!.valor == 2))
+    show(!!true)
+}
