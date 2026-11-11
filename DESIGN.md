@@ -402,6 +402,12 @@ fix m = Mapa<Str, Int>()                                                // expl�
   `build`): `Nil`, `NewCell`, la lambda y `CellSet`. Si no se captura, el bytecode es el de un `let` normal. Una lambda local no ve a otra
   declarada después (la recursión mutua entre dos locales sigue sin ser posible; en el nivel superior sí). Cambio compatible salvo un caso:
   una lambda que llamaba a una función exterior del mismo nombre que su variable ahora se llama a sí misma.
+- **`if`/`else` como valor final de una lambda (paso 2.9 de 1.0).** El valor de una lambda es el de su última sentencia si es una expresión, y
+  también si es un `if`/`else` (o una cadena de `else if`) cuyas ramas terminan, cada una, en una expresión o en otro `if`/`else` así
+  (`Block::ends_in_value`). El verificador comprueba cada rama contra el tipo esperado (o las registra para deducir el tipo, de modo que `T` y `nil`
+  dan `T?`), con el estrechamiento de `if x != nil` en cada una; el compilador emite la condición y, en cada rama, el valor y `Return`, sin
+  juntarlas. Un `if` sin `else`, o con una rama que acaba en `show`/asignación, sigue siendo una sentencia (la lambda devuelve Unit o hace falta
+  `return`). Compatible salvo que un `if`/`else` final con ramas de tipos distintos en una lambda sin tipo ya no se acepta.
 - **Límites conocidos de M8:** no hay `it` implícito ni sintaxis `::nombre`; los métodos y constructores no se pasan como
   valores (envuélvelos en una lambda); no hay lambdas genéricas ni cotas en las interfaces. (`ordena` era una inserción O(n²); desde el paso 2.4 de 1.0 es una mezcla estable O(n log n).)
 

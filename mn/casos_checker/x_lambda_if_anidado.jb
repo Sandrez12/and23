@@ -1,0 +1,19 @@
+fn clasifica(xs: Lista<Int>) -> Lista<Str> {
+    fix res = Lista<Str>()
+    xs.paraCada { n ->
+        fix t = { k: Int ->
+            if k < 0 {
+                if k < -100 { "muy negativo" } else { "negativo" }
+            } else {
+                fix mitad = k / 2
+                if mitad > 10 { "grande" } else if mitad > 2 { "mediano" } else { "chico" }
+            }
+        }
+        res.agrega(t(n))
+    }
+    return res
+}
+
+fn main() {
+    show(clasifica(listaDe([-500, -3, 0, 5, 12, 99])))
+}

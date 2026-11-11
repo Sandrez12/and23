@@ -453,3 +453,19 @@ pub struct Program {
 
 /// El mensaje del `Fallo` que lanza `x!!` cuando `x` es nil (el parser lo escribe y el verificador lo reconoce para nombrar `!!` en sus errores).
 pub const BANG_MESSAGE: &str = "el valor es nil, pero se esperaba uno (!!)";
+
+impl Block {
+    /// ¿Termina en un valor? Una lambda devuelve el valor de su última sentencia si es una expresión, o si es un `if`/`else`
+    /// cuyas dos ramas terminan en un valor (cada una, a su vez, una expresión u otro `if`/`else` así).
+    pub fn ends_in_value(&self) -> bool {
+        match self.stmts.last() {
+            Some(Stmt::Expr(_)) => true,
+            Some(Stmt::If {
+                then,
+                otherwise: Some(otherwise),
+                ..
+            }) => then.ends_in_value() && otherwise.ends_in_value(),
+            _ => false,
+        }
+    }
+}

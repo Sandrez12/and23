@@ -1904,3 +1904,32 @@ fn elvis_con_return_o_fail_y_bang_bang() {
         stderr(&out)
     );
 }
+
+/// Paso 2.9: un `if`/`else` (o una cadena de `else if`) como último valor de una lambda.
+#[test]
+fn if_else_como_valor_final_de_una_lambda() {
+    let casos = [
+        (
+            "x_lambda_if_valor.jb",
+            "1\n10\n720\nnegativo\ncero\npositivo\nANA\nnadie\n6\n17\n[3, 4]\n[1, 2]\n[1, 4, 5]\n2\nnil\n",
+        ),
+        (
+            "x_lambda_if_anidado.jb",
+            "[\"muy negativo\", \"negativo\", \"chico\", \"chico\", \"mediano\", \"grande\"]\n",
+        ),
+    ];
+    for (archivo, esperado) in casos {
+        for stress in [false, true] {
+            let mut cmd = and23();
+            if stress {
+                cmd.arg("--gc-stress");
+            }
+            let out = cmd
+                .arg(raiz_del_repo().join("mn/casos_checker").join(archivo))
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{archivo}: {}", stderr(&out));
+            assert_eq!(stdout(&out), esperado, "{archivo} stress={stress}");
+        }
+    }
+}

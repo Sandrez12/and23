@@ -45,6 +45,8 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). L
 - `listaDe(arreglo)` (una `Lista` desde un arreglo literal) y `Dupla<A, B>` (dos valores juntos) en la biblioteca base.
 
 ### Cambiado (lenguaje)
+- **`if`/`else` como último valor de una lambda:** `{ n -> if n <= 1 { 1 } else { n * 2 } }` (también `else if` y ramas con varias sentencias) devuelve el
+  valor de la rama; antes había que escribir `return` en cada una.
 - **`x ?: return`, `x ?: fail ...` y `x!!`:** salir de la función o lanzar un `Fallo` cuando un opcional es nil, sin un `if` aparte
   (`fix v = mapa.obtiene(k) ?: return -1`; `fix v = mapa.obtiene(k) ?: fail Fallo("falta")`; `n!!` da el valor o lanza un `Fallo`).
 - **`?.` sobre `Str?` y `Float?`:** `s?.largo()`, `x?.formato(2)` y cualquier método de texto o de `Float` valen con `?.` (nil si el valor es nil; el

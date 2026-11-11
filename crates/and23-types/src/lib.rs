@@ -2709,32 +2709,16 @@ impl<'p> Pass<'p> {
         Ok(Type::Fn(types, Box::new(ret)))
     }
 
-    /// Las sentencias de una lambda; si la última es una expresión, es su valor.
+    /// Las sentencias de una lambda; si la última es una expresión (o un `if`/`else` cuyas ramas terminan en una), es su valor.
     fn lambda_body(
         &mut self,
         ctx: &mut Ctx,
         body: &Block,
         ret: Option<&Type>,
     ) -> Result<(), Diagnostic> {
-        let (init, tail) = match body.stmts.split_last() {
-            Some((Stmt::Expr(tail), rest)) => (rest, Some(tail)),
-            _ => (&body.stmts[..], None),
-        };
-        for stmt in init {
-            self.stmt(ctx, stmt)?;
-        }
-        match (tail, ret) {
-            (Some(tail), Some(Type::Unit)) => {
-                if self.expr(ctx, tail)? != Type::Unit {
-                    self.res.discards.insert(tail.span());
-                }
-            }
-            (Some(tail), Some(ret)) => self.expr_as(ctx, tail, ret)?,
-            (Some(tail), None) => {
-                let found = self.expr(ctx, tail)?;
-                Self::record_ret(ctx, found, tail.span(), self)?;
-            }
-            (None, Some(ret)) => {
+        let has_value = self.tail_stmts(ctx, &body.stmts, ret)?;
+        if !has_value {
+            if let Some(ret) = ret {
                 if *ret != Type::Unit && !block_returns(body) {
                     return Err(Diagnostic::new(
                         body.span,
@@ -2742,9 +2726,79 @@ impl<'p> Pass<'p> {
                     ));
                 }
             }
-            (None, None) => {}
         }
         Ok(())
+    }
+
+    /// Verifica las sentencias de un bloque de lambda y, si terminan en un valor, lo comprueba contra `ret` (o lo registra si el tipo
+    /// se deduce). Devuelve si había valor.
+    fn tail_stmts(
+        &mut self,
+        ctx: &mut Ctx,
+        stmts: &[Stmt],
+        ret: Option<&Type>,
+    ) -> Result<bool, Diagnostic> {
+        let Some((last, init)) = stmts.split_last() else {
+            return Ok(false);
+        };
+        match last {
+            Stmt::Expr(tail) => {
+                for stmt in init {
+                    self.stmt(ctx, stmt)?;
+                }
+                match ret {
+                    Some(Type::Unit) => {
+                        if self.expr(ctx, tail)? != Type::Unit {
+                            self.res.discards.insert(tail.span());
+                        }
+                    }
+                    Some(ret) => self.expr_as(ctx, tail, ret)?,
+                    None => {
+                        let found = self.expr(ctx, tail)?;
+                        Self::record_ret(ctx, found, tail.span(), self)?;
+                    }
+                }
+                Ok(true)
+            }
+            Stmt::If {
+                cond,
+                then,
+                otherwise: Some(otherwise),
+                ..
+            } if then.ends_in_value() && otherwise.ends_in_value() => {
+                for stmt in init {
+                    self.stmt(ctx, stmt)?;
+                }
+                self.condition(ctx, cond)?;
+                let (when_true, when_false) = Self::facts(cond);
+                self.tail_block(ctx, then, &when_true, ret)?;
+                self.tail_block(ctx, otherwise, &when_false, ret)?;
+                Ok(true)
+            }
+            _ => {
+                for stmt in stmts {
+                    self.stmt(ctx, stmt)?;
+                }
+                Ok(false)
+            }
+        }
+    }
+
+    /// Como `block_narrowed`, pero el bloque es una rama que termina en el valor de la lambda.
+    fn tail_block(
+        &mut self,
+        ctx: &mut Ctx,
+        block: &Block,
+        names: &[String],
+        ret: Option<&Type>,
+    ) -> Result<(), Diagnostic> {
+        let entries = self.narrowing(ctx, names, Some(block));
+        ctx.scopes.push(entries.into_iter().collect());
+        ctx.scopes.push(Vars::new());
+        let result = self.tail_stmts(ctx, &block.stmts, ret).map(|_| ());
+        ctx.scopes.pop();
+        ctx.scopes.pop();
+        result
     }
 
     /// Completa los argumentos de tipo de una llamada: los explícitos (`f<Int>(x)`), los que salen de

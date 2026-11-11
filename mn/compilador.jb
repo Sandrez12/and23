@@ -672,26 +672,56 @@ thing FnCompiler(fix c: Compilador, fix nombre: Str, fix nr: Rango) {
 
     /// Las sentencias de la lambda; si la última es una expresión, es lo que devuelve.
     fn cuerpoLambda(cuerpo: Nodo, r: Rango) {
-        fix n = cuerpo.kids.tam()
-        fix hayCola = n > 0 && cuerpo.kids.obtiene(n - 1).tag == "ExprStmt"
-        fix limite = if hayCola { n - 1 } else { n }
+        colaLambda(cuerpo, r)
+    }
+
+    /// Las sentencias de la lambda; si la última es una expresión (o un `if`/`else` cuyas ramas terminan en una), es lo que devuelve.
+    /// El código siempre termina en `Return`: cada rama de un `if` final devuelve su valor, así que no hay que juntarlas.
+    fn colaLambda(bloque: Nodo, r: Rango) {
+        fix n = bloque.kids.tam()
+        mut esExpr = false
+        mut esIf = false
+        if n > 0 {
+            fix ultima = bloque.kids.obtiene(n - 1)
+            esExpr = ultima.tag == "ExprStmt"
+            esIf = ultima.tag == "If" && !esNada(kid(ultima, 2)) && terminaEnValor(kid(ultima, 1)) && terminaEnValor(kid(ultima, 2))
+        }
+        fix limite = if esExpr || esIf { n - 1 } else { n }
         mut i = 0
         while i < limite {
-            stmt(cuerpo.kids.obtiene(i))
+            stmt(bloque.kids.obtiene(i))
             i += 1
         }
-        if hayCola {
-            fix cola = kid(cuerpo.kids.obtiene(n - 1), 0)
+        if esExpr {
+            fix cola = kid(bloque.kids.obtiene(n - 1), 0)
             expr(cola)
             if c.chk.resDescartes.contiene(claveR(rg(cola))) {
                 emit(instr0("Pop"), rg(cola))
                 emit(instr0("Unit"), rg(cola))
             }
             emit(instr0("Return"), r)
+        } else if esIf {
+            fix ultima = bloque.kids.obtiene(n - 1)
+            fix cond = kid(ultima, 0)
+            expr(cond)
+            fix aElse = emit(instr1("JumpIfFalse", 0), rg(cond))
+            ramaLambda(kid(ultima, 1), r)
+            patch(aElse)
+            ramaLambda(kid(ultima, 2), r)
         } else {
             emit(instr0("Unit"), r)
             emit(instr0("Return"), r)
         }
+    }
+
+    /// Una rama de un `if` final de lambda: su ámbito se cierra sin sacar los locales (la rama ya devolvió).
+    fn ramaLambda(b: Nodo, r: Rango) {
+        depth += 1
+        colaLambda(b, r)
+        depth -= 1
+        mut keep = 0
+        while keep < locals.tam() && locals.obtiene(keep).depth <= depth { keep += 1 }
+        recorta(locals, keep)
     }
 
     /// Una función con nombre usada como valor: una lambda sin capturas que la llama.

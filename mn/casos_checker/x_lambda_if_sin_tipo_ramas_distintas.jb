@@ -1,0 +1,4 @@
+fn main() {
+    fix f = { n: Int -> if n > 0 { 1 } else { "a" } }
+    show(f(1))
+}

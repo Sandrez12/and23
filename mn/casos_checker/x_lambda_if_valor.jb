@@ -1,0 +1,36 @@
+fn main() {
+    fix g: (Int) -> Int = { n -> if n <= 1 { 1 } else { n * 2 } }
+    show(g(0))
+    show(g(5))
+    fix fact: (Int) -> Int = { n -> if n <= 1 { 1 } else { n * fact(n - 1) } }
+    show(fact(6))
+    fix signo = { n: Int -> if n < 0 { "negativo" } else if n == 0 { "cero" } else { "positivo" } }
+    show(signo(-3))
+    show(signo(0))
+    show(signo(8))
+    fix quien: (Str?) -> Str = { s -> if s != nil { s.mayus() } else { "nadie" } }
+    show(quien("ana"))
+    show(quien(nil))
+    fix con_bloque = { n: Int ->
+        fix doble = n * 2
+        if doble > 10 {
+            fix extra = doble + 1
+            extra
+        } else {
+            doble
+        }
+    }
+    show(con_bloque(3))
+    show(con_bloque(8))
+    fix l = Lista<Int>()
+    fix otros = Lista<Int>()
+    listaDe([1, 2, 3, 4]).paraCada { x -> if x > 2 { l.agrega(x) } else { otros.agrega(x) } }
+    show(l)
+    show(otros)
+    fix ls = listaDe([5, 1, 4])
+    ls.ordena { a, b -> if a < b { true } else { false } }
+    show(ls)
+    fix maybe: (Int) -> Int? = { n -> if n > 0 { n } else { nil } }
+    show(maybe(2))
+    show(maybe(-1))
+}

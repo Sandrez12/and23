@@ -394,6 +394,16 @@ fn stmtAssignsWith(s: Nodo, nombre: Str, directo: Bool) -> Bool {
     }
 }
 
+/// ¿Termina en un valor? Una lambda devuelve el valor de su última sentencia si es una expresión, o si es un `if`/`else` cuyas dos
+/// ramas terminan en un valor (cada una, a su vez, una expresión u otro `if`/`else` así).
+open fn terminaEnValor(b: Nodo) -> Bool {
+    if b.kids.vacia() { return false }
+    fix ultima = b.kids.obtiene(b.kids.tam() - 1)
+    if ultima.tag == "ExprStmt" { return true }
+    if ultima.tag == "If" && !esNada(kid(ultima, 2)) { return terminaEnValor(kid(ultima, 1)) && terminaEnValor(kid(ultima, 2)) }
+    return false
+}
+
 /// ¿El lado derecho de este `?:` es el que escribe el parser para `x!!`?
 fn esBang(rhs: Nodo) -> Bool {
     if rhs.tag != "Exit" { return false }
@@ -2557,16 +2567,30 @@ open thing Checker() {
 
     /// Las sentencias de una lambda; si la última es una expresión, es su valor.
     fn lambdaBody(ctx: Ctx, cuerpo: Nodo, ret: Tipo?) {
-        fix n = cuerpo.kids.tam()
-        fix hayCola = n > 0 && cuerpo.kids.obtiene(n - 1).tag == "ExprStmt"
-        fix limite = if hayCola { n - 1 } else { n }
+        fix hayValor = colaStmts(ctx, cuerpo, ret)
+        if !hayValor && ret != nil {
+            if ret.k != "Unit" && !blockReturns(cuerpo) {
+                fail err("la lambda debe devolver un valor de tipo ${muestra(ret)}", rg(cuerpo))
+            }
+        }
+    }
+
+    /// Verifica las sentencias de un bloque de lambda y, si terminan en un valor (una expresión o un `if`/`else` cuyas ramas
+    /// terminan en una), lo comprueba contra `ret` (o lo registra si el tipo se deduce). Devuelve si había valor.
+    fn colaStmts(ctx: Ctx, bloque: Nodo, ret: Tipo?) -> Bool {
+        fix n = bloque.kids.tam()
+        if n == 0 { return false }
+        fix ultima = bloque.kids.obtiene(n - 1)
+        fix esExpr = ultima.tag == "ExprStmt"
+        fix esIf = ultima.tag == "If" && !esNada(kid(ultima, 2)) && terminaEnValor(kid(ultima, 1)) && terminaEnValor(kid(ultima, 2))
+        fix limite = if esExpr || esIf { n - 1 } else { n }
         mut i = 0
         while i < limite {
-            stmt(ctx, cuerpo.kids.obtiene(i))
+            stmt(ctx, bloque.kids.obtiene(i))
             i += 1
         }
-        if hayCola {
-            fix cola = kid(cuerpo.kids.obtiene(n - 1), 0)
+        if esExpr {
+            fix cola = kid(ultima, 0)
             if ret != nil && ret.k == "Unit" {
                 if expr(ctx, cola).k != "Unit" { resDescartes.pone(claveR(rg(cola)), true) }
             } else if ret != nil {
@@ -2575,11 +2599,35 @@ open thing Checker() {
                 fix hallado = expr(ctx, cola)
                 registraRet(ctx, hallado, rg(cola))
             }
-        } else if ret != nil {
-            if ret.k != "Unit" && !blockReturns(cuerpo) {
-                fail err("la lambda debe devolver un valor de tipo ${muestra(ret)}", rg(cuerpo))
-            }
+            return true
         }
+        if esIf {
+            fix cond = kid(ultima, 0)
+            condition(ctx, cond)
+            fix h = facts(cond)
+            colaBloque(ctx, kid(ultima, 1), h.cierto, ret)
+            colaBloque(ctx, kid(ultima, 2), h.falso, ret)
+            return true
+        }
+        return false
+    }
+
+    /// Como `blockNarrowed`, pero el bloque es una rama que termina en el valor de la lambda.
+    fn colaBloque(ctx: Ctx, bloque: Nodo, nombres: Lista<Str>, ret: Tipo?) {
+        fix entradas = narrowing(ctx, nombres, bloque)
+        fix ambito = Mapa<Str, VarE>()
+        entradas.paraCada { e -> ambito.pone(e.nombre, e.v) }
+        ctx.scopes.agrega(ambito)
+        ctx.scopes.agrega(Mapa<Str, VarE>())
+        attempt {
+            colaStmts(ctx, bloque, ret)
+        } rescue e: ErrorTipo {
+            ctx.scopes.quita()
+            ctx.scopes.quita()
+            fail e
+        }
+        ctx.scopes.quita()
+        ctx.scopes.quita()
     }
 
     fn mentionsUnresolved(ty: Tipo, nombres: Lista<Str>, mapa: Mapa<Str, Tipo>) -> Bool {

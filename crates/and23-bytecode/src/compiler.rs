@@ -1314,17 +1314,18 @@ impl<'a> FnCompiler<'a> {
         Ok(())
     }
 
-    /// Las sentencias de la lambda; si la última es una expresión, es lo que devuelve.
+    /// Las sentencias de la lambda; si la última es una expresión (o un `if`/`else` cuyas ramas terminan en una), es lo que devuelve.
+    /// El código siempre termina en `Return`: cada rama de un `if` final devuelve su valor, así que no hay que juntarlas.
     fn lambda_body(&mut self, body: &Block, span: Span) -> Result<(), Diagnostic> {
-        let (init, tail) = match body.stmts.split_last() {
-            Some((Stmt::Expr(tail), rest)) => (rest, Some(tail)),
-            _ => (&body.stmts[..], None),
-        };
-        for stmt in init {
-            self.stmt(stmt)?;
-        }
-        match tail {
-            Some(tail) => {
+        self.lambda_tail(&body.stmts, span)
+    }
+
+    fn lambda_tail(&mut self, stmts: &[Stmt], span: Span) -> Result<(), Diagnostic> {
+        match stmts.split_last() {
+            Some((Stmt::Expr(tail), init)) => {
+                for stmt in init {
+                    self.stmt(stmt)?;
+                }
                 self.expr(tail)?;
                 if self.res.discards.contains(&tail.span()) {
                     self.emit(Op::Pop, tail.span());
@@ -1332,11 +1333,46 @@ impl<'a> FnCompiler<'a> {
                 }
                 self.emit(Op::Return, span);
             }
-            None => {
+            Some((
+                Stmt::If {
+                    cond,
+                    then,
+                    otherwise: Some(otherwise),
+                    ..
+                },
+                init,
+            )) if then.ends_in_value() && otherwise.ends_in_value() => {
+                for stmt in init {
+                    self.stmt(stmt)?;
+                }
+                self.expr(cond)?;
+                let to_else = self.emit(Op::JumpIfFalse(0), cond.span());
+                self.tail_branch(then, span)?;
+                self.patch(to_else);
+                self.tail_branch(otherwise, span)?;
+            }
+            _ => {
+                for stmt in stmts {
+                    self.stmt(stmt)?;
+                }
                 self.emit(Op::Unit, span);
                 self.emit(Op::Return, span);
             }
         }
+        Ok(())
+    }
+
+    /// Una rama de un `if` final de lambda: su ámbito se cierra sin sacar los locales (la rama ya devolvió).
+    fn tail_branch(&mut self, block: &Block, span: Span) -> Result<(), Diagnostic> {
+        self.depth += 1;
+        self.lambda_tail(&block.stmts, span)?;
+        self.depth -= 1;
+        let keep = self
+            .locals
+            .iter()
+            .take_while(|local| local.depth <= self.depth)
+            .count();
+        self.locals.truncate(keep);
         Ok(())
     }
 
