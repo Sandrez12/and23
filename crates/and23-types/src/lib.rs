@@ -1475,6 +1475,22 @@ impl<'p> Pass<'p> {
                 return self.expect(expected, &found, expr.span());
             }
         }
+        // Un `if` o un `match` usado como valor (o una lambda que se llama al instante) toma el tipo esperado para cada rama: así
+        // `fn f() -> Nodo = match x { 1 -> Numero(..) _ -> Variable(..) }` no fija el tipo con la primera rama.
+        if let Expr::CallValue { callee, args, .. } = expr {
+            if let (true, Expr::Lambda { params, body, span }) = (args.is_empty(), &**callee) {
+                if params.is_empty() {
+                    self.lambda(
+                        ctx,
+                        params,
+                        body,
+                        *span,
+                        Some((&[], Some(expected.clone()))),
+                    )?;
+                    return Ok(());
+                }
+            }
+        }
         if let (Expr::Array { elems, .. }, Type::Array(elem)) = (expr, expected) {
             if elems.is_empty() {
                 return Ok(());

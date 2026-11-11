@@ -1,0 +1,110 @@
+// Analizador sintáctico de descenso recursivo:
+//   linea      := NOMBRE '=' suma | suma
+//   suma       := producto (('+' | '-') producto)*
+//   producto   := unario (('*' | '/') unario)*
+//   unario     := '-' unario | potencia            (-2 ^ 2 es -(2 ^ 2))
+//   potencia   := primario ('^' unario)?           (asocia a la derecha: 2 ^ 3 ^ 2 es 2 ^ (3 ^ 2))
+//   primario   := NUMERO | NOMBRE | NOMBRE '(' suma ')' | '(' suma ')'
+
+use "lexico"
+use "arbol"
+
+/// El resultado de analizar una línea: si es una asignación (`x = ...`), el nombre; y la expresión.
+open thing Linea(fix destino: Str?, fix expresion: Nodo)
+
+thing Analizador(fix tokens: Lista<Token>) {
+    mut pos = 0
+
+    fn actual() -> Token = tokens.obtiene(pos)
+
+    fn avanza() -> Token {
+        fix t = tokens.obtiene(pos)
+        if t.clase != Clase.Fin { pos += 1 }
+        return t
+    }
+
+    fn es(c: Clase) -> Bool = actual().clase == c
+
+    fn espera(c: Clase, que: Str) -> Token {
+        if !es(c) { fail ErrorCalculo("se esperaba ${que} en la posición ${actual().posicion}") }
+        return avanza()
+    }
+
+    fn linea() -> Linea {
+        if es(Clase.Nombre) && tokens.obtiene(pos + 1).clase == Clase.Igual {
+            fix nombre = avanza().texto
+            avanza()
+            fix e = suma()
+            fin()
+            return Linea(nombre, e)
+        }
+        fix e = suma()
+        fin()
+        return Linea(nil, e)
+    }
+
+    fn fin() {
+        if !es(Clase.Fin) { fail ErrorCalculo("sobra `${actual().texto}` en la posición ${actual().posicion}") }
+    }
+
+    fn suma() -> Nodo {
+        mut izq = producto()
+        while es(Clase.Mas) || es(Clase.Menos) {
+            fix op = avanza().clase
+            izq = Binario(op, izq, producto())
+        }
+        return izq
+    }
+
+    fn producto() -> Nodo {
+        mut izq = unario()
+        while es(Clase.Por) || es(Clase.Entre) {
+            fix op = avanza().clase
+            izq = Binario(op, izq, unario())
+        }
+        return izq
+    }
+
+    fn unario() -> Nodo {
+        if es(Clase.Menos) {
+            avanza()
+            return Negativo(unario())
+        }
+        return potenciaP()
+    }
+
+    fn potenciaP() -> Nodo {
+        fix base = primario()
+        if es(Clase.Potencia) {
+            avanza()
+            return Binario(Clase.Potencia, base, unario())
+        }
+        return base
+    }
+
+    fn primario() -> Nodo {
+        fix t = avanza()
+        return match t.clase {
+            Clase.Numero -> Numero(Float.parse(t.texto) ?: fail ErrorCalculo("número mal escrito: ${t.texto}"))
+            Clase.Nombre -> if es(Clase.Abre) { llamada(t.texto) } else { Variable(t.texto) }
+            Clase.Abre -> grupo()
+            _ -> fail ErrorCalculo(if t.clase == Clase.Fin { "la expresión está incompleta" } else { "no se esperaba `${t.texto}` en la posición ${t.posicion}" })
+        }
+    }
+
+    fn llamada(nombre: Str) -> Nodo {
+        espera(Clase.Abre, "`(`")
+        fix arg = suma()
+        espera(Clase.Cierra, "`)`")
+        return Llamada(nombre, arg)
+    }
+
+    fn grupo() -> Nodo {
+        fix e = suma()
+        espera(Clase.Cierra, "`)`")
+        return e
+    }
+}
+
+/// Analiza una línea de la calculadora. Lanza `ErrorCalculo` si está mal escrita.
+open fn analiza(texto: Str) -> Linea = Analizador(tokeniza(texto)).linea()

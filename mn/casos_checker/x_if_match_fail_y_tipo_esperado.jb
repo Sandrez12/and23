@@ -1,0 +1,39 @@
+// `fail` como rama de un `if` o de un `match` usado como valor, y el tipo esperado guiando cada rama.
+kind Forma {
+    fn id() -> Int
+}
+thing Circulo() : Forma {
+    fn id() -> Int = 1
+}
+thing Cuadrado() : Forma {
+    fn id() -> Int = 2
+}
+
+fn divide(a: Int, b: Int) -> Int = if b == 0 { fail Fallo("división entre cero") } else { a / b }
+
+fn crea(n: Int) -> Forma = match n {
+    1 -> Circulo()
+    2 -> Cuadrado()
+    _ -> fail Fallo("forma desconocida: ${n}")
+}
+
+fn elige(c: Bool) -> Forma {
+    return if c { Circulo() } else { Cuadrado() }
+}
+
+fn opcional(n: Int) -> Forma? = match n {
+    1 -> Circulo()
+    _ -> nil
+}
+
+fn main() {
+    show(divide(10, 2))
+    attempt { show(divide(1, 0)) } rescue e: Fallo { show(e.msg) }
+    show(crea(1).id() + crea(2).id())
+    attempt { crea(9) } rescue e: Fallo { show(e.msg) }
+    show(elige(true).id())
+    show(opcional(1)?.id())
+    show(opcional(7)?.id())
+    fix f: Forma = if divide(4, 2) == 2 { Cuadrado() } else { Circulo() }
+    show(f.id())
+}

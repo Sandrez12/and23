@@ -1,0 +1,65 @@
+// Calculadora de consola: lee expresiones de la entrada estándar.
+//
+//   and23 proyectos/calculadora/calc.jb
+//   > 2 + 3 * 4
+//   14.0000
+//   > r = 5
+//   > pi * r ^ 2
+//   > raiz(16) + abs(0 - 3)
+//
+// Con un argumento evalúa solo esa expresión:   and23 proyectos/calculadora/calc.jb "1 + 2"
+// Escribe `salir` para terminar.
+
+use "lexico"
+use "arbol"
+use "analizador"
+
+fn nuevoEntorno() -> Entorno {
+    fix e = Entorno()
+    e.variables.pone("pi", 3.14159265358979)
+    e.funciones.pone("raiz", { x -> raiz(x) })
+    e.funciones.pone("abs", { x -> absolutoF(x) })
+    e.funciones.pone("doble", { x -> x * 2.0 })
+    e.funciones.pone("cuadrado", { x -> x * x })
+    return e
+}
+
+/// Evalúa una línea y devuelve lo que hay que mostrar (o nil si fue una asignación).
+fn procesa(entrada: Str, e: Entorno) -> Str? {
+    fix linea = analiza(entrada)
+    fix valor = linea.expresion.evalua(e)
+    fix destino = linea.destino
+    if destino != nil {
+        e.variables.pone(destino, valor)
+        return nil
+    }
+    return valor.formato(4)
+}
+
+fn main() {
+    fix e = nuevoEntorno()
+    fix args = argumentos()
+    if !args.vacia() {
+        attempt {
+            show(procesa(args.obtiene(0), e) ?: "ok")
+        } rescue err: ErrorCalculo {
+            muestraError("error: ${err.msg}")
+            salir(1)
+        }
+        return
+    }
+    mut linea = leeLinea()
+    while linea != nil {
+        fix texto = linea.recorta()
+        if texto == "salir" { break }
+        if !texto.vacia() {
+            attempt {
+                fix r = procesa(texto, e)
+                if r != nil { show(r) }
+            } rescue err: ErrorCalculo {
+                show("error: ${err.msg}")
+            }
+        }
+        linea = leeLinea()
+    }
+}

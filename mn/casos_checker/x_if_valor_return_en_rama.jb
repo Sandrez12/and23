@@ -1,0 +1,1 @@
+fn f(c: Bool) -> Int = if c { return 1 } else { 2 }

@@ -444,9 +444,13 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
             expect("Arrow", "`->` y el cuerpo del caso")
             mut cuerpo = nada()
             if esValor {
-                fix valor = expr(0)
-                fix vr = rg(valor)
-                cuerpo = con("Block", "", listaDe1(uno("Return", "", valor).en(vr))).en(vr)
+                // Como valor, el cuerpo es una expresión o un `fail` (que no vuelve).
+                if tipo() == "Fail" {
+                    fix f = failStmt()
+                    cuerpo = con("Block", "", listaDe1(f)).en(rg(f))
+                } else {
+                    cuerpo = devuelve(expr(0))
+                }
             } else if tipo() == "LBrace" {
                 cuerpo = bloque()
             } else {
@@ -576,35 +580,42 @@ thing Parser(fix toks: Lista<Token>, fix enums: Mapa<Str, Lista<Str>>, fix cont:
     /// `if cond { a } else { b }` usado como valor.
     fn ifExpr(kw: Rango) -> Nodo {
         fix cond = condicion()
-        fix a = exprEntreLlaves()
+        fix a = ramaEntreLlaves()
         skipNewlines()
         if tipo() != "Else" { fail aqui("un `if` usado como valor necesita `else` (si no, ¿qué valor tiene?)") }
         bump()
         mut b = nada()
         if tipo() == "If" {
             fix interior = rango(bump())
-            b = ifExpr(interior)
+            b = devuelve(ifExpr(interior))
         } else {
-            b = exprEntreLlaves()
+            b = ramaEntreLlaves()
         }
         fix span = kw.to(rg(b))
-        fix si = tres("If", "", cond, devuelve(a), devuelve(b)).en(span)
+        fix si = tres("If", "", cond, a, b).en(span)
         return inmediata(listaDe1(si), span)
+    }
+
+    /// Una rama de un `if` usado como valor: `{ valor }` (que devuelve el valor) o `{ fail Fallo("...") }` (que no vuelve).
+    fn ramaEntreLlaves() -> Nodo {
+        expect("LBrace", "`{` y el valor")
+        skipNewlines()
+        mut rama = nada()
+        if tipo() == "Fail" {
+            fix f = failStmt()
+            rama = con("Block", "", listaDe1(f)).en(rg(f))
+        } else {
+            rama = devuelve(exprAnidada())
+        }
+        skipNewlines()
+        expect("RBrace", "`}` después del valor")
+        return rama
     }
 
     /// `{ return e }` con la posición de `e`.
     fn devuelve(e: Nodo) -> Nodo {
         fix s = rg(e)
         return con("Block", "", listaDe1(uno("Return", "", e).en(s))).en(s)
-    }
-
-    fn exprEntreLlaves() -> Nodo {
-        expect("LBrace", "`{` y el valor")
-        skipNewlines()
-        fix v = exprAnidada()
-        skipNewlines()
-        expect("RBrace", "`}` después del valor")
-        return v
     }
 
     // ------------------------------------------------------------ bloques y tipos

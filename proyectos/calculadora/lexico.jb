@@ -1,0 +1,51 @@
+// Analizador léxico de la calculadora: convierte un texto en una lista de tokens.
+
+open thing ErrorCalculo(m: Str) : Fallo(m)
+
+open enum Clase { Numero, Nombre, Mas, Menos, Por, Entre, Potencia, Abre, Cierra, Coma, Igual, Fin }
+
+open thing Token(fix clase: Clase, fix texto: Str, fix posicion: Int)
+
+fn esEspacio(c: Str) -> Bool = c == " " || c == "\t" || c == "\r"
+
+fn simbolo(c: Str) -> Clase? = match c {
+    "+" -> Clase.Mas
+    "-" -> Clase.Menos
+    "*" -> Clase.Por
+    "/" -> Clase.Entre
+    "^" -> Clase.Potencia
+    "(" -> Clase.Abre
+    ")" -> Clase.Cierra
+    "," -> Clase.Coma
+    "=" -> Clase.Igual
+    _ -> nil
+}
+
+/// Los tokens de `texto`, terminados por un token `Fin`. Lanza `ErrorCalculo` si hay un carácter que no entiende.
+open fn tokeniza(texto: Str) -> Lista<Token> {
+    fix cs = texto.caracteres()
+    fix tokens = Lista<Token>()
+    mut i = 0
+    while i < cs.tam() {
+        fix c = cs.obtiene(i)
+        if esEspacio(c) {
+            i += 1
+        } else if c.esDigito() || c == "." {
+            mut j = i
+            while j < cs.tam() && (cs.obtiene(j).esDigito() || cs.obtiene(j) == ".") { j += 1 }
+            tokens.agrega(Token(Clase.Numero, texto.trozo(i, j), i))
+            i = j
+        } else if c.esLetra() || c == "_" {
+            mut j = i
+            while j < cs.tam() && (cs.obtiene(j).esAlfanumerico() || cs.obtiene(j) == "_") { j += 1 }
+            tokens.agrega(Token(Clase.Nombre, texto.trozo(i, j), i))
+            i = j
+        } else {
+            fix clase = simbolo(c) ?: fail ErrorCalculo("carácter inesperado `${c}` en la posición ${i}")
+            tokens.agrega(Token(clase, c, i))
+            i += 1
+        }
+    }
+    tokens.agrega(Token(Clase.Fin, "", cs.tam()))
+    return tokens
+}

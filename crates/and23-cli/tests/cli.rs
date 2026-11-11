@@ -2225,3 +2225,61 @@ fn el_buscador_de_proyectos_funciona_como_herramienta() {
         stdout(&pruebas)
     );
 }
+
+/// La calculadora (`proyectos/calculadora`): una sesión por la entrada estándar, una expresión por argumento y sus pruebas.
+#[test]
+fn la_calculadora_de_proyectos_funciona() {
+    let root = raiz_del_repo();
+    let mut hijo = and23()
+        .current_dir(&root)
+        .arg("proyectos/calculadora/calc.jb")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    hijo.stdin
+        .take()
+        .unwrap()
+        .write_all(b"r = 5\npi * r ^ 2\n2 ^ 3 ^ 2\n-3 + 10 / 4\n1 / 0\nx + 1\n2 +\nsalir\n99\n")
+        .unwrap();
+    let out = hijo.wait_with_output().unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out),
+        "78.5398\n512.0000\n-0.5000\nerror: división entre cero\nerror: la variable `x` no existe\nerror: la expresión está incompleta\n"
+    );
+    let uno = and23()
+        .current_dir(&root)
+        .args(["proyectos/calculadora/calc.jb", "raiz(16) + 1"])
+        .output()
+        .unwrap();
+    assert_eq!(stdout(&uno), "5.0000\n");
+    let malo = and23()
+        .current_dir(&root)
+        .args(["proyectos/calculadora/calc.jb", "1 +"])
+        .output()
+        .unwrap();
+    assert_eq!(malo.status.code(), Some(1));
+    assert!(
+        stderr(&malo).contains("error: la expresión está incompleta"),
+        "{}",
+        stderr(&malo)
+    );
+    let pruebas = and23()
+        .current_dir(&root)
+        .args(["--prueba", "proyectos/calculadora/calc_prueba.jb"])
+        .output()
+        .unwrap();
+    assert!(
+        pruebas.status.success(),
+        "{}{}",
+        stdout(&pruebas),
+        stderr(&pruebas)
+    );
+    assert!(
+        stdout(&pruebas).contains("6 prueba(s): 6 ok, 0 fallaron"),
+        "{}",
+        stdout(&pruebas)
+    );
+}

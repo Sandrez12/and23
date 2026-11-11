@@ -1,0 +1,57 @@
+// El árbol de la expresión y su evaluación.
+
+use "lexico"
+
+/// Las variables y las funciones que ve una expresión al evaluarse.
+open thing Entorno() {
+    fix variables = Mapa<Str, Float>()
+    fix funciones = Mapa<Str, (Float) -> Float>()
+
+    fn definida(nombre: Str) -> Bool = variables.contiene(nombre)
+}
+
+open kind Nodo {
+    fn evalua(e: Entorno) -> Float
+    fn texto() -> Str
+}
+
+open thing Numero(fix valor: Float) : Nodo {
+    fn evalua(e: Entorno) -> Float = valor
+    fn texto() -> Str = valor.formato(2)
+}
+
+open thing Variable(fix nombre: Str) : Nodo {
+    fn evalua(e: Entorno) -> Float = e.variables.obtiene(nombre) ?: fail ErrorCalculo("la variable `${nombre}` no existe")
+    fn texto() -> Str = nombre
+}
+
+open thing Negativo(fix operando: Nodo) : Nodo {
+    fn evalua(e: Entorno) -> Float = 0.0 - operando.evalua(e)
+    fn texto() -> Str = "(-${operando.texto()})"
+}
+
+open thing Binario(fix op: Clase, fix izq: Nodo, fix der: Nodo) : Nodo {
+    fn evalua(e: Entorno) -> Float {
+        fix a = izq.evalua(e)
+        fix b = der.evalua(e)
+        return match op {
+            Clase.Mas -> a + b
+            Clase.Menos -> a - b
+            Clase.Por -> a * b
+            Clase.Entre -> if b == 0.0 { fail ErrorCalculo("división entre cero") } else { a / b }
+            Clase.Potencia -> potencia(a, b)
+            _ -> fail ErrorCalculo("operador desconocido")
+        }
+    }
+
+    fn texto() -> Str = "(${izq.texto()} ${op.nombre} ${der.texto()})"
+}
+
+open thing Llamada(fix nombre: Str, fix argumento: Nodo) : Nodo {
+    fn evalua(e: Entorno) -> Float {
+        fix f = e.funciones.obtiene(nombre) ?: fail ErrorCalculo("la función `${nombre}` no existe")
+        return f(argumento.evalua(e))
+    }
+
+    fn texto() -> Str = "${nombre}(${argumento.texto()})"
+}

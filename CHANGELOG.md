@@ -45,6 +45,9 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). L
 - `listaDe(arreglo)` (una `Lista` desde un arreglo literal) y `Dupla<A, B>` (dos valores juntos) en la biblioteca base.
 
 ### Añadido (programas reales)
+- **`fail` como rama de un `if` o un `match` usado como valor**, y **el tipo esperado guía cada rama** (`fn f() -> Nodo = match x { 1 -> Numero(..)  _ -> Variable(..) }` ya no
+  fija el tipo con la primera rama).
+- `proyectos/calculadora`: un intérprete de expresiones con analizador léxico y sintáctico, interfaz, enumerado y pruebas.
 - **`salir(codigo)` y `muestraError(texto)`:** terminar el programa con un código de salida (no se captura con `attempt`, detiene todas las tareas) y escribir por la
   salida de errores. Hacían falta para cualquier herramienta de línea de comandos.
 - **Expresiones en varias líneas:** los saltos de línea ya no separan sentencias dentro de `(...)` y `[...]` (parámetros y argumentos en varias líneas), tras un

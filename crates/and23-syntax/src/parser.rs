@@ -86,6 +86,15 @@ fn immediate(stmts: Vec<Stmt>, span: Span) -> Expr {
     }
 }
 
+/// `{ return e }` con la posición de `e`: la rama de un `if` o un `match` usado como valor.
+fn returning(e: Expr) -> Block {
+    let s = e.span();
+    Block {
+        stmts: vec![Stmt::Return(Some(e), s)],
+        span: s,
+    }
+}
+
 /// Operador binario, su enlace izquierdo y su enlace derecho.
 fn binary_op(kind: &TokenKind) -> Option<(BinOp, u8, u8)> {
     use TokenKind as T;
@@ -525,11 +534,16 @@ impl Parser {
             }
             self.expect(TokenKind::Arrow, "`->` y el cuerpo del caso")?;
             let body = if expr_form {
-                let value = self.expr(0)?;
-                let span = value.span();
-                Block {
-                    stmts: vec![Stmt::Return(Some(value), span)],
-                    span,
+                // Como valor, el cuerpo es una expresión o un `fail` (que no vuelve).
+                if self.peek().kind == TokenKind::Fail {
+                    let stmt = self.fail_stmt()?;
+                    let span = stmt.span();
+                    Block {
+                        stmts: vec![stmt],
+                        span,
+                    }
+                } else {
+                    returning(self.expr(0)?)
                 }
             } else if self.peek().kind == TokenKind::LBrace {
                 self.block()?
@@ -753,7 +767,7 @@ impl Parser {
     /// `if cond { a } else { b }` usado como valor.
     fn if_expr(&mut self, kw: Span) -> Result<Expr, Diagnostic> {
         let cond = self.condition_expr()?;
-        let a = self.braced_expr()?;
+        let a = self.braced_branch()?;
         self.skip_newlines();
         if self.peek().kind != TokenKind::Else {
             return Err(self.error_here(
@@ -763,34 +777,38 @@ impl Parser {
         self.bump();
         let b = if self.peek().kind == TokenKind::If {
             let inner = self.bump().span;
-            self.if_expr(inner)?
+            let nested = self.if_expr(inner)?;
+            returning(nested)
         } else {
-            self.braced_expr()?
+            self.braced_branch()?
         };
-        let span = kw.to(b.span());
-        let ret = |e: Expr| {
-            let s = e.span();
-            Block {
-                stmts: vec![Stmt::Return(Some(e), s)],
-                span: s,
-            }
-        };
+        let span = kw.to(b.span);
         let stmt = Stmt::If {
             cond,
-            then: ret(a),
-            otherwise: Some(ret(b)),
+            then: a,
+            otherwise: Some(b),
             span,
         };
         Ok(immediate(vec![stmt], span))
     }
 
-    fn braced_expr(&mut self) -> Result<Expr, Diagnostic> {
+    /// Una rama de un `if` usado como valor: `{ valor }` (que devuelve el valor) o `{ fail Fallo("...") }` (que no vuelve).
+    fn braced_branch(&mut self) -> Result<Block, Diagnostic> {
         self.expect(TokenKind::LBrace, "`{` y el valor")?;
         self.skip_newlines();
-        let value = self.nested(|p| p.expr(0))?;
+        let branch = if self.peek().kind == TokenKind::Fail {
+            let stmt = self.nested(|p| p.fail_stmt())?;
+            let span = stmt.span();
+            Block {
+                stmts: vec![stmt],
+                span,
+            }
+        } else {
+            returning(self.nested(|p| p.expr(0))?)
+        };
         self.skip_newlines();
         self.expect(TokenKind::RBrace, "`}` después del valor")?;
-        Ok(value)
+        Ok(branch)
     }
 
     fn block(&mut self) -> Result<Block, Diagnostic> {

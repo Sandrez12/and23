@@ -1,0 +1,72 @@
+// Pruebas de la calculadora:  and23 --prueba proyectos/calculadora/calc_prueba.jb
+
+use "lexico"
+use "arbol"
+use "analizador"
+
+fn entornoDePrueba() -> Entorno {
+    fix e = Entorno()
+    e.variables.pone("pi", 3.0)
+    e.variables.pone("x", 4.0)
+    e.funciones.pone("doble", { v -> v * 2.0 })
+    e.funciones.pone("raiz", { v -> raiz(v) })
+    return e
+}
+
+fn valor(texto: Str) -> Float = analiza(texto).expresion.evalua(entornoDePrueba())
+
+fn mensajeDeError(texto: Str) -> Str {
+    mut mensaje = ""
+    attempt {
+        analiza(texto).expresion.evalua(entornoDePrueba())
+    } rescue e: ErrorCalculo {
+        mensaje = e.msg
+    }
+    return mensaje
+}
+
+prueba "el analizador léxico separa números, nombres y símbolos" {
+    fix ts = tokeniza("x1 = 3.5 * (y + 2)")
+    afirmaIgual(ts.tam(), 10)
+    afirma(ts.obtiene(0).clase == Clase.Nombre)
+    afirmaIgual(ts.obtiene(0).texto, "x1")
+    afirma(ts.obtiene(1).clase == Clase.Igual)
+    afirmaIgual(ts.obtiene(2).texto, "3.5")
+    afirma(ts.obtiene(ts.tam() - 1).clase == Clase.Fin)
+}
+
+prueba "respeta la precedencia y la asociatividad" {
+    afirmaIgual(valor("2 + 3 * 4"), 14.0)
+    afirmaIgual(valor("(2 + 3) * 4"), 20.0)
+    afirmaIgual(valor("10 - 4 - 3"), 3.0)
+    afirmaIgual(valor("2 ^ 3 ^ 2"), 512.0)
+    afirmaIgual(valor("-2 ^ 2"), -4.0)
+    afirmaIgual(valor("8 / 4 / 2"), 1.0)
+}
+
+prueba "usa variables y funciones" {
+    afirmaIgual(valor("x * pi"), 12.0)
+    afirmaIgual(valor("doble(x) + raiz(16)"), 12.0)
+    afirmaIgual(valor("doble(doble(1))"), 4.0)
+}
+
+prueba "las asignaciones dicen su destino" {
+    fix l = analiza("total = 1 + 2")
+    afirmaIgual(l.destino ?: "", "total")
+    afirmaIgual(analiza("1 + 2").destino ?: "ninguno", "ninguno")
+}
+
+prueba "el árbol se escribe con paréntesis explícitos" {
+    afirmaIgual(analiza("1 + 2 * x").expresion.texto(), "(1.00 Mas (2.00 Por x))")
+    afirmaIgual(analiza("-doble(3)").expresion.texto(), "(-doble(3.00))")
+}
+
+prueba "los errores dicen qué pasó" {
+    afirmaIgual(mensajeDeError("1 / 0"), "división entre cero")
+    afirmaIgual(mensajeDeError("y + 1"), "la variable `y` no existe")
+    afirmaIgual(mensajeDeError("nada(2)"), "la función `nada` no existe")
+    afirmaIgual(mensajeDeError("2 +"), "la expresión está incompleta")
+    afirmaIgual(mensajeDeError("(1 + 2"), "se esperaba `)` en la posición 6")
+    afirmaIgual(mensajeDeError("1 2"), "sobra `2` en la posición 2")
+    afirmaIgual(mensajeDeError("3 $ 4"), "carácter inesperado `$` en la posición 2")
+}

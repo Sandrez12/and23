@@ -1653,6 +1653,11 @@ open thing Checker() {
                 return
             }
         }
+        // Un `if` o un `match` usado como valor (o una lambda que se llama al instante) toma el tipo esperado para cada rama.
+        if e.tag == "CallValue" && kid(e, 1).kids.vacia() && kid(e, 0).tag == "Lambda" && kid(kid(e, 0), 0).kids.vacia() {
+            lambda(ctx, kid(e, 0), EsperadoL(Lista<Tipo?>(), esperado))
+            return
+        }
         if e.tag == "Array" && esperado.k == "Array" {
             if e.kids.vacia() { return }
             // Un arreglo de objetos acepta elementos de subclases: `[Perro(..), Gato(..)]` como `[Animal]`.

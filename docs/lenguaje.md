@@ -117,7 +117,7 @@ fix texto = if n > 3 { "grande" } else { "chico" }
 show(texto)
 ```
 
-Un `if` usado como valor necesita `else`. Cada rama es **una** expresión; para varias sentencias se usa una función o lambda.
+Un `if` usado como valor necesita `else`. Cada rama es **una** expresión, o un `fail Fallo("...")` si ese caso no puede darse (`if b == 0 { fail Fallo("división") } else { a / b }`); para varias sentencias se usa una función o lambda (un `return` ahí no se admite). Si el contexto conoce el tipo (un `return`, `-> Tipo = ...`, `fix x: T = ...`), cada rama se comprueba contra él; si no, el tipo lo fija la primera rama.
 
 ### Acceso, índice y llamada
 
@@ -461,7 +461,7 @@ fn main() {
   `Color.todos` es la lista de todos ellos.
 - `match valor { caso -> resultado ... }` compara el valor con cada caso en orden: un literal, una variante de enumerado, un tipo
   (`c: Circulo -> ...`, que además da nombre al valor con ese tipo) o `_` (cualquier cosa). Los casos pueden ir separados por saltos de línea.
-- Como **sentencia** cada caso es una sentencia; como **expresión** cada caso es una expresión y el `match` es un valor.
+- Como **sentencia** cada caso es una sentencia; como **expresión** cada caso es una expresión (o un `fail ...`) y el `match` es un valor, con el tipo esperado como en el `if`.
 - Un `match` sobre un enumerado del mismo archivo debe cubrir todas las variantes (o tener `_`). Sin caso que coincida y sin `_`, falla
   con un `Fallo`.
 - No hay guardas, desestructuración ni variantes con datos: para eso se usan clases con una interfaz común.
