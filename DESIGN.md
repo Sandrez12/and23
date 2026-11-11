@@ -396,7 +396,13 @@ fix m = Mapa<Str, Int>()                                                // expl�
   declarada después (la recursión mutua entre dos locales sigue sin ser posible; en el nivel superior sí). Cambio compatible salvo un caso:
   una lambda que llamaba a una función exterior del mismo nombre que su variable ahora se llama a sí misma.
 - **Límites conocidos de M8:** no hay `it` implícito ni sintaxis `::nombre`; los métodos y constructores no se pasan como
-  valores (envuélvelos en una lambda); no hay lambdas genéricas ni cotas en las interfaces; `ordena` es una inserción estable O(n²).
+  valores (envuélvelos en una lambda); no hay lambdas genéricas ni cotas en las interfaces. (`ordena` era una inserción O(n²); desde el paso 2.4 de 1.0 es una mezcla estable O(n log n).)
+
+- **`ordena` (paso 2.4 de 1.0).** `Lista.ordena(antes)` es una mezcla ascendente (tandas de 1, 2, 4... elementos) que alterna entre dos arreglos
+  auxiliares: O(n log n) comparaciones (100 000 enteros en menos de un segundo; la inserción de antes tardaba minutos). Es estable: el de la
+  derecha solo pasa delante si `antes(derecha, izquierda)` es verdadero, así que los que no van uno antes que el otro conservan su orden,
+  igual que la inserción. Trabaja sobre copias y solo escribe en la lista al terminar: si `antes` lanza un `Fallo`, la lista queda como
+  estaba (la inserción la dejaba con un elemento repetido). Un test compara el resultado con la inserción de referencia en 150 listas.
 
 ### Módulos (M9)
 
@@ -440,7 +446,15 @@ fix m = Mapa<Str, Int>()                                                // expl�
   llamada.
 - **Números.** `parse` devuelve un opcional (nil si no es un número, también `nan` e `inf`) en vez de lanzar: `Int.parse(s) ?: 0`. No hay
   conversión implícita entre Int y Float: `aFloat`, `piso`, `techo` y `redondea` convierten, y un Float no finito o fuera del rango de Int es un
-  error de ejecución. Los nombres de las matemáticas son españoles (`absoluto`, `minimo`, `maximo`) con variante `F` para Float, porque no hay
+  error de ejecución. `x.formato(n)` (paso 2.3 de 1.0) escribe un Float con exactamente `n` decimales (0 a 100; fuera de rango es un error de
+  ejecución): nativa `_formato`, y el método es la función del preludio `_float_formato`, que el verificador busca como en los de `Str` (clave
+  `_float_<nombre>` cuando el receptor es Float, con el mismo `redirige` para el compilador). Redondea el valor binario exacto como `printf`:
+  `2.675.formato(2)` es `"2.67"` (el Float guarda 2.67499...) y los empates exactos van al par (`2.5.formato(0)` es `"2"`, `3.5.formato(0)` es
+  `"4"`), distinto de `redondea`, que redondea hacia fuera. Un Float no finito se escribe como `show` (`NaN`, `inf`). Sobre un `Float?` o un
+  `Str?` los métodos se llaman con `?.` (`x?.formato(2)`, `s?.largo()`: nil si el valor lo es, y el resultado es opcional); sin `?.` se
+  rechaza, como con los objetos. Se resuelve así: el verificador comprueba la llamada como la función del preludio tratando el receptor como no
+  nil (un campo `unwrap_nil` que `expr` consulta por la posición del receptor) y anota el `redirige`; el compilador emite el receptor, `JumpIfNil`,
+  los argumentos y `Call`, igual que `?.` con objetos. Los nombres de las matemáticas son españoles (`absoluto`, `minimo`, `maximo`) con variante `F` para Float, porque no hay
   sobrecarga.
 - **Archivos.** Las nativas de archivos devuelven `nil`/`false` y guardan el mensaje en la VM (`_errorES`); el preludio lo convierte en un
   `ErrorES` (que hereda de `Fallo`), así que se atrapa con `rescue e: ErrorES` o `rescue e: Fallo`. Sin atrapar, es un error con la posición de
@@ -453,7 +467,7 @@ fix m = Mapa<Str, Int>()                                                // expl�
   preludio sigue usando la suya (las llamadas ya van por índice). Las clases del preludio y las funciones integradas no se pueden redefinir.
 - **Bucle de lectura.** `mut l = leeLinea()` seguido de `while l != nil { ...; l = leeLinea() }` funciona, también en el nivel superior (ver
   "Estrechamiento de globales `mut`"); `while true { fix l = leeLinea(); if l == nil { break } ... }` es la alternativa.
-- **Límites conocidos de M10:** sin formato de números (decimales), `Mapa` ni ordenar por clave en la biblioteca (el `Mapa` recorre en orden de inserción desde 1.0, pero no ordenado por clave); sin Unicode avanzado (`mayus`/`minus` usan las reglas de Rust,
+- **Límites conocidos de M10:** sin formato de números más allá de `x.formato(n)` (`Float` con n decimales), `Mapa` ni ordenar por clave en la biblioteca (el `Mapa` recorre en orden de inserción desde 1.0, pero no ordenado por clave); sin Unicode avanzado (`mayus`/`minus` usan las reglas de Rust,
   `recorta` quita el espacio Unicode); `leeLinea` bloquea la VM mientras espera.
 
 ### Ergonomía tras M10
@@ -544,7 +558,7 @@ fix m = Mapa<Str, Int>()                                                // expl�
   de `Lista.obtiene` se señala en la línea del usuario que la llamó (antes caía en una posición sin sentido del archivo del usuario, porque
   las posiciones del preludio no pertenecen a ningún archivo). La traza va en `Diagnostic.trace`; la VM la calcula solo cuando falla, así
   que no cuesta nada en la ejecución normal.
-- **Límites.** Sin formato de números (decimales fijos), sin ordenar un `Mapa` por clave, sin borrar carpetas ni copiar o renombrar archivos, sin
+- **Límites.** Sin formato de números más allá de los decimales fijos de `Float`, sin ordenar un `Mapa` por clave, sin borrar carpetas ni copiar o renombrar archivos, sin
   separadores propios del sistema en `unirRuta` (siempre `/`; Windows acepta ambos), sin reloj monótono ni zonas horarias ni fechas.
 
 ### Pruebas, formateador y editor
@@ -747,8 +761,8 @@ las palabras reservadas, `len`, `push`, `pop` y `hash` son funciones integradas,
 |---|---|---|
 | Lambda que se llama a sí misma dentro de una función | **Antes de 1.0** | 2.1, hecho |
 | `Mapa` sin orden de inserción | **Antes de 1.0** | 2.2, hecho |
-| Sin formato de decimales | **Antes de 1.0** | 2.3 |
-| `ordena` en O(n²) | **Antes de 1.0** | 2.4 |
+| Sin formato de decimales | **Antes de 1.0** | 2.3, hecho |
+| `ordena` en O(n²) | **Antes de 1.0** | 2.4, hecho |
 | Sin `!!` ni `?:` con `return`/`fail` a la derecha | **Antes de 1.0** | 2.5 |
 | Sin `use` en el REPL | **Antes de 1.0** | 2.6 |
 | Métodos y constructores no se pasan como valores | **Antes de 1.0** | 2.7 |

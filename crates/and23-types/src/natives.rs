@@ -101,6 +101,7 @@ natives! {
     "_desdeCodigo"(Int) -> OptStr;
     "_une"(ArrStr, Str) -> Str;
     "_parte"(Str, Str) -> ArrStr;
+    "_formato"(Float, Int) -> Str;
     // M11: las atiende el planificador de la VM (desde `FIRST_SCHED_NATIVE`), no `natives::call`.
     "_lanza"(Fn0) -> Unit;
     "cede"() -> Unit;
@@ -110,7 +111,7 @@ natives! {
 }
 
 /// Id de la primera nativa que atiende el planificador de la VM: todas las siguientes también.
-pub const FIRST_SCHED_NATIVE: u32 = 40;
+pub const FIRST_SCHED_NATIVE: u32 = 41;
 
 /// Id y firma de la función nativa `name`.
 pub fn native(name: &str) -> Option<(u32, &'static Native)> {

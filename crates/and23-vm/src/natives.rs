@@ -372,6 +372,22 @@ pub fn call(
             let items: Vec<Value> = parts.into_iter().map(|p| heap.alloc_str(p)).collect();
             return Ok(heap.alloc_array(items));
         }
+        // _formato(x, decimales): `x` con exactamente ese número de decimales (0 a 100). Redondea el valor binario exacto
+        // como `printf` (2.675 da "2.67" porque el Float guarda 2.67499...; los empates exactos, como 2.5 con 0 decimales,
+        // van al par: "2"). Un Float que no es finito (nan, inf) se escribe como lo escribe `show`.
+        40 => {
+            let (x, decimals) = (float(a(0)), int(a(1)));
+            if !(0..=100).contains(&decimals) {
+                return Err(format!(
+                    "formato: los decimales deben estar entre 0 y 100, pero son {decimals}"
+                ));
+            }
+            if x.is_finite() {
+                format!("{x:.*}", decimals as usize)
+            } else {
+                format!("{x:?}")
+            }
+        }
         _ => return Err(format!("función nativa desconocida: {id}")),
     };
     Ok(heap.alloc_str(result))

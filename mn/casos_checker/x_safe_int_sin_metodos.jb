@@ -1,0 +1,4 @@
+fn main() {
+    fix n: Int? = 5
+    show(n?.largo())
+}

@@ -45,6 +45,10 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). L
 - `listaDe(arreglo)` (una `Lista` desde un arreglo literal) y `Dupla<A, B>` (dos valores juntos) en la biblioteca base.
 
 ### Cambiado (lenguaje)
+- **`?.` sobre `Str?` y `Float?`:** `s?.largo()`, `x?.formato(2)` y cualquier método de texto o de `Float` valen con `?.` (nil si el valor es nil; el
+  resultado es opcional). Antes `?.` solo servía con objetos.
+- **`x.formato(decimales)`:** un `Float` como texto con ese número de decimales (0 a 100): `3.14159.formato(2)` es `"3.14"`. Redondea el valor
+  binario exacto como `printf` (`2.675.formato(2)` da `"2.67"`; los empates exactos van al par). Es el primer método de `Float`.
 - **`Mapa` recuerda el orden de inserción:** `claves()`, `valores()`, `paraCada` y `show` lo recorren en el orden en que se pusieron las claves (poner
   una clave existente conserva su lugar; quitarla y volver a ponerla la deja al final). Antes el orden era el de las cubetas del hash.
 - **Una lambda local puede llamarse a sí misma:** `fix f: (Int) -> Int = { n -> ... f(n - 1) ... }` ya vale dentro de funciones, métodos y bloques
@@ -55,6 +59,8 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). L
   salidas esperadas quedaron fijas en `crates/and23-vm/tests/semantica.rs` (antes `diferencial.rs`).
 
 ### Cambiado
+- `Lista.ordena` es una mezcla estable O(n log n) (antes una inserción O(n²): 100 000 elementos tardaban minutos, ahora menos de un segundo). Mismo
+  orden para elementos iguales; si el comparador falla, la lista queda como estaba.
 - `s.parte(sep)` es lineal: pasó a una nativa (`_parte`) en vez de repetir `_busca` y `_trozo`, que costaba O(n) por trozo. Partir 1,4 MB en
   100 000 trozos tardaba 24 s; ahora 0,1 s.
 - Cadenas con interpolaciones muy anidadas (`"${"${"${...`) ya no cuestan el cuadrado de la profundidad al analizarlas: el código de cada

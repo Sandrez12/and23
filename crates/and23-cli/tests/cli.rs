@@ -1824,3 +1824,53 @@ fn una_lambda_sin_tipo_anotado_no_puede_llamarse_a_si_misma_y_el_error_lo_explic
         stderr(&out)
     );
 }
+
+/// Paso 2.3: `x.formato(decimales)` escribe un Float con ese número de decimales (redondeo exacto del valor binario).
+#[test]
+fn float_formato_escribe_con_los_decimales_pedidos() {
+    let out = and23()
+        .arg(raiz_del_repo().join("mn/casos_checker/x_float_formato.jb"))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out),
+        "3.14\n3\n3.14159\n2.67\n2\n4\n-1.00\n0.10000000000000000555\n0.3333\n100000000000000000000.0\n100.00 €\ntotal: 59.97\nNaN\n"
+    );
+}
+
+#[test]
+fn float_formato_rechaza_decimales_fuera_de_rango() {
+    for decimales in ["-1", "101"] {
+        let out = run_source(
+            "formato_rango",
+            &format!("fn main() {{ show(1.5.formato({decimales})) }}"),
+        );
+        assert_eq!(out.status.code(), Some(1));
+        assert!(
+            stderr(&out).contains(&format!(
+                "formato: los decimales deben estar entre 0 y 100, pero son {decimales}"
+            )),
+            "{}",
+            stderr(&out)
+        );
+    }
+}
+
+/// `?.` sobre un `Str?` o un `Float?` llama al método si hay valor y da `nil` si no (antes solo valía con objetos).
+#[test]
+fn acceso_seguro_sobre_str_y_float_opcionales() {
+    let esperado = "4\nnil\n-1\n3\n-1\nHOLA\ntrue\nfalse\n[\"h\", \"la\"]\nol\n2.5\nnil\nsin valor\nANA\nnil\n4.2\n-\n3\nnil\n";
+    for stress in [false, true] {
+        let mut cmd = and23();
+        if stress {
+            cmd.arg("--gc-stress");
+        }
+        let out = cmd
+            .arg(raiz_del_repo().join("mn/casos_checker/x_safe_str_float.jb"))
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", stderr(&out));
+        assert_eq!(stdout(&out), esperado, "stress={stress}");
+    }
+}

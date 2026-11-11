@@ -1,0 +1,4 @@
+fn main() {
+    fix s: Str? = "hola"
+    show(s?.noExiste())
+}

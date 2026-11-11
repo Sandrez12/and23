@@ -134,18 +134,61 @@ thing Lista<T>() {
         return true
     }
 
-    /// Ordena la lista con `antes(a, b)` (verdadero si `a` va antes que `b`). Es estable.
+    /// Ordena la lista con `antes(a, b)` (verdadero si `a` va antes que `b`). Es estable: los elementos que no van uno antes que el otro
+    /// conservan su orden. Es una mezcla (O(n log n)) sobre copias; la lista solo se toca al final, así que si `antes` falla queda como estaba.
     fn ordena(antes: (T, T) -> Bool) {
-        mut i = 1
-        while i < len(items) {
-            fix x = items[i]
-            mut j = i - 1
-            while j >= 0 && antes(x, items[j]) {
-                items[j + 1] = items[j]
-                j -= 1
+        fix n = len(items)
+        if n < 2 { return }
+        mut origen: [T] = []
+        mut destino: [T] = []
+        mut c = 0
+        while c < n {
+            push(origen, items[c])
+            push(destino, items[c])
+            c += 1
+        }
+        // Tandas ya ordenadas de 1 elemento; se mezclan de dos en dos (luego de 4 en 4...) pasando de `origen` a `destino`.
+        mut ancho = 1
+        while ancho < n {
+            mut ini = 0
+            while ini < n {
+                fix medio = minimo(ini + ancho, n)
+                fix fin = minimo(ini + 2 * ancho, n)
+                mut i = ini
+                mut j = medio
+                mut k = ini
+                while i < medio && j < fin {
+                    // El de la derecha solo pasa delante si va estrictamente antes: los iguales conservan su orden.
+                    if antes(origen[j], origen[i]) {
+                        destino[k] = origen[j]
+                        j += 1
+                    } else {
+                        destino[k] = origen[i]
+                        i += 1
+                    }
+                    k += 1
+                }
+                while i < medio {
+                    destino[k] = origen[i]
+                    i += 1
+                    k += 1
+                }
+                while j < fin {
+                    destino[k] = origen[j]
+                    j += 1
+                    k += 1
+                }
+                ini += 2 * ancho
             }
-            items[j + 1] = x
-            i += 1
+            fix libre = origen
+            origen = destino
+            destino = libre
+            ancho *= 2
+        }
+        c = 0
+        while c < n {
+            items[c] = origen[c]
+            c += 1
         }
     }
 
@@ -326,6 +369,9 @@ fn _str_trozo(s: Str, desde: Int, hasta: Int) -> Str = _trozo(s, desde, hasta)
 
 /// Trozos de `s` separados por `sep`; con `sep` vacío, un trozo por carácter.
 fn _str_parte(s: Str, sep: Str) -> Lista<Str> = listaDe(_parte(s, sep))
+
+/// `x.formato(2)`: el texto de `x` con ese número de decimales (0 a 100), por ejemplo `3.14159.formato(2)` es "3.14".
+fn _float_formato(x: Float, decimales: Int) -> Str = _formato(x, decimales)
 
 /// Las líneas de `s` (separadas por "\n" o "\r\n"); un salto final no crea una línea vacía.
 fn _str_lineas(s: Str) -> Lista<Str> {

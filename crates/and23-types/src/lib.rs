@@ -183,6 +183,7 @@ impl Checker {
             things: HashMap::new(),
             class_state: HashMap::new(),
             lambda_cache: HashMap::new(),
+            unwrap_nil: None,
             res: Resolutions::default(),
         };
         pass.program(program)?;
@@ -250,6 +251,9 @@ struct Pass<'p> {
     /// Lambdas ya verificadas: una llamada genérica mira cada lambda dos veces (al deducir y al
     /// comprobar) y sin esto las lambdas anidadas costarían 2^profundidad.
     lambda_cache: HashMap<String, Type>,
+    /// Mientras se verifica `a?.m(..)` sobre un `Str?` o un `Float?`, la expresión `a` (por su posición) vale como si no fuera nil:
+    /// la llamada se salta si lo es, y `m` se comprueba como la función del preludio con `a` de primer argumento.
+    unwrap_nil: Option<Span>,
     res: Resolutions,
 }
 
@@ -1815,6 +1819,16 @@ impl<'p> Pass<'p> {
     }
 
     fn expr(&mut self, ctx: &mut Ctx, expr: &Expr) -> Result<Type, Diagnostic> {
+        if self.unwrap_nil == Some(expr.span()) {
+            return Ok(match self.expr_raw(ctx, expr)? {
+                Type::Nullable(inner) => *inner,
+                other => other,
+            });
+        }
+        self.expr_raw(ctx, expr)
+    }
+
+    fn expr_raw(&mut self, ctx: &mut Ctx, expr: &Expr) -> Result<Type, Diagnostic> {
         match expr {
             Expr::Int(..) => Ok(Type::Int),
             Expr::Float(..) => Ok(Type::Float),
@@ -1890,6 +1904,21 @@ impl<'p> Pass<'p> {
                         name,
                         name_span,
                         "Str",
+                        Some(target),
+                        args,
+                        type_args,
+                        *span,
+                    );
+                }
+                // Métodos de Float (`x.formato(2)`): también funciones del preludio.
+                if target_ty == Type::Float {
+                    let key = format!("_float_{name}");
+                    return self.std_call(
+                        ctx,
+                        &key,
+                        name,
+                        name_span,
+                        "Float",
                         Some(target),
                         args,
                         type_args,
@@ -2076,6 +2105,30 @@ impl<'p> Pass<'p> {
                     Type::Nullable(inner) => *inner,
                     other => other,
                 };
+                // `s?.largo()` y `x?.formato(2)`: los métodos de Str y de Float son funciones del preludio.
+                if inner == Type::Str || inner == Type::Float {
+                    let owner = if inner == Type::Str { "Str" } else { "Float" };
+                    let key = format!("_{}_{name}", owner.to_lowercase());
+                    let saved = self.unwrap_nil.replace(target.span());
+                    let ret = self.std_call(
+                        ctx,
+                        &key,
+                        name,
+                        name_span,
+                        owner,
+                        Some(target),
+                        args,
+                        &[],
+                        *span,
+                    );
+                    self.unwrap_nil = saved;
+                    let ret = ret?;
+                    return Ok(if ret == Type::Unit {
+                        ret
+                    } else {
+                        optional(ret)
+                    });
+                }
                 let receiver = self.method_receiver(&inner, target.span())?;
                 let Some((key, map)) = self.find_method(&receiver, name) else {
                     return Err(Diagnostic::new(

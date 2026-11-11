@@ -1,0 +1,34 @@
+// `?.` sobre un Str? o un Float?: llama al método si no es nil, y da nil si lo es.
+thing Persona(fix nombre: Str?, fix nota: Float?)
+
+fn largoDe(s: Str?) -> Int = s?.largo() ?: -1
+
+fn main() {
+    fix s: Str? = "hola"
+    fix n: Str? = nil
+    show(s?.largo())
+    show(n?.largo())
+    show(n?.largo() ?: -1)
+    show(largoDe("abc"))
+    show(largoDe(nil))
+    show(s?.mayus())
+    show(s?.contiene("ol") ?: false)
+    show(n?.contiene("ol") ?: false)
+    show(s?.parte("o"))
+    show(s?.trozo(1, 3))
+    fix x: Float? = 2.5
+    fix y: Float? = nil
+    show(x?.formato(1))
+    show(y?.formato(1))
+    show(y?.formato(1) ?: "sin valor")
+    fix p = Persona("Ana", 4.25)
+    fix q = Persona(nil, nil)
+    show(p.nombre?.mayus())
+    show(q.nombre?.mayus())
+    show(p.nota?.formato(1))
+    show(q.nota?.formato(1) ?: "-")
+    fix lista = Lista<Str?>()
+    lista.agrega("uno")
+    lista.agrega(nil)
+    lista.paraCada { e -> show(e?.largo()) }
+}

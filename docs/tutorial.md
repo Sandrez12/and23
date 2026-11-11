@@ -39,7 +39,8 @@ show("${nombre} tiene ${edad} años y mide ${altura}")
 ```
 
 Los tipos son `Int`, `Float`, `Bool`, `Str`, `Unit` y los arreglos `[T]`. No hay conversión implícita entre `Int` y
-`Float`: usa `aFloat(n)`, `piso(x)`, `techo(x)` o `redondea(x)`. Los decimales aceptan exponente (`1e3`, `2.5E-4`).
+`Float`: usa `aFloat(n)`, `piso(x)`, `techo(x)` o `redondea(x)`. Los decimales aceptan exponente (`1e3`, `2.5E-4`). Para escribir un `Float` con un número fijo de decimales usa
+`x.formato(2)`: `3.14159.formato(2)` es `"3.14"` y `(19.99 * 3.0).formato(2)` es `"59.97"`.
 Las cadenas llevan interpolación `"${expresión}"` y los escapes `\n \t \" \\ \$ \u{1F600}`.
 
 ## 3. Control de flujo y funciones

@@ -1,0 +1,4 @@
+fn main() {
+    show(1.5.formato(2))
+    show(1.5.formato(101))
+}

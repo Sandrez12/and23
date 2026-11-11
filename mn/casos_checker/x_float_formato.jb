@@ -1,0 +1,16 @@
+fn main() {
+    fix pi = 3.14159265
+    show(pi.formato(2))
+    show(pi.formato(0))
+    show(pi.formato(5))
+    show(2.675.formato(2))
+    show(2.5.formato(0))
+    show(3.5.formato(0))
+    show((-1.005).formato(2))
+    show(0.1.formato(20))
+    show((1.0 / 3.0).formato(4))
+    show(1e20.formato(1))
+    show(100.0.formato(2) + " €")
+    show("total: ${(19.99 * 3.0).formato(2)}")
+    show(raiz(-1.0).formato(2))
+}

@@ -1415,6 +1415,22 @@ impl<'a> FnCompiler<'a> {
             }
             Expr::SafeCall {
                 target, args, span, ..
+            } if self.res.redirects.contains_key(span) => {
+                // `s?.metodo(..)` sobre un `Str?` o un `Float?`: la función del preludio, si `s` no es nil.
+                let (key, _) = self.res.redirects[span].clone();
+                let &(index, _) = self.tables.funcs.get(&key).ok_or_else(|| {
+                    Diagnostic::new(*span, format!("la función `{key}` no está definida"))
+                })?;
+                self.expr(target)?;
+                let skip = self.emit(Op::JumpIfNil(0), *span);
+                for arg in args {
+                    self.expr(arg)?;
+                }
+                self.emit(Op::Call(index), *span);
+                self.patch(skip);
+            }
+            Expr::SafeCall {
+                target, args, span, ..
             } => {
                 let method = self.virtual_id(*span)?;
                 self.expr(target)?;

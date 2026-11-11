@@ -776,12 +776,25 @@ thing FnCompiler(fix c: Compilador, fix nombre: Str, fix nr: Rango) {
             emit(instr1("GetField", campo), r)
             patch(salto)
         } else if t == "SafeCall" {
-            fix metodo = idVirtual(r)
-            expr(kid(e, 0))
-            fix salto = emit(instr1("JumpIfNil", 0), r)
-            args(kid(e, 1))
-            emit(instr2("CallMethod", metodo, kid(e, 1).kids.tam()), r)
-            patch(salto)
+            fix redir = c.chk.resRedirige.obtiene(k)
+            if redir != nil {
+                // `s?.metodo(..)` sobre un `Str?` o un `Float?`: la función del preludio, si `s` no es nil.
+                fix clave = redir.parte(" ").obtiene(0)
+                fix f = c.tFuncs.obtiene(clave)
+                if f == nil { fail ErrorCompila("la función `${clave}` no está definida", r) }
+                expr(kid(e, 0))
+                fix salto = emit(instr1("JumpIfNil", 0), r)
+                args(kid(e, 1))
+                emit(instr1("Call", f.indice), r)
+                patch(salto)
+            } else {
+                fix metodo = idVirtual(r)
+                expr(kid(e, 0))
+                fix salto = emit(instr1("JumpIfNil", 0), r)
+                args(kid(e, 1))
+                emit(instr2("CallMethod", metodo, kid(e, 1).kids.tam()), r)
+                patch(salto)
+            }
         } else if t == "Field" {
             fix campo = indiceCampo(r)
             expr(kid(e, 0))

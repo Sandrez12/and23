@@ -1,0 +1,4 @@
+fn main() {
+    fix x: Float? = 1.5
+    show(x?.formato("2"))
+}

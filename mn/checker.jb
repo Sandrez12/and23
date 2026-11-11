@@ -217,7 +217,7 @@ fn nuevoCtx(retK: Str, retTy: Tipo?, esto: Str?) -> Ctx = Ctx(Lista<Mapa<Str, Va
 // ---------------------------------------------------------------- nativas
 
 /// Las funciones nativas, `nombre:parámetros:retorno`, en el orden de `natives.rs` (el orden fija el id).
-fix NATIVAS_TEXTO = "_trozo:Str,Int,Int:Str _busca:Str,Str,Int:Int _mayus:Str:Str _minus:Str:Str _recorta:Str:Str _reemplaza:Str,Str,Str:Str _empieza:Str,Str:Bool _termina:Str,Str:Bool _parseInt:Str:OptInt _parseFloat:Str:OptFloat raiz:Float:Float potencia:Float,Float:Float piso:Float:Int techo:Float:Int redondea:Float:Int aFloat:Int:Float _leeArchivo:Str:OptStr _escribeArchivo:Str,Str:Bool _agregaArchivo:Str,Str:Bool existe:Str:Bool leeLinea::OptStr _errorES::Str _borraArchivo:Str:Bool _args::ArrStr _entorno:Str:OptStr _ahora::Int _pausa:Int:Unit _azar:Int:Int _azarF::Float _semilla:Int:Unit _listaDir:Str:OptArrStr _creaDir:Str:Bool _esDir:Str:Bool _esLetra:Str:Bool _esAlfanum:Str:Bool _esDigito:Str:Bool _caracteres:Str:ArrStr _desdeCodigo:Int:OptStr _une:ArrStr,Str:Str _parte:Str,Str:ArrStr _lanza:Fn0:Unit cede::Unit _bloquea::Unit _avisa::Unit _hayListas::Bool"
+fix NATIVAS_TEXTO = "_trozo:Str,Int,Int:Str _busca:Str,Str,Int:Int _mayus:Str:Str _minus:Str:Str _recorta:Str:Str _reemplaza:Str,Str,Str:Str _empieza:Str,Str:Bool _termina:Str,Str:Bool _parseInt:Str:OptInt _parseFloat:Str:OptFloat raiz:Float:Float potencia:Float,Float:Float piso:Float:Int techo:Float:Int redondea:Float:Int aFloat:Int:Float _leeArchivo:Str:OptStr _escribeArchivo:Str,Str:Bool _agregaArchivo:Str,Str:Bool existe:Str:Bool leeLinea::OptStr _errorES::Str _borraArchivo:Str:Bool _args::ArrStr _entorno:Str:OptStr _ahora::Int _pausa:Int:Unit _azar:Int:Int _azarF::Float _semilla:Int:Unit _listaDir:Str:OptArrStr _creaDir:Str:Bool _esDir:Str:Bool _esLetra:Str:Bool _esAlfanum:Str:Bool _esDigito:Str:Bool _caracteres:Str:ArrStr _desdeCodigo:Int:OptStr _une:ArrStr,Str:Str _parte:Str,Str:ArrStr _formato:Float,Int:Str _lanza:Fn0:Unit cede::Unit _bloquea::Unit _avisa::Unit _hayListas::Bool"
 
 thing Nativa(fix id: Int, fix params: Lista<Str>, fix ret: Str)
 
@@ -614,6 +614,8 @@ open thing Checker() {
     mut things = Mapa<Str, Nodo>()
     mut classState = Mapa<Str, Str>()
     mut lambdaCache = Mapa<Str, Tipo>()
+    /// Mientras se verifica `a?.m(..)` sobre un `Str?` o un `Float?`, la expresión `a` (por su posición) vale como si no fuera nil.
+    mut desenvuelve = ""
     /// Lo que el verificador decidió y el compilador necesita, por posición `desde-hasta` (ver `resoluciones`).
     mut resCampos = Mapa<Str, Int>()
     mut resMetodos = Mapa<Str, Str>()
@@ -1961,6 +1963,14 @@ open thing Checker() {
     // ------------------------------------------------------------ expresiones
 
     fn expr(ctx: Ctx, e: Nodo) -> Tipo {
+        if desenvuelve != "" && desenvuelve == claveR(rg(e)) {
+            fix t = exprRaw(ctx, e)
+            return if t.k == "Nullable" { t.args.obtiene(0) } else { t }
+        }
+        return exprRaw(ctx, e)
+    }
+
+    fn exprRaw(ctx: Ctx, e: Nodo) -> Tipo {
         match e.tag {
             "Int" -> return T_INT
             "Float" -> return T_FLOAT
@@ -2114,6 +2124,21 @@ open thing Checker() {
                 fix destino = kid(e, 0)
                 fix destinoTy = expr(ctx, destino)
                 fix dentro = if destinoTy.k == "Nullable" { destinoTy.args.obtiene(0) } else { destinoTy }
+                // `s?.largo()` y `x?.formato(2)`: los métodos de Str y de Float son funciones del preludio.
+                if dentro.k == "Str" || dentro.k == "Float" {
+                    fix dueno = if dentro.k == "Str" { "Str" } else { "Float" }
+                    fix guardado = desenvuelve
+                    desenvuelve = claveR(rg(destino))
+                    mut retStd = T_UNIT
+                    attempt {
+                        retStd = stdCall(ctx, "_${dueno.minus()}_${e.attrs}", e.attrs, nombreR(e), dueno, destino, kid(e, 1).kids, Lista<Nodo>(), rg(e))
+                    } rescue er: ErrorTipo {
+                        desenvuelve = guardado
+                        fail er
+                    }
+                    desenvuelve = guardado
+                    return if retStd.k == "Unit" { retStd } else { opcional(retStd) }
+                }
                 fix receptor = methodReceiver(dentro, rg(destino))
                 fix h = findMethod(receptor, e.attrs)
                 if h == nil {
@@ -2145,6 +2170,10 @@ open thing Checker() {
         // Métodos de Str: funciones del preludio con la cadena como primer argumento.
         if destinoTy.k == "Str" {
             return stdCall(ctx, "_str_${nombre}", nombre, nombreR(e), "Str", destino, args, targs, rg(e))
+        }
+        // Métodos de Float (`x.formato(2)`): también funciones del preludio.
+        if destinoTy.k == "Float" {
+            return stdCall(ctx, "_float_${nombre}", nombre, nombreR(e), "Float", destino, args, targs, rg(e))
         }
         fix receptor = methodReceiver(destinoTy, rg(destino))
         fix h = findMethod(receptor, nombre)
