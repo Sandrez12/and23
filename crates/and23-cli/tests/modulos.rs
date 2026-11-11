@@ -303,7 +303,7 @@ fn las_clases_pueden_heredar_de_clases_de_otro_archivo() {
 }
 
 #[test]
-fn el_repl_no_admite_use() {
+fn el_repl_avisa_si_el_modulo_de_un_use_no_existe_y_sigue() {
     let mut hijo = and23()
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -317,7 +317,7 @@ fn el_repl_no_admite_use() {
         .unwrap();
     let o = hijo.wait_with_output().unwrap();
     assert!(
-        err(&o).contains("`use` solo funciona en archivos"),
+        err(&o).contains("no se encontró el archivo `x.jb` (de `use \"x\"`)"),
         "{}",
         err(&o)
     );
