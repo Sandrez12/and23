@@ -5,6 +5,15 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). L
 
 ## Sin publicar
 
+## 0.9.0 - 2026-11-11
+
+Primera versión candidata: el lenguaje queda **congelado** (desde aquí solo correcciones y documentación hasta la 1.0). Resumen de lo nuevo desde la 0.3.0:
+compilador a bytecode de And23 escrito en And23 que se compila a sí mismo (Mn, etapas 1 a 5), `Mapa` con orden de inserción, lambdas locales recursivas, constructores y métodos como valores,
+`x ?: return`/`?: fail`/`x!!`, `?.` sobre texto y decimales opcionales, `if`/`else` como valor de una lambda, `fail` en ramas de `if`/`match` como valor y el tipo esperado guiando cada rama,
+`x.formato(n)`, `ordena` en O(n log n), `use` en el REPL, saltos de línea dentro de `(...)` y tras operadores, `salir` y `muestraError`, tareas fallidas que se avisan, documentación completa
+(`docs/`), dos programas reales (`proyectos/`), instaladores con verificación SHA-256, y pruebas de fuzzing y de recolector de basura sobre todo el repositorio. Se retira `--tree`.
+Verificado antes de publicar: fuzzing de 1 000 000 de entradas del lexer y el parser y de 150 000 programas ejecutados en la VM sin fallos; suite completa en Linux, macOS y Windows.
+
 ### Añadido
 - **Línea de referencia de rendimiento:** `scripts/rendimiento.sh [--escribe]` mide (mediana de 5) un bucle numérico, `Lista`/`Mapa`, texto,
   tareas y canales, y las cargas de Rust y de Mn (incluido el punto fijo); `docs/rendimiento.md` guarda los tiempos de esta máquina y

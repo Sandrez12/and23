@@ -4,7 +4,7 @@ And23 es un lenguaje de programación estático y orientado a objetos, de nivel 
 
 Los archivos de código usan la extensión `.jb`. Los identificadores admiten Unicode (`dueño`, `ñandú`).
 
-> **Estado: M11.** Hoy verifica tipos y compila a bytecode programas con variables, `if`/`while`, funciones recursivas, cadenas con interpolación, arreglos, clases, herencia, interfaces, excepciones, tipos opcionales, genéricos, lambdas con closures, proyectos de varios archivos una biblioteca estándar inicial (texto, números y archivos) y tareas con canales, y los ejecuta en una VM de pila con recolector de basura (`fib(30)` en ~0,13 s, unas 9 veces más rápido que el intérprete de árbol anterior). Un programa mal tipado se rechaza con su línea y columna antes de ejecutar nada. El resto llega en los siguientes hitos (ver [`DESIGN.md`](DESIGN.md)).
+> **Estado: candidata a la 1.0.** El lenguaje está completo para escribir programas reales (se hicieron dos con él: un buscador de texto y una calculadora, en `proyectos/`): tipos estáticos con inferencia, clases, herencia e interfaces, genéricos, lambdas con closures, tipos opcionales, excepciones, enumerados y `match`, módulos, tareas y canales, un marco de pruebas, un formateador y una biblioteca estándar, ejecutados en una VM de pila con recolector de basura. El compilador de And23 escrito en And23 (`mn/`) se compila a sí mismo. Las reglas de compatibilidad de la serie 1.x están en [`DESIGN.md`](DESIGN.md) («Política de 1.0») y lo que queda hasta la 1.0, en [`ROADMAP.md`](ROADMAP.md).
 
 **Auto-compilación (Mn):** `mn/lexer.jb`, `mn/parser.jb` y `mn/checker.jb` y `mn/compilador.jb` son el lexer, el parser, el verificador de tipos y el compilador de And23 escritos en And23; tests los comparan con los de Rust (`--tokens`, `--ast`, `--check`). Ver «Mn» en [`DESIGN.md`](DESIGN.md).
 
@@ -255,7 +255,7 @@ cargo test --workspace                             # tests
 
 ## Hoja de ruta
 
-M0 expresiones, M1 variables y funciones con bytecode y VM, M2 tipos estáticos, M3 strings y GC, M4 clases, M5 herencia e interfaces (hecho), M6 excepciones y null-safety (hecho), M7 genéricos (hecho), M8 closures y lambdas (hecho), M9 módulos (hecho), M10 stdlib inicial (hecho), M11 concurrencia (hecho), y más adelante auto-compilación. El detalle y los criterios de éxito están en [`DESIGN.md`](DESIGN.md).
+Los hitos M0 a M11 (expresiones, bytecode y VM, tipos, texto y GC, clases, herencia, excepciones, genéricos, lambdas, módulos, biblioteca, tareas) están hechos, y también la auto-compilación (Mn, etapas 1 a 5). El camino a la 1.0 está en [`ROADMAP.md`](ROADMAP.md): decisiones y reglas de compatibilidad, huecos del lenguaje cerrados, documentación (`docs/`), programas reales (`proyectos/`) y distribución.
 
 ## Licencia
 

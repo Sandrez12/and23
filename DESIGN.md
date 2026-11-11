@@ -88,6 +88,8 @@ Workspace de Rust en `crates/`:
 
 ## Estado
 
+De M0 a M11 el lenguaje creció por hitos; después vinieron la auto-compilación (Mn) y el camino a la 1.0 (`ROADMAP.md`). Los hitos:
+
 - **M0** (hecho): lexer, parser Pratt y expresiones aritméticas. `examples/aritmetica.jb`.
 - **M1a** (hecho): variables, booleanos, `if`/`while`, funciones y recursión sobre el intérprete de árbol.
   `examples/funciones.jb` y `examples/control.jb`. Referencia para M1b: `fib(30)` = 832040 en ~1,7 s (release).
