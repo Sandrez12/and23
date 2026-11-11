@@ -1933,3 +1933,57 @@ fn if_else_como_valor_final_de_una_lambda() {
         }
     }
 }
+
+/// El REPL con `use` (paso 2.6): carga módulos relativos a la carpeta actual, recuerda nombres y alias entre entradas, carga cada
+/// módulo una sola vez y muestra los errores con el archivo que corresponde.
+#[test]
+fn repl_con_use_de_modulos() {
+    let dir = std::env::temp_dir().join(format!("and23_repl_use_{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("lib")).unwrap();
+    std::fs::write(
+        dir.join("lib/mate.jb"),
+        "open fn doble(x: Int) -> Int = x * 2\nopen fn parte(a: Int, b: Int) -> Int = a / b\nfn secreto() -> Int = 7\nopen fix PI = 3\nshow(\"mate cargado\")\n",
+    )
+    .unwrap();
+    let mut child = and23()
+        .current_dir(&dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let entrada = "\
+use \"lib/mate\"
+doble(21)
+use \"lib/mate\" como m
+m.doble(4) + PI
+secreto()
+m.secreto()
+parte(1, 0)
+use \"lib/no_existe\"
+fix x = doble(1)
+x + 1
+";
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(entrada.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    let (salida, errores) = (stdout(&out), stderr(&out));
+    std::fs::remove_dir_all(&dir).ok();
+    // El módulo se carga una sola vez aunque se importe dos veces; los valores de las expresiones salen como siempre.
+    assert_eq!(salida, "mate cargado\n42\n11\n3\n", "{errores}");
+    assert!(
+        errores.contains("la variable `secreto` no está definida") || errores.contains("secreto"),
+        "{errores}"
+    );
+    assert!(errores.contains("división entre cero"), "{errores}");
+    // Un error dentro del módulo señala el archivo del módulo, no la entrada.
+    assert!(errores.contains("lib/mate.jb"), "{errores}");
+    assert!(
+        errores.contains("no se encontró el archivo `lib/no_existe.jb`"),
+        "{errores}"
+    );
+}

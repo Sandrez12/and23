@@ -45,6 +45,8 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). L
 - `listaDe(arreglo)` (una `Lista` desde un arreglo literal) y `Dupla<A, B>` (dos valores juntos) en la biblioteca base.
 
 ### Cambiado (lenguaje)
+- **`use` en el REPL:** `use "ruta"` y `use "ruta" como alias` valen en el REPL (rutas relativas a la carpeta actual); lo importado se recuerda en las
+  entradas siguientes y cada módulo se carga una sola vez.
 - **`if`/`else` como último valor de una lambda:** `{ n -> if n <= 1 { 1 } else { n * 2 } }` (también `else if` y ramas con varias sentencias) devuelve el
   valor de la rama; antes había que escribir `return` en cada una.
 - **`x ?: return`, `x ?: fail ...` y `x!!`:** salir de la función o lanzar un `Fallo` cuando un opcional es nil, sin un `if` aparte

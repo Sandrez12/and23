@@ -439,7 +439,12 @@ fix m = Mapa<Str, Int>()                                                // expl�
 - **Errores con archivo:** todos los archivos comparten un único espacio de posiciones (cada uno empieza donde acabó el anterior), así que un
   `Diagnostic` del verificador, del compilador o de la VM encuentra su archivo y su línea (`SourceMap`). Si un nombre no existe pero es
   privado en un módulo importado, el error lo dice: «`ayuda` es privado en `util`: declárala con `open` allí».
-- **Límites conocidos de M9:** no hay `use` en el REPL; no hay reexportaciones ni importar solo algunos nombres; no hay manifiesto ni carpeta
+- **`use` en el REPL (paso 2.6 de 1.0).** El REPL guarda un `ReplModules` (en `modules.rs`): un espacio de posiciones común para todas las entradas y los
+  módulos que importan (cada entrada se analiza con `parse_at` desde donde acabó la anterior, así un error en una función de un módulo señala
+  su archivo), los módulos ya cargados (cada uno se declara una sola vez, aunque se importe de nuevo con otro alias) y el ámbito de la entrada
+  (nombres importados y alias), que vale en las entradas siguientes. Las rutas son relativas a la carpeta desde la que se abrió el REPL. El
+  cargador de archivos y el del REPL comparten `Loader::import_uses`.
+- **Límites conocidos de M9:** no hay reexportaciones ni importar solo algunos nombres; no hay manifiesto ni carpeta
   de paquetes (un «paquete» es una carpeta de archivos con `use`); dentro de un método, un campo heredado de una clase de otro archivo no tapa a
   una global del mismo nombre del archivo del método (el renombrado no ve los campos del padre).
 
@@ -777,7 +782,7 @@ las palabras reservadas, `len`, `push`, `pop` y `hash` son funciones integradas,
 | Sin formato de decimales | **Antes de 1.0** | 2.3, hecho |
 | `ordena` en O(n²) | **Antes de 1.0** | 2.4, hecho |
 | Sin `!!` ni `?:` con `return`/`fail` a la derecha | **Antes de 1.0** | 2.5, hecho |
-| Sin `use` en el REPL | **Antes de 1.0** | 2.6 |
+| Sin `use` en el REPL | **Antes de 1.0** | 2.6, hecho |
 | Métodos y constructores no se pasan como valores | **Antes de 1.0** | 2.7 |
 | Intérprete de árbol (`--tree`) | **Retirado** (ver 1.4) | 2.8, hecho |
 | Una sola clase padre; interfaces sin herencia ni métodos por defecto | Documentar como límite | |

@@ -1,5 +1,4 @@
 use and23_bytecode::{disassemble, dump_module, load_dump, Compiler, DumpFrom};
-use and23_syntax::Diagnostic;
 use and23_types::Checker;
 use and23_vm::{Session, Vm};
 use std::io::{self, BufRead, IsTerminal, Write};
@@ -140,21 +139,18 @@ fn load_program(path: &str) -> Result<and23_syntax::modules::Loaded, String> {
     and23_syntax::modules::load(path, |p| std::fs::read_to_string(p)).map_err(|f| f.render())
 }
 
-/// Analiza, compila y ejecuta `src` en `session`. El error ya viene formateado con su posición.
-fn execute<W: Write>(
+/// Una entrada del REPL: se analiza en el espacio de posiciones común de la sesión, se cargan los módulos de sus `use` y se ejecuta.
+fn execute_repl<W: Write>(
     session: &mut Session<W>,
+    modules: &mut and23_syntax::modules::ReplModules,
     src: &str,
-    file: &str,
-    echo: bool,
 ) -> Result<(), String> {
-    let program = and23_syntax::parse(src).map_err(|d| d.render(file, src))?;
-    if let Some(u) = program.uses.first() {
-        return Err(
-            Diagnostic::new(u.span, "`use` solo funciona en archivos, no en el REPL")
-                .render(file, src),
-        );
-    }
-    session.run(&program, echo).map_err(|d| d.render(file, src))
+    let base = modules.add_entry(src);
+    let program = and23_syntax::parse_at(src, base).map_err(|d| modules.render(&d))?;
+    let program = modules
+        .resolve(program, |p| std::fs::read_to_string(p))
+        .map_err(|d| modules.render(&d))?;
+    session.run(&program, true).map_err(|d| modules.render(&d))
 }
 
 fn run_file(path: &str, options: Options) -> u8 {
@@ -630,6 +626,7 @@ fn repl(options: Options) -> u8 {
     let stdin = io::stdin();
     let interactive = stdin.is_terminal();
     let mut session = options.session(io::stdout());
+    let mut modules = and23_syntax::modules::ReplModules::new();
     let mut pending = String::new();
     loop {
         if interactive {
@@ -660,14 +657,14 @@ fn repl(options: Options) -> u8 {
             continue;
         }
         let src = std::mem::take(&mut pending);
-        if let Err(rendered) = execute(&mut session, &src, "<repl>", true) {
+        if let Err(rendered) = execute_repl(&mut session, &mut modules, &src) {
             eprint!("{rendered}");
         }
         let _ = session.out().flush();
     }
     // Si la entrada terminó con un bloque sin cerrar, se muestra el error en vez de ignorarlo.
     if !pending.trim().is_empty() {
-        if let Err(rendered) = execute(&mut session, &pending, "<repl>", true) {
+        if let Err(rendered) = execute_repl(&mut session, &mut modules, &pending) {
             eprint!("{rendered}");
         }
     }

@@ -56,7 +56,7 @@ Se deciden **antes** de tocar el lenguaje, porque cada una condiciona la Fase 2.
 - [x] **2.3 Formato de decimales** (`formato(x, 2)` o equivalente). (S)
 - [x] **2.4 `ordena` en O(n log n).** (S) Hoy es O(n²).
 - [x] **2.5 `!!` y `?:` con `return`/`fail` a la derecha.** (M) El patrón más natural para opcionales.
-- [ ] **2.6 `use` en el REPL.** (S)
+- [x] **2.6 `use` en el REPL.** (S)
 - [ ] **2.7 Pasar métodos y constructores como valores.** (M) Hoy hay que envolverlos en una lambda.
 - [x] **2.8 Retirar el intérprete de árbol** (`--tree` y el crate `and23-eval`). (M) Decidido en 1.4: los tests de `diferencial.rs` pasan a
   salidas esperadas escritas a mano.

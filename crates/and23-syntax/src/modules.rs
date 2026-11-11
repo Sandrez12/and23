@@ -204,36 +204,15 @@ where
             .join("/")
     }
 
-    fn visit(
+    /// Carga los módulos de los `use` de `key` (los que aún no están cargados) y los importa en `scope`.
+    fn import_uses(
         &mut self,
         key: &Path,
-        display: &str,
-        is_entry: bool,
+        uses: &[UseDecl],
+        scope: &mut Scope,
         stack: &mut Vec<PathBuf>,
     ) -> Result<(), Fail> {
-        let src = match (self.read)(key) {
-            Ok(src) => src,
-            Err(e) => {
-                return Err(Fail::Io(format!(
-                    "error: no se pudo leer `{display}`: {e}\n"
-                )))
-            }
-        };
-        let base = self.sources.add(display.to_string(), src.clone());
-        let program = crate::parse_at(&src, base)?;
-        stack.push(key.to_path_buf());
-
-        let id = self.id_of(key);
-        if is_entry {
-            self.tests = program.tests.clone();
-        }
-        let mut scope = Scope::new(&id, is_entry);
-        for stmt in &program.stmts {
-            scope.declare(stmt);
-        }
-        let exports_set: HashSet<&str> = program.exports.iter().map(String::as_str).collect();
-
-        for u in &program.uses {
+        for u in uses {
             let dep_path = if u.path.ends_with(".jb") {
                 u.path.clone()
             } else {
@@ -276,6 +255,39 @@ where
             let dep = &self.done[&dep_key];
             scope.import(u, dep)?;
         }
+        Ok(())
+    }
+
+    fn visit(
+        &mut self,
+        key: &Path,
+        display: &str,
+        is_entry: bool,
+        stack: &mut Vec<PathBuf>,
+    ) -> Result<(), Fail> {
+        let src = match (self.read)(key) {
+            Ok(src) => src,
+            Err(e) => {
+                return Err(Fail::Io(format!(
+                    "error: no se pudo leer `{display}`: {e}\n"
+                )))
+            }
+        };
+        let base = self.sources.add(display.to_string(), src.clone());
+        let program = crate::parse_at(&src, base)?;
+        stack.push(key.to_path_buf());
+
+        let id = self.id_of(key);
+        if is_entry {
+            self.tests = program.tests.clone();
+        }
+        let mut scope = Scope::new(&id, is_entry);
+        for stmt in &program.stmts {
+            scope.declare(stmt);
+        }
+        let exports_set: HashSet<&str> = program.exports.iter().map(String::as_str).collect();
+
+        self.import_uses(key, &program.uses, &mut scope, stack)?;
 
         let mut renamer = Renamer::new(scope);
         let mut stmts = Vec::with_capacity(program.stmts.len());
@@ -309,6 +321,95 @@ where
         self.done.insert(key.to_path_buf(), info);
         stack.pop();
         Ok(())
+    }
+}
+
+/// Los `use` de una sesión de REPL: un espacio común de posiciones para todas las entradas y los módulos que importan, los módulos ya
+/// cargados (cada uno se declara una sola vez) y lo que las entradas han importado (nombres y alias), que vale en las entradas siguientes.
+/// Las rutas de `use` son relativas a la carpeta desde la que se abrió el REPL.
+pub struct ReplModules {
+    sources: SourceMap,
+    done: HashMap<PathBuf, ModuleInfo>,
+    scope: Scope,
+}
+
+impl Default for ReplModules {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ReplModules {
+    pub fn new() -> Self {
+        ReplModules {
+            sources: SourceMap::default(),
+            done: HashMap::new(),
+            scope: Scope::new("repl", true),
+        }
+    }
+
+    /// Registra el texto de una entrada y devuelve la posición en la que empieza (para `parse_at`).
+    pub fn add_entry(&mut self, src: &str) -> usize {
+        self.sources.add("<repl>".to_string(), src.to_string())
+    }
+
+    /// Texto del error con su archivo, línea y subrayado.
+    pub fn render(&self, d: &Diagnostic) -> String {
+        self.sources.render(d)
+    }
+
+    /// Carga los módulos que importa la entrada (`program` ya analizado con `parse_at`) y devuelve un programa con sus declaraciones
+    /// primero y las de la entrada después, con los nombres importados reemplazados por sus nombres internos. Si la entrada no tiene
+    /// `use` y aún no se ha importado nada, la devuelve como está.
+    pub fn resolve<R>(&mut self, mut program: Program, read: R) -> Result<Program, Diagnostic>
+    where
+        R: FnMut(&Path) -> std::io::Result<String>,
+    {
+        let uses = std::mem::take(&mut program.uses);
+        if uses.is_empty() && self.scope.imports.is_empty() && self.scope.aliases.is_empty() {
+            return Ok(program);
+        }
+        for stmt in &program.stmts {
+            self.scope.declare(stmt);
+        }
+        let mut loader = Loader {
+            read,
+            root: PathBuf::new(),
+            sources: std::mem::take(&mut self.sources),
+            done: std::mem::take(&mut self.done),
+            stmts: Vec::new(),
+            tests: Vec::new(),
+        };
+        let mut scope = std::mem::replace(&mut self.scope, Scope::new("repl", true));
+        let imported = loader.import_uses(Path::new("<repl>"), &uses, &mut scope, &mut Vec::new());
+        self.sources = loader.sources;
+        self.done = loader.done;
+        let module_stmts = loader.stmts;
+        if let Err(fail) = imported {
+            self.scope = scope;
+            return Err(match fail {
+                Fail::Diag(d) => d,
+                Fail::Io(text) => Diagnostic::new(Span::new(0, 0), text),
+            });
+        }
+        let mut renamer = Renamer::new(scope);
+        let mut stmts = module_stmts;
+        for mut stmt in program.stmts {
+            renamer.top_stmt(&mut stmt);
+            stmts.push(stmt);
+        }
+        let error = renamer.error.take();
+        for (pos, hint) in renamer.hints.drain(..) {
+            self.sources.hints.insert(pos, hint);
+        }
+        self.scope = renamer.scope;
+        match error {
+            Some(d) => Err(d),
+            None => {
+                program.stmts = stmts;
+                Ok(program)
+            }
+        }
     }
 }
 
