@@ -2011,3 +2011,81 @@ fn constructores_y_metodos_como_valores() {
         .unwrap();
     assert_eq!(stdout(&out), "101\n8\n");
 }
+
+/// `docs/biblioteca.md` menciona cada función, clase y método público del preludio y cada función nativa pública: si se añade
+/// uno y no se documenta, este test lo avisa.
+#[test]
+fn la_referencia_de_la_biblioteca_documenta_todo_lo_publico() {
+    let root = raiz_del_repo();
+    let doc = std::fs::read_to_string(root.join("docs/biblioteca.md")).unwrap();
+    let prelude = std::fs::read_to_string(root.join("crates/and23-syntax/prelude.jb")).unwrap();
+    let palabras: std::collections::HashSet<&str> = doc
+        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .filter(|w| !w.is_empty())
+        .collect();
+    // Internos aunque no empiecen por `_`: no son API.
+    let internos = [
+        "Entrada",
+        "cubetaDe",
+        "crece",
+        "compacta",
+        "corre",
+        "FalloDeTarea",
+    ];
+    let mut faltan: Vec<String> = Vec::new();
+    let mut revisa = |nombre: &str| {
+        if !nombre.starts_with('_') && !internos.contains(&nombre) && !palabras.contains(nombre) {
+            faltan.push(nombre.to_string());
+        }
+    };
+    let mut en_clase = false;
+    for line in prelude.lines() {
+        if let Some(rest) = line.strip_prefix("fn ") {
+            en_clase = false;
+            let nombre: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            // `_str_largo` es el método `largo` de `Str`; `_int_parse` y `_float_parse`, `parse`.
+            let publico = ["_str_", "_int_", "_float_"]
+                .iter()
+                .find_map(|p| nombre.strip_prefix(p).map(str::to_string));
+            revisa(&publico.unwrap_or(nombre));
+        } else if line.starts_with("thing ")
+            || line.starts_with("open thing ")
+            || line.starts_with("kind ")
+        {
+            let nombre: String = line
+                .split_whitespace()
+                .find(|w| w.chars().next().is_some_and(char::is_uppercase))
+                .unwrap_or("")
+                .chars()
+                .take_while(|c| c.is_alphanumeric())
+                .collect();
+            en_clase = !nombre.is_empty() && !internos.contains(&nombre.as_str());
+            revisa(&nombre);
+        } else if let Some(rest) = line.strip_prefix("    fn ") {
+            if en_clase {
+                let nombre: String = rest
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                revisa(&nombre);
+            }
+        } else if line.starts_with('}') {
+            en_clase = false;
+        }
+    }
+    for native in and23_types::NATIVES.iter() {
+        revisa(native.name);
+    }
+    for integrada in and23_types::BUILTINS {
+        revisa(integrada);
+    }
+    faltan.sort();
+    faltan.dedup();
+    assert!(
+        faltan.is_empty(),
+        "docs/biblioteca.md no menciona: {faltan:?}"
+    );
+}
